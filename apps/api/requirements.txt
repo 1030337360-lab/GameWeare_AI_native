@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic-settings==2.6.1
+sqlmodel==0.0.22
+psycopg[binary]==3.2.3
+minio==7.2.12
+python-multipart==0.0.19
+httpx==0.28.1

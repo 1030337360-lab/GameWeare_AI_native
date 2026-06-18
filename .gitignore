@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+vendor/
+.venv/
+
+# Build output
+dist/
+build/
+out/
+coverage/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tsbuildinfo
+.vite/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local documents
+Yahaha-MVP-测试需求.md
+Yahaha-MVP-技术路线报告.md
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.swp
