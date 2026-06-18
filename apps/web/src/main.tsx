@@ -1,10 +1,22 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Link, NavLink, Route, Routes, useParams } from "react-router-dom";
-import { Gamepad2, Play, Plus, UserRound } from "lucide-react";
+import {
+  BrowserRouter,
+  Link,
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams
+} from "react-router-dom";
+import { Eye, EyeOff, Gamepad2, LogOut, Play, Plus, UserRound } from "lucide-react";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
+const TOKEN_STORAGE_KEY = "yahaha_access_token";
 
 type Game = {
   id: string;
@@ -26,6 +38,37 @@ type Manifest = {
   bundleUrl: string;
   assets: string[];
 };
+
+type UserProfile = {
+  id: string;
+  email: string | null;
+  displayName: string;
+  avatarUrl: string | null;
+  role: string;
+  lastLoginAt: string | null;
+};
+
+type SessionState = {
+  authenticated: boolean;
+  user: UserProfile | null;
+};
+
+type AuthResponse = SessionState & {
+  accessToken: string | null;
+  tokenType: string;
+  expiresIn: number | null;
+};
+
+type AuthContextValue = SessionState & {
+  token: string | null;
+  apiFetch: (path: string, init?: RequestInit) => Promise<Response>;
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, displayName: string) => Promise<void>;
+  logout: () => Promise<void>;
+  setTokenAndRefresh: (token: string) => Promise<void>;
+};
+
+const AuthContext = React.createContext<AuthContextValue | null>(null);
 
 const fallbackGames: Game[] = [
   {
@@ -63,14 +106,115 @@ const fallbackGames: Game[] = [
   }
 ];
 
-async function fetchJson<T>(path: string, fallback: T): Promise<T> {
+async function fetchJson<T>(path: string, fallback: T, token?: string | null): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`);
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined
+    });
     if (!response.ok) return fallback;
     return (await response.json()) as T;
   } catch {
     return fallback;
   }
+}
+
+function useAuth() {
+  const context = React.useContext(AuthContext);
+  if (!context) throw new Error("Auth context is missing");
+  return context;
+}
+
+function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [token, setToken] = React.useState<string | null>(() => localStorage.getItem(TOKEN_STORAGE_KEY));
+  const [session, setSession] = React.useState<SessionState>({ authenticated: false, user: null });
+
+  const apiFetch = React.useCallback(
+    (path: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+    },
+    [token]
+  );
+
+  const loadSession = React.useCallback(async (nextToken = token) => {
+    if (!nextToken) {
+      setSession({ authenticated: false, user: null });
+      return;
+    }
+    const response = await fetch(`${API_BASE_URL}/auth/session`, {
+      headers: { Authorization: `Bearer ${nextToken}` }
+    });
+    if (!response.ok) {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      setToken(null);
+      setSession({ authenticated: false, user: null });
+      return;
+    }
+    const payload = (await response.json()) as SessionState;
+    setSession(payload);
+    if (!payload.authenticated) {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      setToken(null);
+    }
+  }, [token]);
+
+  React.useEffect(() => {
+    void loadSession();
+  }, [loadSession]);
+
+  const commitAuth = React.useCallback(async (payload: AuthResponse) => {
+    if (!payload.accessToken) throw new Error("Missing access token");
+    localStorage.setItem(TOKEN_STORAGE_KEY, payload.accessToken);
+    setToken(payload.accessToken);
+    setSession({ authenticated: true, user: payload.user });
+  }, []);
+
+  const login = React.useCallback(async (email: string, password: string) => {
+    const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    await commitAuth((await response.json()) as AuthResponse);
+  }, [commitAuth]);
+
+  const register = React.useCallback(async (email: string, password: string, displayName: string) => {
+    const response = await fetch(`${API_BASE_URL}/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, displayName })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    await commitAuth((await response.json()) as AuthResponse);
+  }, [commitAuth]);
+
+  const logout = React.useCallback(async () => {
+    if (token) {
+      await apiFetch("/auth/logout", { method: "POST" }).catch(() => undefined);
+    }
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    setToken(null);
+    setSession({ authenticated: false, user: null });
+  }, [apiFetch, token]);
+
+  const setTokenAndRefresh = React.useCallback(async (nextToken: string) => {
+    localStorage.setItem(TOKEN_STORAGE_KEY, nextToken);
+    setToken(nextToken);
+    await loadSession(nextToken);
+  }, [loadSession]);
+
+  const value = React.useMemo(
+    () => ({ ...session, token, apiFetch, login, register, logout, setTokenAndRefresh }),
+    [apiFetch, login, logout, register, session, setTokenAndRefresh, token]
+  );
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 function formatPlays(plays: number) {
@@ -81,28 +225,34 @@ function formatPlays(plays: number) {
 
 function App() {
   const [games, setGames] = React.useState<Game[]>(fallbackGames);
+  const { token } = useAuth();
 
   React.useEffect(() => {
-    fetchJson<Game[]>("/games", fallbackGames).then(setGames);
-  }, []);
+    fetchJson<Game[]>("/games", fallbackGames, token).then(setGames);
+  }, [token]);
 
   return (
-    <BrowserRouter>
-      <div className="app-shell">
-        <Header />
-        <Routes>
-          <Route path="/" element={<Home games={games} />} />
-          <Route path="/create" element={<Create />} />
-          <Route path="/games/:gameId" element={<GameDetail games={games} />} />
-          <Route path="/play/:gameId" element={<PlayGame games={games} />} />
-          <Route path="/profile" element={<Profile />} />
-        </Routes>
-      </div>
-    </BrowserRouter>
+    <div className="app-shell">
+      <Header />
+      <Routes>
+        <Route path="/" element={<Home games={games} />} />
+        <Route path="/create" element={<ProtectedRoute><Create /></ProtectedRoute>} />
+        <Route path="/games/:gameId" element={<GameDetail games={games} />} />
+        <Route path="/play/:gameId" element={<PlayGame games={games} />} />
+        <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/auth/login" element={<LoginPage />} />
+        <Route path="/auth/register" element={<RegisterPage />} />
+        <Route path="/auth/callback" element={<AuthCallback />} />
+      </Routes>
+    </div>
   );
 }
 
 function Header() {
+  const auth = useAuth();
+  const location = useLocation();
+  const createTarget = auth.authenticated ? "/create" : "/auth/login?next=/create";
+  const createClassName = auth.authenticated && location.pathname === "/create" ? "active" : undefined;
   return (
     <header className="topbar">
       <Link to="/" className="brand">
@@ -111,10 +261,12 @@ function Header() {
       </Link>
       <nav>
         <NavLink to="/">Home</NavLink>
-        <NavLink to="/create">Create</NavLink>
-        <NavLink to="/profile">Profile</NavLink>
+        <Link to={createTarget} className={createClassName}>Create</Link>
+        <NavLink to={auth.authenticated ? "/profile" : "/auth/login"}>
+          {auth.authenticated ? "Profile" : "Log in"}
+        </NavLink>
       </nav>
-      <Link to="/create" className="create-button">
+      <Link to={createTarget} className="create-button">
         <Plus size={18} />
         Create
       </Link>
@@ -123,6 +275,7 @@ function Header() {
 }
 
 function Home({ games }: { games: Game[] }) {
+  const auth = useAuth();
   const sections = ["Players' Choice", "Trending", "Recommended For You", "Recently Created"];
 
   return (
@@ -133,7 +286,7 @@ function Home({ games }: { games: Game[] }) {
           <h1>Play community games. Generate the next one.</h1>
           <p>Browse playable HTML5 game manifests now; the Create pipeline is stubbed but its API shape is preserved.</p>
         </div>
-        <Link to="/create" className="hero-action">
+        <Link to={auth.authenticated ? "/create" : "/auth/login?next=/create"} className="hero-action">
           <Plus size={20} />
           Start creating
         </Link>
@@ -215,11 +368,12 @@ function PlayGame({ games }: { games: Game[] }) {
   const { gameId } = useParams();
   const game = games.find((item) => item.id === gameId) ?? fallbackGames.find((item) => item.id === gameId);
   const [manifest, setManifest] = React.useState<Manifest | null>(null);
+  const { token } = useAuth();
 
   React.useEffect(() => {
     if (!gameId) return;
-    fetchJson<Manifest | null>(`/play/${gameId}/manifest`, null).then(setManifest);
-  }, [gameId]);
+    fetchJson<Manifest | null>(`/play/${gameId}/manifest`, null, token).then(setManifest);
+  }, [gameId, token]);
 
   if (!game) return <EmptyState title="Game not found" body="The selected game id is not in the local catalog." />;
 
@@ -248,14 +402,19 @@ function PlayGame({ games }: { games: Game[] }) {
 function Create() {
   const [message, setMessage] = React.useState("");
   const [status, setStatus] = React.useState("Create implementation is intentionally stubbed for this milestone.");
+  const { apiFetch } = useAuth();
 
   async function submitJob(event: React.FormEvent) {
     event.preventDefault();
-    const response = await fetch(`${API_BASE_URL}/create/jobs`, {
+    const response = await apiFetch("/create/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: message, files: [] })
     });
+    if (!response.ok) {
+      setStatus("Please log in again before creating a game.");
+      return;
+    }
     const payload = await response.json();
     setStatus(`Job ${payload.id} accepted with status ${payload.status}. Real generation is not implemented yet.`);
   }
@@ -281,13 +440,201 @@ function Create() {
 }
 
 function Profile() {
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const user = auth.user;
+
+  if (!user) return null;
+
+  async function handleLogout() {
+    await auth.logout();
+    navigate("/auth/login");
+  }
+
   return (
-    <main className="create-layout">
-      <UserRound size={42} />
-      <h1>Profile</h1>
-      <p>Session-aware profile data will be connected after the authentication flow is expanded.</p>
+    <main className="profile-layout">
+      <section className="profile-hero">
+        {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="avatar" /> : <UserRound size={42} />}
+        <div>
+          <p className="eyebrow">Profile</p>
+          <h1>{user.displayName}</h1>
+          <p>Your account is ready for protected Create workflows.</p>
+        </div>
+      </section>
+      <section className="profile-grid">
+        <div><span>User ID</span><strong>{user.id}</strong></div>
+        <div><span>Email</span><strong>{user.email ?? "Not provided"}</strong></div>
+        <div><span>Role</span><strong>{user.role}</strong></div>
+        <div><span>Last sign in</span><strong>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Current session"}</strong></div>
+      </section>
+      <button type="button" className="secondary-action logout-action" onClick={handleLogout}>
+        <LogOut size={18} />
+        Log out
+      </button>
     </main>
   );
+}
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const auth = useAuth();
+  const location = useLocation();
+  if (!auth.authenticated) {
+    return <Navigate to={`/auth/login?next=${encodeURIComponent(location.pathname)}`} replace />;
+  }
+  return children;
+}
+
+function LoginPage() {
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [showPassword, setShowPassword] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const next = params.get("next") || "/profile";
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      await auth.login(email, password);
+      navigate(next);
+    } catch {
+      setError("Unable to sign in with those details.");
+    }
+  }
+
+  React.useEffect(() => {
+    if (params.get("oauth_error") === "google_not_configured") {
+      setError("Google login is not configured yet. Use email sign in for now.");
+    }
+  }, [params]);
+
+  return (
+    <AuthShell title="Log in" subtitle="Access your profile and protected Create workspace.">
+      <form className="auth-form" onSubmit={submit}>
+        <label>
+          <span>Email</span>
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+        </label>
+        <PasswordField value={password} onChange={setPassword} visible={showPassword} onToggle={() => setShowPassword((value) => !value)} />
+        <div className="auth-inline">
+          <GoogleLoginLink onUnavailable={setError} />
+          <span>还没有注册？<Link to="/auth/register">立即注册</Link></span>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <button type="submit">Log in</button>
+      </form>
+    </AuthShell>
+  );
+}
+
+function RegisterPage() {
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const [email, setEmail] = React.useState("");
+  const [displayName, setDisplayName] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [showPassword, setShowPassword] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      await auth.register(email, password, displayName);
+      navigate("/profile");
+    } catch {
+      setError("Unable to create this account.");
+    }
+  }
+
+  return (
+    <AuthShell title="Create account" subtitle="Register with email, then continue to your profile.">
+      <form className="auth-form" onSubmit={submit}>
+        <label>
+          <span>Email</span>
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+        </label>
+        <label>
+          <span>Display name</span>
+          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
+        </label>
+        <PasswordField value={password} onChange={setPassword} visible={showPassword} onToggle={() => setShowPassword((value) => !value)} />
+        <div className="auth-inline">
+          <GoogleLoginLink onUnavailable={setError} />
+          <span>已有账号？<Link to="/auth/login">Log in</Link></span>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <button type="submit">Register</button>
+      </form>
+    </AuthShell>
+  );
+}
+
+function GoogleLoginLink({ onUnavailable }: { onUnavailable: (message: string) => void }) {
+  async function startGoogleLogin(event: React.MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    onUnavailable("");
+    window.location.href = `${API_BASE_URL}/auth/google/start`;
+  }
+
+  return <a href={`${API_BASE_URL}/auth/google/start`} className="google-link" onClick={startGoogleLogin}>Google</a>;
+}
+
+function PasswordField({
+  value,
+  onChange,
+  visible,
+  onToggle
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  visible: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <label>
+      <span>Password</span>
+      <div className="password-field">
+        <input value={value} onChange={(event) => onChange(event.target.value)} type={visible ? "text" : "password"} required minLength={8} />
+        <button type="button" onClick={onToggle} aria-label={visible ? "Hide password" : "Show password"}>
+          {visible ? <EyeOff size={18} /> : <Eye size={18} />}
+        </button>
+      </div>
+    </label>
+  );
+}
+
+function AuthShell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  return (
+    <main className="auth-layout">
+      <section>
+        <p className="eyebrow">Account</p>
+        <h1>{title}</h1>
+        <p>{subtitle}</p>
+      </section>
+      {children}
+    </main>
+  );
+}
+
+function AuthCallback() {
+  const auth = useAuth();
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const token = hash.get("access_token");
+    if (!token) {
+      navigate("/auth/login");
+      return;
+    }
+    auth.setTokenAndRefresh(token).then(() => navigate("/profile"));
+  }, [auth, navigate]);
+
+  return <EmptyState title="Signing you in" body="Finishing account verification." />;
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -300,4 +647,10 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <BrowserRouter>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </BrowserRouter>
+);

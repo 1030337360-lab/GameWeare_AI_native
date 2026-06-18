@@ -1,48 +1,136 @@
-from datetime import datetime, timezone
+from typing import Any
 
-from app.schemas import Game
+from app.database import db_connection
+from app.schemas import Game, GameManifest
 
 
-GAMES: list[Game] = [
-    Game(
-        id="astro-ludo",
-        title="Astro Ludo",
-        author="xiaoling",
-        description="Fast tabletop moves in a glowing space arcade.",
-        tags=["Board", "Arcade"],
-        publishedAt=datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc),
-        coverUrl="https://images.unsplash.com/photo-1614728894747-a83421e2b9c9?auto=format&fit=crop&w=900&q=80",
-        plays=1200000,
-        section="Players' Choice",
-    ),
-    Game(
-        id="color-bloom",
-        title="Color Bloom",
-        author="emanfatima",
-        description="A bright matching puzzle generated from a single prompt.",
-        tags=["Puzzle", "Generated"],
-        publishedAt=datetime(2026, 6, 18, 11, 0, tzinfo=timezone.utc),
-        coverUrl="https://images.unsplash.com/photo-1550684848-fac1c5b4e853?auto=format&fit=crop&w=900&q=80",
-        plays=700000,
-        section="Trending",
-    ),
-    Game(
-        id="rail-in-air",
-        title="Rail in Air",
-        author="Majisok",
-        description="Balance a flying rail cart through neon gates.",
-        tags=["Runner", "Physics"],
-        publishedAt=datetime(2026, 6, 18, 12, 0, tzinfo=timezone.utc),
-        coverUrl="https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=900&q=80",
-        plays=4500000,
-        section="Recommended For You",
-    ),
-]
+GAME_SELECT = """
+SELECT
+  g.slug AS id,
+  g.title,
+  u.display_name AS author,
+  g.description,
+  COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+  g.published_at AS "publishedAt",
+  COALESCE(cover.public_url, '') AS "coverUrl",
+  g.plays_count AS plays,
+  COALESCE(g.metadata ->> 'section', 'Recently Created') AS section
+FROM games g
+JOIN users u ON u.id = g.author_id
+LEFT JOIN assets cover ON cover.id = g.cover_asset_id
+LEFT JOIN game_tags gt ON gt.game_id = g.id
+LEFT JOIN tags t ON t.id = gt.tag_id
+WHERE
+  g.publish_status = 'published'
+  AND g.visibility = 'public'
+  AND g.deleted_at IS NULL
+"""
+
+
+def _game_from_row(row: dict[str, Any]) -> Game:
+    return Game(
+        id=row["id"],
+        title=row["title"],
+        author=row["author"],
+        description=row["description"],
+        tags=list(row["tags"]),
+        publishedAt=row["publishedAt"],
+        coverUrl=row["coverUrl"],
+        plays=row["plays"],
+        section=row["section"],
+    )
 
 
 def list_games() -> list[Game]:
-    return GAMES
+    with db_connection() as connection:
+        rows = connection.execute(
+            GAME_SELECT
+            + """
+GROUP BY g.id, u.display_name, cover.public_url
+ORDER BY g.published_at DESC NULLS LAST, g.created_at DESC
+"""
+        ).fetchall()
+    return [_game_from_row(row) for row in rows]
 
 
 def get_game(game_id: str) -> Game | None:
-    return next((game for game in GAMES if game.id == game_id), None)
+    with db_connection() as connection:
+        row = connection.execute(
+            GAME_SELECT
+            + """
+  AND g.slug = %s
+GROUP BY g.id, u.display_name, cover.public_url
+LIMIT 1
+""",
+            (game_id,),
+        ).fetchone()
+    return _game_from_row(row) if row else None
+
+
+def get_game_manifest(game_id: str) -> GameManifest | None:
+    with db_connection() as connection:
+        version = connection.execute(
+            """
+SELECT
+  g.id AS db_game_id,
+  g.slug,
+  g.title,
+  gv.id AS version_id,
+  gv.version_no,
+  gv.runtime,
+  gv.entry_file,
+  manifest.public_url AS manifest_url,
+  bundle.public_url AS bundle_url
+FROM games g
+JOIN game_versions gv ON gv.id = g.current_version_id
+LEFT JOIN assets manifest ON manifest.id = gv.manifest_asset_id
+LEFT JOIN LATERAL (
+  SELECT a.public_url
+  FROM assets a
+  WHERE
+    a.version_id = gv.id
+    AND a.kind = 'bundle'
+    AND a.public_url IS NOT NULL
+  ORDER BY a.created_at DESC
+  LIMIT 1
+) bundle ON true
+WHERE
+  g.slug = %s
+  AND g.publish_status = 'published'
+  AND g.visibility = 'public'
+  AND g.deleted_at IS NULL
+LIMIT 1
+""",
+            (game_id,),
+        ).fetchone()
+        if not version:
+            return None
+
+        asset_rows = connection.execute(
+            """
+SELECT public_url
+FROM assets
+WHERE
+  (game_id = %s OR version_id = %s)
+  AND public_url IS NOT NULL
+ORDER BY
+  CASE kind
+    WHEN 'cover' THEN 1
+    WHEN 'manifest' THEN 2
+    WHEN 'bundle' THEN 3
+    ELSE 4
+  END,
+  created_at
+""",
+            (version["db_game_id"], version["version_id"]),
+        ).fetchall()
+
+    return GameManifest(
+        id=version["slug"],
+        title=version["title"],
+        version=str(version["version_no"]),
+        entry=version["entry_file"],
+        bundleUrl=version["bundle_url"] or version["manifest_url"] or "",
+        assets=[row["public_url"] for row in asset_rows],
+        runtime=version["runtime"],
+    )

@@ -1,36 +1,20 @@
-from datetime import datetime, timezone
-from uuid import uuid4
+from fastapi import APIRouter, Depends, HTTPException
 
-from fastapi import APIRouter, HTTPException
-
-from app.schemas import AgentLog, CreateJob, CreateJobRequest
+from app.schemas import CreateJob, CreateJobRequest
+from app.services.auth_service import require_user
+from app.services.create_service import create_generation_job, get_generation_job
 
 router = APIRouter(prefix="/create", tags=["create"])
-JOBS: dict[str, CreateJob] = {}
 
 
 @router.post("/jobs", response_model=CreateJob)
-def create_job(payload: CreateJobRequest) -> CreateJob:
-    job = CreateJob(
-        id=f"job_{uuid4().hex[:10]}",
-        status="stubbed",
-        prompt=payload.prompt,
-        createdAt=datetime.now(timezone.utc),
-        logs=[
-            AgentLog(
-                stage="create",
-                status="skipped",
-                message="Create generation is intentionally stubbed; API contract is preserved.",
-            )
-        ],
-    )
-    JOBS[job.id] = job
-    return job
+def create_job(payload: CreateJobRequest, user=Depends(require_user)) -> CreateJob:
+    return create_generation_job(user.id, payload.prompt, payload.files)
 
 
 @router.get("/jobs/{job_id}", response_model=CreateJob)
 def get_job(job_id: str) -> CreateJob:
-    job = JOBS.get(job_id)
+    job = get_generation_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -38,7 +22,7 @@ def get_job(job_id: str) -> CreateJob:
 
 @router.post("/jobs/{job_id}/publish", response_model=CreateJob)
 def publish_job(job_id: str) -> CreateJob:
-    job = JOBS.get(job_id)
+    job = get_generation_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job

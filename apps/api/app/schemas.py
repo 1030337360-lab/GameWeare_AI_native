@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,9 +26,35 @@ class GameManifest(BaseModel):
     runtime: str = "iframe-html5"
 
 
+class UserProfile(BaseModel):
+    id: str
+    email: str | None = None
+    displayName: str
+    avatarUrl: str | None = None
+    role: str
+    lastLoginAt: datetime | None = None
+
+
 class SessionState(BaseModel):
     authenticated: bool = False
-    user: dict | None = None
+    user: UserProfile | None = None
+
+
+class AuthResponse(SessionState):
+    accessToken: str | None = None
+    tokenType: str = "bearer"
+    expiresIn: int | None = None
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    displayName: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 class CreateJobRequest(BaseModel):
@@ -38,13 +64,24 @@ class CreateJobRequest(BaseModel):
 
 class AgentLog(BaseModel):
     stage: str
-    status: Literal["pending", "completed", "skipped"]
+    status: Literal["pending", "running", "succeeded", "failed", "skipped", "completed"]
     message: str
 
 
 class CreateJob(BaseModel):
     id: str
-    status: Literal["stubbed"]
+    status: Literal[
+        "pending",
+        "planning",
+        "generating",
+        "building",
+        "reviewing",
+        "uploading",
+        "completed",
+        "failed",
+        "canceled",
+        "stubbed",
+    ]
     prompt: str
     createdAt: datetime
     logs: list[AgentLog]
@@ -52,5 +89,8 @@ class CreateJob(BaseModel):
 
 class PlayEvent(BaseModel):
     gameId: str
-    event: str
+    event: Literal["game_view", "game_start", "game_load_error", "game_end"]
     occurredAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    durationMs: int | None = None
+    errorMessage: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)

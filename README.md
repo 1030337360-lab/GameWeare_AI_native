@@ -7,6 +7,7 @@ This build follows the technical route in `Yahaha-MVP-技术路线报告.md`:
 - Frontend: React + Vite + TypeScript on port `1314`
 - Backend: Python + FastAPI on port `8080`
 - Local dependencies: PostgreSQL and MinIO via Docker Compose
+- Auth cache: Redis via Docker Compose
 - MinIO local storage path: `D:\yahaha`
 - Create generation: intentionally stubbed, with API routes preserved
 
@@ -27,6 +28,14 @@ docker compose up -d
 PostgreSQL listens on `localhost:5432`.
 MinIO API listens on `localhost:9000`.
 MinIO Console listens on `http://localhost:9001`.
+Redis listens on `localhost:6379`.
+
+On a brand-new PostgreSQL volume, the SQL files in `apps/api/db/init` run automatically. If your Docker named volume already existed before these files were added, initialize the schema manually:
+
+```powershell
+Get-Content apps\api\db\init\001_schema.sql -Raw | docker exec -i yahaha-postgres psql -U yahaha -d yahaha
+Get-Content apps\api\db\init\002_seed.sql -Raw | docker exec -i yahaha-postgres psql -U yahaha -d yahaha
+```
 
 ## Start backend
 
@@ -74,6 +83,8 @@ Open `http://localhost:1314`.
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/logout`
+- `GET /auth/google/start`
+- `GET /auth/google/callback`
 - `POST /create/jobs`
 - `GET /create/jobs/{job_id}`
 - `POST /create/jobs/{job_id}/publish`
@@ -81,4 +92,4 @@ Open `http://localhost:1314`.
 
 ## Current scope
 
-The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, and preserved Create/upload/auth interfaces. Real authentication, database persistence, MinIO uploads, and multi-agent generation are intentionally left for the next implementation phase.
+The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events, and MinIO-backed uploads. The full multi-agent generation worker is still intentionally left for the next implementation phase, but Create jobs are now persisted in PostgreSQL.

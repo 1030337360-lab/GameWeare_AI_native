@@ -6,3 +6,5 @@ psycopg[binary]==3.2.3
 minio==7.2.12
 python-multipart==0.0.19
 httpx==0.28.1
+PyJWT==2.10.1
+redis==5.2.1
