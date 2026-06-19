@@ -18,10 +18,10 @@ from app.agents.framework.schema import ensure_agent_framework_schema
 from app.agents.prompts import (
     CREATE_GAME_TEMPLATE_NAME,
     CREATE_GAME_TEMPLATE_VERSION,
-    CreatePromptContext,
-    build_create_game_responses_payload,
     template_metadata,
 )
+from app.agents.strategies import AgentRequestSettings, select_agent_strategy
+from app.agents.tools import build_builtin_tool_registry, list_builtin_tool_metadata
 from app.config import get_settings
 from app.database import db_connection
 from app.schemas import AIConfigRequest, AIConfigState, AgentLog, CreateJob, LLMTestResult, RecentGame, UserProfile
@@ -350,13 +350,11 @@ def create_generation_job(
         {"provider": ai_config["provider"], "model": ai_config["model"]},
         context.run_log.object_key,
     )
-    prompt_context = CreatePromptContext(
+    tool_metadata = list_builtin_tool_metadata()
+    prompt_settings = AgentRequestSettings.from_create_context(
         user_request=cleaned_prompt,
         create_type=context.create_type,
         agent_mode=agent_mode,
-        project_id=context.project_id,
-        run_id=context.run_id,
-        task_id=context.task_id,
         recent_8_history=context.long_term_memory.snapshot().get("history", []),
         workspace_capability=context.workspace.capability,
         workspace_boundary=context.workspace.worktree_stub_path,
@@ -364,9 +362,41 @@ def create_generation_job(
             user_id=creator_id,
             project_id=context.project_id,
         ),
+        tool_metadata=tool_metadata,
     )
-    prompt_payload = build_create_game_responses_payload(prompt_context, ai_config["model"])
+    prompt_tool_result = build_builtin_tool_registry().call(
+        "llm.prompt_render",
+        {
+            "userRequest": prompt_settings.user_request,
+            "createType": prompt_settings.create_type,
+            "agentMode": prompt_settings.agent_mode,
+            "recent8History": prompt_settings.recent_8_history,
+            "workspaceCapability": prompt_settings.workspace_capability,
+            "workspaceBoundary": prompt_settings.workspace_boundary,
+            "persistentMemorySummary": prompt_settings.persistent_memory_summary,
+            "toolMetadata": tool_metadata,
+            "model": ai_config["model"],
+        },
+    )
+    context.short_term_memory.record_tool_call(
+        {
+            "tool": "llm.prompt_render",
+            "status": "succeeded" if prompt_tool_result["ok"] else "failed",
+            "dryRun": True,
+        }
+    )
+    prompt_payload = prompt_tool_result["data"]["payload"]
     prompt_template = template_metadata(prompt_payload)
+    strategy = select_agent_strategy(prompt_settings)
+    strategy_plan = strategy.plan(prompt_settings)
+    strategy_metadata = strategy_plan.to_metadata()
+    context.run_log.append(
+        stage="agent_strategy_selected",
+        status="succeeded",
+        input_summary="Backend selected the agent strategy from createType and agentMode.",
+        output_summary=f"{strategy_metadata['strategy']} strategy framework selected.",
+        metrics=strategy_metadata,
+    )
     context.run_log.append(
         stage="prompt_rendered",
         status="succeeded",
@@ -374,13 +404,14 @@ def create_generation_job(
         output_summary=f"{CREATE_GAME_TEMPLATE_NAME}@{CREATE_GAME_TEMPLATE_VERSION} is ready for future LLM generation.",
         metrics={
             **prompt_template,
+            "strategy": strategy_metadata,
             "renderedCharacters": len(json.dumps(prompt_payload, ensure_ascii=False)),
         },
     )
     context.task_store.checkpoint(
         context.task_state,
         "prompt_rendered",
-        {"promptTemplate": prompt_template, "responsesPayload": prompt_payload},
+        {"promptTemplate": prompt_template, "agentStrategy": strategy_metadata, "responsesPayload": prompt_payload},
         context.run_log.object_key,
     )
     game_id = str(uuid4())
@@ -400,6 +431,7 @@ def create_generation_job(
         version_id=version_id,
         ai_config=ai_config,
         prompt_template=prompt_template,
+        agent_strategy=strategy_metadata,
     )
     game_slug = f"{_slugify(draft_pipeline.title)}-{game_id[:8]}"
     pipeline = run_create_pipeline(
@@ -410,6 +442,7 @@ def create_generation_job(
         version_id=version_id,
         ai_config=ai_config,
         prompt_template=prompt_template,
+        agent_strategy=strategy_metadata,
     )
     agent_mode = pipeline.source["agentMode"]
     context.agent_mode = agent_mode
@@ -494,6 +527,7 @@ RETURNING id, status, prompt, input_payload, created_at, game_id
                         "taskId": context.task_id,
                         "resumeStatus": context.task_state.resume_status,
                         "promptTemplate": prompt_template,
+                        "agentStrategy": strategy_metadata,
                         "aiConfig": {"model": ai_config["model"], "provider": ai_config["provider"]},
                     }
                 ),
@@ -704,6 +738,7 @@ LIMIT 1
             "stubbed": True,
         },
         "promptTemplate": prompt_template,
+        "agentStrategy": strategy_metadata,
     }
     context.persistent_memory.put(
         user_id=creator_id,

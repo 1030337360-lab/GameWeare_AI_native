@@ -17,7 +17,7 @@ import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
 const TOKEN_STORAGE_KEY = "yahaha_access_token";
-const AGENT_MODES = ["chat", "react", "plan", "init", "opt"] as const;
+const AGENT_MODES = ["chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt"] as const;
 
 type AgentMode = (typeof AGENT_MODES)[number];
 

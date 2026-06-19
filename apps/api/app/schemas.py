@@ -61,7 +61,7 @@ class LoginRequest(BaseModel):
 class CreateJobRequest(BaseModel):
     prompt: str = ""
     files: list[str] = Field(default_factory=list)
-    agentMode: Literal["chat", "react", "plan", "init", "opt"] = "chat"
+    agentMode: Literal["chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt"] = "chat"
     createType: Literal["init", "opt"] = "init"
     projectId: str | None = None
 

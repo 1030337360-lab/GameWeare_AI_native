@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS create_runs (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT create_runs_create_type_check CHECK (create_type IN ('init', 'opt')),
-  CONSTRAINT create_runs_agent_mode_check CHECK (agent_mode IN ('chat', 'react', 'plan', 'init', 'opt')),
+  CONSTRAINT create_runs_agent_mode_check CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'centralized', 'decentralized', 'init', 'opt')),
   CONSTRAINT create_runs_status_check CHECK (status IN ('running', 'completed', 'failed', 'canceled'))
 );
 

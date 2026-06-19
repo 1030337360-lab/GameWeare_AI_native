@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS create_runs (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT create_runs_create_type_check CHECK (create_type IN ('init', 'opt')),
-  CONSTRAINT create_runs_agent_mode_check CHECK (agent_mode IN ('chat', 'react', 'plan', 'init', 'opt')),
+  CONSTRAINT create_runs_agent_mode_check CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'centralized', 'decentralized', 'init', 'opt')),
   CONSTRAINT create_runs_status_check CHECK (status IN ('running', 'completed', 'failed', 'canceled'))
 )
 """
@@ -122,6 +122,14 @@ CREATE TABLE IF NOT EXISTS agent_workspace_runs (
   CONSTRAINT agent_workspace_capability_check CHECK (capability IN ('read_only', 'write_only', 'read_write', 'web_only')),
   CONSTRAINT agent_workspace_status_check CHECK (status IN ('planned', 'prepared', 'running', 'completed', 'failed', 'cleaned'))
 )
+"""
+        )
+        connection.execute("ALTER TABLE create_runs DROP CONSTRAINT IF EXISTS create_runs_agent_mode_check")
+        connection.execute(
+            """
+ALTER TABLE create_runs
+ADD CONSTRAINT create_runs_agent_mode_check
+CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'centralized', 'decentralized', 'init', 'opt'))
 """
         )
         connection.execute("ALTER TABLE agent_workspace_runs ADD COLUMN IF NOT EXISTS branch_name text")

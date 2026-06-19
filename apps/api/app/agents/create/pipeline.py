@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 import re
 
-AGENT_MODES = ("chat", "react", "plan", "init", "opt")
+AGENT_MODES = ("chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt")
 
 
 @dataclass(frozen=True)
@@ -351,6 +351,9 @@ def mode_run_records(agent_mode: str, html_size: int) -> list[AgentRunRecord]:
         "chat": "Chat mode keeps a direct prompt-to-game flow for fast iteration.",
         "react": "ReAct mode reserves reasoning/action loops for tool-using agents.",
         "plan": "Plan mode reserves a planning pass before code generation.",
+        "refine": "Refine mode reserves inspection and targeted improvement passes over an existing game.",
+        "centralized": "Centralized mode reserves a main agent that coordinates sub-agent work.",
+        "decentralized": "Decentralized mode reserves peer agents that coordinate through shared run state.",
         "init": "Init mode reserves project bootstrap and baseline game scaffolding.",
         "opt": "Opt mode reserves optimization and polish passes over an existing game.",
     }
@@ -395,6 +398,7 @@ def run_create_pipeline(
     version_id: str,
     ai_config: dict[str, str],
     prompt_template: dict | None = None,
+    agent_strategy: dict | None = None,
 ) -> AgentPipelineResult:
     mode = normalize_agent_mode(agent_mode)
     title = title_from_prompt(prompt)
@@ -410,6 +414,7 @@ def run_create_pipeline(
         },
         "stubbed": True,
         "promptTemplate": prompt_template or {},
+        "agentStrategy": agent_strategy or {},
         "files": ["index.html", "manifest.json", "source.json", "cover.svg"],
     }
     return AgentPipelineResult(
