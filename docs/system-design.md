@@ -20,6 +20,7 @@
 
 ## Deferred Work
 
+- Implementing the full Astrocade-like iframe `srcdoc` runtime described in `docs/ai-game-generation-guide.md`.
 - Providing Google OAuth Client ID/Secret to make the implemented Google route run against a real Google app.
 - Uploading generated game bundles to MinIO from the Publisher step.
 - Multi-agent generation and publishing worker.

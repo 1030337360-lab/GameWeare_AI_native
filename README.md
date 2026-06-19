@@ -90,6 +90,10 @@ Open `http://localhost:1314`.
 - `POST /create/jobs/{job_id}/publish`
 - `POST /uploads`
 
+## Game artifact contract
+
+AI-generated games should follow `docs/ai-game-generation-guide.md`. The target play model is an Astrocade-like platform shell that runs a self-contained generated HTML game document inside a sandboxed iframe and resolves the playable object through PostgreSQL metadata plus MinIO object storage.
+
 ## Current scope
 
 The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events, and MinIO-backed uploads. The full multi-agent generation worker is still intentionally left for the next implementation phase, but Create jobs are now persisted in PostgreSQL.

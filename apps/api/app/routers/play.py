@@ -1,9 +1,10 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
 from psycopg.types.json import Jsonb
 
 from app.database import db_connection
 from app.schemas import GameManifest, PlayEvent
-from app.services.catalog import get_game_manifest
+from app.services.catalog import get_game_document, get_game_manifest
 
 router = APIRouter(tags=["play"])
 
@@ -14,6 +15,14 @@ def manifest(game_id: str) -> GameManifest:
     if not game_manifest:
         raise HTTPException(status_code=404, detail="Game not found")
     return game_manifest
+
+
+@router.get("/play/{game_id}/document", response_class=HTMLResponse, include_in_schema=False)
+def game_document(game_id: str) -> str:
+    document = get_game_document(game_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Game document not found")
+    return document
 
 
 @router.post("/events/play")

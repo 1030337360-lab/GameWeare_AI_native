@@ -12,11 +12,14 @@ import {
   useParams,
   useSearchParams
 } from "react-router-dom";
-import { Eye, EyeOff, Gamepad2, LogOut, Play, Plus, UserRound } from "lucide-react";
+import { Eye, EyeOff, Gamepad2, LogOut, Play, Plus, Settings, UserRound } from "lucide-react";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
 const TOKEN_STORAGE_KEY = "yahaha_access_token";
+const AGENT_MODES = ["chat", "react", "plan", "init", "opt"] as const;
+
+type AgentMode = (typeof AGENT_MODES)[number];
 
 type Game = {
   id: string;
@@ -36,6 +39,7 @@ type Manifest = {
   runtime: string;
   entry: string;
   bundleUrl: string;
+  documentUrl: string | null;
   assets: string[];
 };
 
@@ -57,6 +61,70 @@ type AuthResponse = SessionState & {
   accessToken: string | null;
   tokenType: string;
   expiresIn: number | null;
+};
+
+type AgentLog = {
+  stage: string;
+  status: string;
+  message: string;
+};
+
+type CreateJob = {
+  id: string;
+  status: string;
+  prompt: string;
+  createdAt: string;
+  logs: AgentLog[];
+  gameId: string | null;
+  gameSlug: string | null;
+  playUrl: string | null;
+  manifestUrl: string | null;
+  agentMode: AgentMode | null;
+  createType: "init" | "opt" | null;
+  projectId: string | null;
+  runId: string | null;
+  taskId: string | null;
+  resumeStatus: string | null;
+};
+
+type AIConfigState = {
+  authenticated: boolean;
+  configured: boolean;
+  baseUrl: string | null;
+  model: string | null;
+  provider: string | null;
+};
+
+type LLMTestResult = {
+  ok: boolean;
+  code: string;
+  message: string;
+  details: Record<string, unknown>;
+};
+
+type ApiErrorReport = {
+  code: string | null;
+  message: string;
+  llm: LLMTestResult | null;
+};
+
+type RecentGame = {
+  gameId: string;
+  gameSlug: string;
+  title: string;
+  playUrl: string;
+  jobId: string;
+};
+
+type CreateProject = {
+  projectId: string;
+  title: string;
+  status: string;
+  gameId: string | null;
+  latestRunId: string | null;
+  latestRunStatus: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type AuthContextValue = SessionState & {
@@ -116,6 +184,43 @@ async function fetchJson<T>(path: string, fallback: T, token?: string | null): P
   } catch {
     return fallback;
   }
+}
+
+async function readApiError(response: Response): Promise<ApiErrorReport> {
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      return { code: null, message: text, llm: null };
+    }
+  }
+  const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const detail = root.detail ?? root;
+  if (typeof detail === "string") {
+    return { code: null, message: detail, llm: null };
+  }
+  if (!detail || typeof detail !== "object") {
+    return { code: null, message: response.statusText || "Request failed.", llm: null };
+  }
+  const data = detail as Record<string, unknown>;
+  const llm = data.llm && typeof data.llm === "object" ? data.llm as LLMTestResult : null;
+  const providerMessage =
+    llm?.details?.providerMessage && typeof llm.details.providerMessage === "string"
+      ? ` Provider message: ${llm.details.providerMessage}`
+      : "";
+  const message =
+    (llm ? `${llm.message}${providerMessage}` : null) ||
+    (typeof data.message === "string" ? data.message : null) ||
+    (typeof data.code === "string" ? data.code : null) ||
+    response.statusText ||
+    "Request failed.";
+  return {
+    code: typeof data.code === "string" ? data.code : null,
+    message,
+    llm
+  };
 }
 
 function useAuth() {
@@ -334,7 +439,13 @@ function GameSection({ title, games }: { title: string; games: Game[] }) {
 
 function GameDetail({ games }: { games: Game[] }) {
   const { gameId } = useParams();
-  const game = games.find((item) => item.id === gameId) ?? fallbackGames.find((item) => item.id === gameId);
+  const [remoteGame, setRemoteGame] = React.useState<Game | null>(null);
+  const game = games.find((item) => item.id === gameId) ?? fallbackGames.find((item) => item.id === gameId) ?? remoteGame;
+
+  React.useEffect(() => {
+    if (!gameId || games.some((item) => item.id === gameId) || fallbackGames.some((item) => item.id === gameId)) return;
+    fetchJson<Game | null>(`/games/${gameId}`, null).then(setRemoteGame);
+  }, [gameId, games]);
 
   if (!game) return <EmptyState title="Game not found" body="The selected game id is not in the local catalog." />;
 
@@ -366,14 +477,90 @@ function GameDetail({ games }: { games: Game[] }) {
 
 function PlayGame({ games }: { games: Game[] }) {
   const { gameId } = useParams();
-  const game = games.find((item) => item.id === gameId) ?? fallbackGames.find((item) => item.id === gameId);
+  const [remoteGame, setRemoteGame] = React.useState<Game | null>(null);
+  const game = games.find((item) => item.id === gameId) ?? fallbackGames.find((item) => item.id === gameId) ?? remoteGame;
   const [manifest, setManifest] = React.useState<Manifest | null>(null);
-  const { token } = useAuth();
+  const [srcDoc, setSrcDoc] = React.useState("");
+  const [loadError, setLoadError] = React.useState("");
+  const frameRef = React.useRef<HTMLIFrameElement | null>(null);
+  const { apiFetch, token } = useAuth();
+
+  function prepareGameDocument(html: string) {
+    return html
+      .replace(/cursor\s*:\s*[^;}"']+;?/gi, "")
+      .replace(/if\s*\([^)]*requestPointerLock[^)]*\)\s*[^;{}]*requestPointerLock\([^)]*\);?/gi, "")
+      .replace(/[^;\n{}]*requestPointerLock\([^)]*\);?/gi, "");
+  }
+
+  React.useEffect(() => {
+    if (!gameId || games.some((item) => item.id === gameId) || fallbackGames.some((item) => item.id === gameId)) return;
+    fetchJson<Game | null>(`/games/${gameId}`, null, token).then(setRemoteGame);
+  }, [gameId, games, token]);
 
   React.useEffect(() => {
     if (!gameId) return;
-    fetchJson<Manifest | null>(`/play/${gameId}/manifest`, null, token).then(setManifest);
-  }, [gameId, token]);
+    setSrcDoc("");
+    setLoadError("");
+    fetchJson<Manifest | null>(`/play/${gameId}/manifest`, null, token).then(async (nextManifest) => {
+      setManifest(nextManifest);
+      const documentUrl = nextManifest?.documentUrl ?? nextManifest?.bundleUrl;
+      if (!documentUrl) {
+        setLoadError("No playable document was returned for this game.");
+        return;
+      }
+      try {
+        const response = await fetch(documentUrl.startsWith("http") ? documentUrl : `${API_BASE_URL}${documentUrl}`);
+        if (!response.ok) throw new Error("Document request failed");
+        setSrcDoc(prepareGameDocument(await response.text()));
+      } catch {
+        setLoadError("The playable document could not be loaded.");
+        void apiFetch("/events/play", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gameId, event: "game_load_error" })
+        }).catch(() => undefined);
+      }
+    });
+  }, [apiFetch, gameId, token]);
+
+  React.useEffect(() => {
+    function handleMessage(event: MessageEvent) {
+      const data = event.data as { source?: string; type?: string; gameId?: string; payload?: Record<string, unknown> };
+      if (!gameId || data?.source !== "yahaha-game" || data.gameId !== gameId) return;
+      if (!["game_start", "game_end", "game_load_error"].includes(data.type ?? "")) return;
+      void apiFetch("/events/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gameId,
+          event: data.type,
+          metadata: data.payload ?? {}
+        })
+      }).catch(() => undefined);
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [apiFetch, gameId]);
+
+  React.useEffect(() => {
+    function preventPageScroll(event: KeyboardEvent) {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " ", "Spacebar"].includes(event.key)) return;
+      const activeElement = document.activeElement;
+      const isEditing =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement ||
+        activeElement?.getAttribute("contenteditable") === "true";
+      if (!isEditing) event.preventDefault();
+    }
+    window.addEventListener("keydown", preventPageScroll, { passive: false });
+    return () => window.removeEventListener("keydown", preventPageScroll);
+  }, []);
+
+  React.useEffect(() => {
+    if (!srcDoc) return;
+    frameRef.current?.focus();
+  }, [srcDoc]);
 
   if (!game) return <EmptyState title="Game not found" body="The selected game id is not in the local catalog." />;
 
@@ -387,11 +574,14 @@ function PlayGame({ games }: { games: Game[] }) {
         <Link to={`/games/${game.id}`} className="secondary-action">Details</Link>
       </section>
       <iframe
+        ref={frameRef}
         className="game-frame"
         title={game.title}
         sandbox="allow-scripts"
-        src={manifest?.bundleUrl ?? `${API_BASE_URL}/bundles/games/${game.id}/index.html`}
+        srcDoc={srcDoc}
+        tabIndex={0}
       />
+      {loadError && <p className="form-error">{loadError}</p>}
       <p className="manifest-note">
         Runtime: {manifest?.runtime ?? "iframe-html5"} · Entry: {manifest?.entry ?? "index.html"}
       </p>
@@ -401,40 +591,301 @@ function PlayGame({ games }: { games: Game[] }) {
 
 function Create() {
   const [message, setMessage] = React.useState("");
-  const [status, setStatus] = React.useState("Create implementation is intentionally stubbed for this milestone.");
+  const [status, setStatus] = React.useState("Checking Create configuration...");
+  const [aiConfig, setAiConfig] = React.useState<AIConfigState | null>(null);
+  const [baseUrl, setBaseUrl] = React.useState("http://43.106.115.130:8080/v1");
+  const [model, setModel] = React.useState("gpt-5.5");
+  const [apiKey, setApiKey] = React.useState("");
+  const [editingConfig, setEditingConfig] = React.useState(false);
+  const [llmTest, setLlmTest] = React.useState<LLMTestResult | null>(null);
+  const [agentMode, setAgentMode] = React.useState<AgentMode>("chat");
+  const [createType, setCreateType] = React.useState<"init" | "opt">("init");
+  const [projectId, setProjectId] = React.useState("");
+  const [projects, setProjects] = React.useState<CreateProject[]>([]);
+  const [modeOpen, setModeOpen] = React.useState(false);
+  const [job, setJob] = React.useState<CreateJob | null>(null);
+  const [recentGame, setRecentGame] = React.useState<RecentGame | null>(null);
+  const [busy, setBusy] = React.useState(false);
   const { apiFetch } = useAuth();
+
+  const loadCreateState = React.useCallback(async () => {
+    const configResponse = await apiFetch("/create/ai-config");
+    if (configResponse.ok) {
+      const payload = (await configResponse.json()) as AIConfigState;
+      setAiConfig(payload);
+      if (payload.baseUrl) setBaseUrl(payload.baseUrl);
+      if (payload.model) setModel(payload.model);
+      setStatus(payload.configured ? "AI configuration is ready. Static test generation is enabled." : "Add your AI configuration before creating.");
+      setEditingConfig(!payload.configured);
+    }
+    const recentResponse = await apiFetch("/create/recent-game");
+    if (recentResponse.ok) {
+      setRecentGame((await recentResponse.json()) as RecentGame | null);
+    }
+    const projectsResponse = await apiFetch("/create/projects");
+    if (projectsResponse.ok) {
+      const projectPayload = (await projectsResponse.json()) as CreateProject[];
+      setProjects(projectPayload);
+      if (!projectId && projectPayload.length > 0) setProjectId(projectPayload[0].projectId);
+    }
+  }, [apiFetch, projectId]);
+
+  React.useEffect(() => {
+    void loadCreateState();
+  }, [loadCreateState]);
+
+  async function saveConfig(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setLlmTest(null);
+    setStatus("Saving AI configuration...");
+    try {
+      const response = await apiFetch("/create/ai-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl, model, apiKey })
+      });
+      if (!response.ok) {
+        const error = await readApiError(response);
+        throw new Error(error.message);
+      }
+      const payload = (await response.json()) as AIConfigState;
+      setAiConfig(payload);
+      setApiKey("");
+      setEditingConfig(false);
+      setStatus("AI configuration saved. You can create a static test game now.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "AI configuration could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testConfig() {
+    setBusy(true);
+    setLlmTest(null);
+    setStatus("Testing LLM configuration...");
+    try {
+      const response = await apiFetch("/create/ai-config/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl, model, apiKey })
+      });
+      if (!response.ok) {
+        const error = await readApiError(response);
+        throw new Error(error.message);
+      }
+      const payload = (await response.json()) as LLMTestResult;
+      setLlmTest(payload);
+      setStatus(payload.ok ? "LLM configuration test passed." : payload.message);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "LLM configuration test failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submitJob(event: React.FormEvent) {
     event.preventDefault();
+    setBusy(true);
+    setLlmTest(null);
+    setStatus("Generating static test game...");
+    setJob(null);
+    if (createType === "opt" && !projectId) {
+      setStatus("Select a project before continuing optimization.");
+      setBusy(false);
+      return;
+    }
     const response = await apiFetch("/create/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: message, files: [] })
+      body: JSON.stringify({ prompt: message, files: [], agentMode, createType, projectId: createType === "opt" ? projectId : undefined })
     });
     if (!response.ok) {
-      setStatus("Please log in again before creating a game.");
+      const error = await readApiError(response);
+      if (response.status === 409) {
+        setStatus("AI configuration is required before creating.");
+        setAiConfig({ authenticated: true, configured: false, baseUrl, model, provider: "fighting" });
+        setEditingConfig(true);
+      } else if (error.code === "LLM_CONFIG_INVALID" && error.llm) {
+        setLlmTest(error.llm);
+        setEditingConfig(true);
+        setStatus(error.message);
+      } else if (response.status === 401) {
+        setStatus("Please log in again before creating a game.");
+      } else {
+        setStatus(error.message);
+      }
+      setBusy(false);
       return;
     }
-    const payload = await response.json();
-    setStatus(`Job ${payload.id} accepted with status ${payload.status}. Real generation is not implemented yet.`);
+    const payload = (await response.json()) as CreateJob;
+    setJob(payload);
+    if (payload.projectId) setProjectId(payload.projectId);
+    setStatus(`Job ${payload.id} completed. Project ${payload.projectId ?? "created"} is ready to continue.`);
+    await loadCreateState();
+    setBusy(false);
   }
 
   return (
     <main className="create-layout">
       <section>
-        <p className="eyebrow">Create stub</p>
+        <p className="eyebrow">Create</p>
         <h1>Describe a game idea</h1>
-        <p>The UI and API contract are present, while the actual multi-agent generation pipeline is out of scope for this minimum runnable build.</p>
+        <p>Configure base_url, model, and api_key once. The backend calls the OpenAI Responses API format and keeps the multi-agent pipeline reserved behind this API shape.</p>
       </section>
+      {aiConfig && (!aiConfig.configured || editingConfig) && (
+        <form className="prompt-panel" onSubmit={saveConfig}>
+          <label>
+            <span>base_url</span>
+            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} required />
+          </label>
+          <label>
+            <span>model</span>
+            <input value={model} onChange={(event) => setModel(event.target.value)} required />
+          </label>
+          <label>
+            <span>api_key</span>
+            <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" required />
+          </label>
+          {llmTest && (
+            <div className={llmTest.ok ? "test-report success" : "test-report error"}>
+              <strong>{llmTest.code}</strong>
+              <span>{llmTest.message}</span>
+              {typeof llmTest.details.providerMessage === "string" && <span>{llmTest.details.providerMessage}</span>}
+            </div>
+          )}
+          <div className="form-actions">
+            <button type="button" disabled={busy || !apiKey.trim()} onClick={testConfig}>Test settings</button>
+            <button type="submit" disabled={busy}>Save AI config</button>
+            {aiConfig.configured && (
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busy}
+                onClick={() => {
+                  setEditingConfig(false);
+                  setApiKey("");
+                  setLlmTest(null);
+                  setStatus("AI configuration is ready. Static test generation is enabled.");
+                }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </form>
+      )}
+      {aiConfig?.configured && !editingConfig && (
+        <section className="status-panel">
+          <span>AI config ready: {aiConfig.provider} · {aiConfig.model} · {aiConfig.baseUrl}</span>
+          <button
+            type="button"
+            className="inline-action"
+            onClick={() => {
+              setEditingConfig(true);
+              setLlmTest(null);
+              setStatus("Update base_url, model, and api_key, then save the new configuration.");
+            }}
+          >
+            <Settings size={16} />
+            Reconfigure
+          </button>
+        </section>
+      )}
+      {recentGame && (
+        <section className="result-panel">
+          <div>
+            <span>Recent game</span>
+            <strong>{recentGame.title}</strong>
+          </div>
+          <Link to={recentGame.playUrl} className="secondary-action">Play recent</Link>
+        </section>
+      )}
       <form className="prompt-panel" onSubmit={submitJob}>
+        <div className="create-type-row">
+          <button
+            type="button"
+            className={createType === "init" ? "selected" : undefined}
+            onClick={() => setCreateType("init")}
+          >
+            Initial create
+          </button>
+          <button
+            type="button"
+            className={createType === "opt" ? "selected" : undefined}
+            onClick={() => setCreateType("opt")}
+            disabled={projects.length === 0}
+          >
+            Continue optimize
+          </button>
+        </div>
+        {createType === "opt" && (
+          <label>
+            <span>project_id</span>
+            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} required>
+              {projects.map((project) => (
+                <option key={project.projectId} value={project.projectId}>
+                  {project.title} · {project.projectId}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="mode-picker">
+          <button type="button" className="mode-toggle" onClick={() => setModeOpen((value) => !value)}>
+            Mode: {agentMode}
+          </button>
+          {modeOpen && (
+            <div className="mode-options">
+              {AGENT_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={agentMode === mode ? "selected" : undefined}
+                  onClick={() => {
+                    setAgentMode(mode);
+                    setModeOpen(false);
+                  }}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <textarea
           value={message}
           onChange={(event) => setMessage(event.target.value)}
           placeholder="A neon puzzle game where players connect constellations..."
+          disabled={!aiConfig?.configured || editingConfig || busy}
         />
-        <button type="submit">Create job</button>
+        <button type="submit" disabled={!aiConfig?.configured || editingConfig || busy}>Create game</button>
       </form>
       <div className="status-panel">{status}</div>
+      {job && (
+        <section className="job-panel">
+          <div className="result-panel">
+            <div>
+              <span>Generated game</span>
+              <strong>{job.gameSlug ?? job.id}</strong>
+              {job.projectId && <span>Project: {job.projectId}</span>}
+              {job.runId && <span>Run: {job.runId}</span>}
+              {job.taskId && <span>Task: {job.taskId}</span>}
+              <span>Mode: {job.agentMode ?? agentMode}</span>
+            </div>
+            {job.playUrl && <Link to={job.playUrl} className="primary-action"><Play size={18} />Play now</Link>}
+          </div>
+          <div className="log-list">
+            {job.logs.map((log) => (
+              <div key={`${log.stage}-${log.message}`}>
+                <span>{log.stage} · {log.status}</span>
+                <p>{log.message}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </main>
   );
 }

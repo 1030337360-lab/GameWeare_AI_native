@@ -4,6 +4,8 @@ Backend base URL: `http://localhost:8080`
 
 The current implementation is intentionally small and runnable. PostgreSQL is now the source of truth for published games, users, Create jobs, play events, and asset metadata. Redis stores active JWT records. MinIO is used by the upload endpoint. The full multi-agent generation worker is still deferred.
 
+AI-generated game artifacts must follow `docs/ai-game-generation-guide.md`.
+
 ## Game APIs
 
 - `GET /games`

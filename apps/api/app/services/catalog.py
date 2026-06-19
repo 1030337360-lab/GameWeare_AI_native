@@ -1,5 +1,8 @@
 from typing import Any
 
+from minio import Minio
+
+from app.config import get_settings
 from app.database import db_connection
 from app.schemas import Game, GameManifest
 
@@ -131,6 +134,45 @@ ORDER BY
         version=str(version["version_no"]),
         entry=version["entry_file"],
         bundleUrl=version["bundle_url"] or version["manifest_url"] or "",
+        documentUrl=version["bundle_url"] or version["manifest_url"] or "",
         assets=[row["public_url"] for row in asset_rows],
         runtime=version["runtime"],
     )
+
+
+def get_game_document(game_id: str) -> str | None:
+    with db_connection() as connection:
+        asset = connection.execute(
+            """
+SELECT bundle.bucket, bundle.object_key
+FROM games g
+JOIN game_versions gv ON gv.id = g.current_version_id
+JOIN assets bundle ON bundle.version_id = gv.id AND bundle.kind = 'bundle'
+WHERE
+  g.slug = %s
+  AND g.publish_status = 'published'
+  AND g.visibility = 'public'
+  AND g.deleted_at IS NULL
+ORDER BY bundle.created_at DESC
+LIMIT 1
+""",
+            (game_id,),
+        ).fetchone()
+    if not asset:
+        return None
+
+    settings = get_settings()
+    if asset["bucket"] == "external":
+        return None
+    client = Minio(
+        settings.minio_endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key,
+        secure=False,
+    )
+    response = client.get_object(asset["bucket"], asset["object_key"])
+    try:
+        return response.read().decode("utf-8")
+    finally:
+        response.close()
+        response.release_conn()
