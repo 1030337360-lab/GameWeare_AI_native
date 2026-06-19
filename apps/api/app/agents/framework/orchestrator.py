@@ -175,6 +175,89 @@ VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s)
     )
 
 
+def load_agent_run_context_for_job(*, user_id: str, job_id: str, session_id: str) -> tuple[CreateAgentRunContext, str, list[str]]:
+    ensure_agent_framework_schema()
+    with db_connection() as connection:
+        row = connection.execute(
+            """
+SELECT
+  r.id AS run_id,
+  r.task_id,
+  r.project_id,
+  r.create_type,
+  r.agent_mode,
+  j.prompt,
+  j.input_payload,
+  w.workspace_root,
+  w.worktree_stub_path,
+  w.branch_name,
+  w.base_commit,
+  w.cleanup_policy,
+  w.isolation_mode,
+  w.capability,
+  w.status AS workspace_status,
+  t.status AS task_status,
+  t.resume_status,
+  COALESCE((
+    SELECT max(step_no)
+    FROM create_run_steps
+    WHERE run_id = r.id
+  ), 0) AS max_step_no
+FROM create_runs r
+JOIN generation_jobs j ON j.id = r.job_id
+JOIN agent_workspace_runs w ON w.run_id = r.id
+LEFT JOIN agent_task_state_index t ON t.run_id = r.id
+WHERE j.id = %s AND r.user_id = %s
+LIMIT 1
+""",
+            (job_id, user_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Create run not found")
+
+    input_payload = row["input_payload"] if isinstance(row["input_payload"], dict) else {}
+    files = input_payload.get("files") if isinstance(input_payload.get("files"), list) else []
+    run_id = str(row["run_id"])
+    project_id = str(row["project_id"])
+    task_state = TaskState(
+        run_id=run_id,
+        task_id=str(row["task_id"]),
+        project_id=project_id,
+        user_id=user_id,
+        user_request=row["prompt"],
+        status=row["task_status"] or "running",
+        resume_status=row["resume_status"] or "fresh",
+    )
+    run_log = RunLog(run_id)
+    run_log.step_no = int(row["max_step_no"] or 0)
+    context = CreateAgentRunContext(
+        project_id=project_id,
+        run_id=run_id,
+        task_id=str(row["task_id"]),
+        create_type=row["create_type"],
+        agent_mode=row["agent_mode"],
+        task_state=task_state,
+        task_store=TaskStateStore(),
+        run_log=run_log,
+        persistent_memory=PersistentMemory(),
+        long_term_memory=LongTermMemory(session_id, project_id),
+        short_term_memory=ShortTermMemory(run_id),
+        workspace=WorkspaceContext(
+            run_id=run_id,
+            project_id=project_id,
+            workspace_root=row["workspace_root"],
+            worktree_stub_path=row["worktree_stub_path"],
+            branch_name=row["branch_name"],
+            base_commit=row["base_commit"],
+            cleanup_policy=row["cleanup_policy"],
+            isolation_mode=row["isolation_mode"],
+            capability=row["capability"],
+            status=row["workspace_status"],
+        ),
+    )
+    return context, row["prompt"], files
+
+
 def finalize_agent_run(
     *,
     context: CreateAgentRunContext,

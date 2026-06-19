@@ -6,6 +6,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.agents.graphs.llm_adapter import OpenAIResponsesGraphAdapter, build_llm_call_metrics
 from app.services.llm_service import test_llm_config
 
 
@@ -82,6 +83,20 @@ def run() -> None:
     assert bad_base_url.ok is False
     assert bad_base_url.code == "connection_error"
 
+    def timeout_error(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    timeout = test_llm_config(
+        "https://api.example.test/v1",
+        "test-model",
+        "test-key",
+        timeout_seconds=33,
+        transport=httpx.MockTransport(timeout_error),
+    )
+    assert timeout.ok is False
+    assert timeout.code == "timeout"
+    assert timeout.details["timeoutSeconds"] == 33
+
     invalid_url = test_llm_config("not-a-url", "test-model", "test-key")
     assert invalid_url.ok is False
     assert invalid_url.code == "invalid_base_url"
@@ -94,6 +109,55 @@ def run() -> None:
     )
     assert malformed.ok is False
     assert malformed.code == "invalid_response"
+
+    metrics = build_llm_call_metrics(
+        {
+            "model": "test-model",
+            "input": [
+                {"role": "system", "content": [{"type": "input_text", "text": "You are pragmatic."}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "制作 game with coins"}]},
+            ],
+        },
+        response_text="Finished game",
+        response_raw={"usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}},
+    )
+    assert metrics["promptPrefix"].startswith("You are pragmatic.")
+    assert metrics["promptEnglishWords"] >= 5
+    assert metrics["promptChineseChars"] == 2
+    assert metrics["outputEnglishWords"] == 2
+    assert metrics["tokenUsage"]["outputTokens"] == 7
+
+    graph_adapter = OpenAIResponsesGraphAdapter(
+        base_url="https://api.example.test/v1",
+        api_key="test-key",
+        transport=_transport(
+            200,
+            {
+                "id": "resp-test",
+                "model": "test-model",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Finished"}],
+                    }
+                ],
+                "usage": {"output_tokens": 5, "total_tokens": 13},
+            },
+        ),
+    )
+    graph_result = graph_adapter.invoke(
+        {
+            "model": "test-model",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello 世界"}]}],
+            "reasoning": {"effort": "medium"},
+            "max_output_tokens": 16,
+        }
+    )
+    assert graph_result.text == "Finished"
+    assert graph_result.metrics["prefixEnglishWords"] == 1
+    assert graph_result.metrics["prefixChineseChars"] == 2
+    assert graph_result.metrics["tokenUsage"]["outputTokens"] == 5
 
 
 if __name__ == "__main__":

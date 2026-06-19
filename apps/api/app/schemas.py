@@ -79,6 +79,7 @@ class AIConfigState(BaseModel):
     baseUrl: str | None = None
     model: str | None = None
     provider: str | None = None
+    staticGeneration: bool = False
 
 
 class LLMTestResult(BaseModel):

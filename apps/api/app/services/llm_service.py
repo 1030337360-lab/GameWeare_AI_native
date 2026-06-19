@@ -137,7 +137,7 @@ def test_llm_config(
             ok=False,
             code="timeout",
             message="The LLM provider did not respond before the timeout.",
-            details={"endpoint": endpoint, "wireApi": OPENAI_WIRE_API},
+            details={"endpoint": endpoint, "wireApi": OPENAI_WIRE_API, "timeoutSeconds": timeout},
         )
     except httpx.ConnectError:
         return LLMTestResult(

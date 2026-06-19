@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+import asyncio
+import json
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 
 from app.schemas import (
     AIConfigRequest,
@@ -18,9 +22,12 @@ from app.agents.framework import (
     get_run,
     get_run_steps,
 )
+from app.agents.framework.events import run_event_channel, sanitize_step_event
+from app.services.auth_service import redis_client
 from app.services.auth_service import get_optional_user, require_user
 from app.services.create_service import (
-    create_generation_job,
+    create_generation_job_start,
+    execute_generation_job,
     get_ai_config_state,
     get_generation_job,
     get_recent_game,
@@ -84,9 +91,87 @@ def run_steps(run_id: str, user=Depends(require_user)) -> list[CreateRunStep]:
     return [CreateRunStep(**step) for step in steps]
 
 
-@router.post("/jobs", response_model=CreateJob)
-def create_job(payload: CreateJobRequest, request: Request, user=Depends(require_user)) -> CreateJob:
-    return create_generation_job(
+@router.get("/runs/{run_id}/events")
+def run_events(
+    run_id: str,
+    user=Depends(require_user),
+    after_step_no: int = Query(0, alias="afterStepNo"),
+) -> StreamingResponse:
+    run = get_run(user.id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    async def event_stream():
+        last_step_no = after_step_no
+        replay_steps = get_run_steps(user.id, run_id) or []
+        for step in replay_steps:
+            if step["stepNo"] <= last_step_no:
+                continue
+            event = sanitize_step_event(
+                {
+                    "runId": run_id,
+                    "stepNo": step["stepNo"],
+                    "stage": step["stage"],
+                    "status": step["status"],
+                    "inputSummary": step["inputSummary"],
+                    "outputSummary": step["outputSummary"],
+                    "metrics": step["metrics"],
+                    "createdAt": step["createdAt"],
+                }
+            )
+            last_step_no = step["stepNo"]
+            yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            if event["type"] in {"done", "error"}:
+                return
+
+        client = redis_client()
+        pubsub = client.pubsub()
+        pubsub.subscribe(run_event_channel(run_id))
+        try:
+            idle_ticks = 0
+            while True:
+                message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message and message.get("data"):
+                    event = json.loads(message["data"])
+                    step_no = int(event.get("stepNo") or 0)
+                    if step_no <= last_step_no:
+                        continue
+                    last_step_no = step_no
+                    yield f"event: {event.get('type', 'step')}\ndata: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    if event.get("type") in {"done", "error"}:
+                        return
+                    idle_ticks = 0
+                else:
+                    idle_ticks += 1
+                    if idle_ticks >= 15:
+                        heartbeat = {"type": "heartbeat", "runId": run_id}
+                        yield f"event: heartbeat\ndata: {json.dumps(heartbeat)}\n\n"
+                        idle_ticks = 0
+                    current_run = get_run(user.id, run_id)
+                    if current_run and current_run["status"] in {"completed", "failed", "canceled"}:
+                        event_type = "done" if current_run["status"] == "completed" else "error"
+                        final_event = {
+                            "type": event_type,
+                            "runId": run_id,
+                            "status": current_run["status"],
+                            "summary": current_run.get("summary", {}),
+                        }
+                        yield f"event: {event_type}\ndata: {json.dumps(final_event, ensure_ascii=False, default=str)}\n\n"
+                        return
+                    await asyncio.sleep(0.1)
+        finally:
+            pubsub.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/jobs", response_model=CreateJob, status_code=status.HTTP_202_ACCEPTED)
+def create_job(payload: CreateJobRequest, background_tasks: BackgroundTasks, request: Request, user=Depends(require_user)) -> CreateJob:
+    job = create_generation_job_start(
         user.id,
         payload.prompt,
         payload.files,
@@ -95,6 +180,8 @@ def create_job(payload: CreateJobRequest, request: Request, user=Depends(require
         payload.projectId,
         getattr(request.state, "jwt_jti", None),
     )
+    background_tasks.add_task(execute_generation_job, job.id, user.id, getattr(request.state, "jwt_jti", None))
+    return job
 
 
 @router.get("/jobs/{job_id}", response_model=CreateJob)

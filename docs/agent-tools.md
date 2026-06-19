@@ -70,7 +70,7 @@ These are the tool families the Yahaha Create agent is expected to use as the pr
 | --- | --- | --- | --- |
 | `workspace.*` | Partly implemented | Read/list/write project files under workspace isolation. Writes require git worktree isolation. | optional file write |
 | `command.*` | Planning interface implemented | Run tests, builds, linters, package commands, and local validation commands. | process execution |
-| `llm.*` | Partly implemented | Render prompts, test OpenAI-compatible Responses API settings, and later call generation models. | optional network request |
+| `llm.*` | Partly implemented | Render prompts, test OpenAI-compatible Responses API settings, and call generation models through the LangGraph adapter when enabled. | optional network request |
 | `memory.*` | Partly implemented | Summarize persistent MinIO memory, Redis long-term session memory, and Redis short-term run memory. | optional Redis/MinIO/SQL write |
 | `run_log.*` | Partly implemented | Record structured Create execution steps and reproducible run logs. | SQL/MinIO write |
 | `storage.*` | Planning interface implemented | Upload/download generated files and memory objects from MinIO. | MinIO read/write |
@@ -125,6 +125,60 @@ Another example for command planning:
 
 The output is a normalized dry-run command plan. It does not execute the command.
 
+## LangGraph Strategy Layer
+
+Create strategy selection is separate from tool execution. The backend builds `AgentRequestSettings`, chooses a strategy, then asks the strategy to render `system_prompt(settings)` and `user_prompt(settings)`.
+
+Current strategy modules:
+
+- `react`: single-agent ReAct loop with JSON tool calls.
+- `plan`: single-agent planning interface.
+- `refine`: single-agent continuation/optimization interface.
+- `centralized`: framework shape for a lead agent that plans, delegates, and merges.
+- `decentralized`: framework shape for peer agents that propose changes through shared state.
+
+All strategies expose `build_responses_payload(...)` and `run_langgraph(...)`. ReAct is the first strategy with a real loop:
+
+```text
+build payload
+LLM decision
+  -> {"type":"tool","tool":{"name":"...","args":{...}}}
+     run registered tool, append JSON result, continue
+  -> {"type":"final","output":{"Finished":true,...}}
+     stop
+stop after 4 iterations if Finished=true is never returned
+```
+
+The LLM adapter currently targets OpenAI-compatible Responses API providers:
+
+```text
+POST {baseUrl}/responses
+Authorization: Bearer {apiKey}
+```
+
+`apiKey` is used only in the HTTP header and is not put into prompts, run logs, TaskState checkpoints, or frontend responses.
+
+## LLM Call Metrics
+
+Every provider call is normalized into an `llm_call` event. The recorder writes the event to:
+
+- SQL `create_run_steps`
+- MinIO `agent-runs/{runId}/run-log.jsonl`
+- Redis short-term run memory
+- Redis long-term session history
+
+Recorded metrics include:
+
+- `promptPrefix`: first 600 characters of the rendered prompt input.
+- `promptEnglishWords` and `promptChineseChars`: full prompt language counts.
+- `prefixEnglishWords` and `prefixChineseChars`: prefix language counts.
+- `outputEnglishWords` and `outputChineseChars`: generated text counts.
+- `tokenUsage.outputTokens`: provider output token count when the Responses API result includes usage.
+
+These metrics are visible through `GET /create/runs/{run_id}/steps` and the web Create page's Run steps panel.
+
+The live Create page also receives these summaries through `GET /create/runs/{run_id}/events`. The event stream sends only summaries and metrics; full prompts, full model output, raw API keys, and authorization secrets are not emitted.
+
 ## Adding A Tool
 
 1. Add a handler that accepts `dict[str, Any]` and returns the standard result object.
@@ -154,6 +208,7 @@ That test loads the registry, checks every tool has schemas and examples, runs e
 
 - Tools should not receive raw secrets unless the tool specifically exists to perform a provider call.
 - Tools should return structured errors instead of plain strings when the failure is expected business behavior.
+- Tool-call errors must include the original tool request, involved file paths when present, and an error object in the standard JSON envelope.
 - File tools must use workspace boundary checks.
 - Write tools should require git worktree isolation before writing to the filesystem.
 - SQL, Redis, and MinIO tools should log their side effects to `run_log` when they are used inside a Create run.

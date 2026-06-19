@@ -12,6 +12,7 @@ from app.agents.framework.orchestrator import (
     get_projects,
     get_run,
     get_run_steps,
+    load_agent_run_context_for_job,
 )
 from app.agents.framework.run_log import RunLog
 from app.agents.framework.schema import ensure_agent_framework_schema
@@ -36,4 +37,5 @@ __all__ = [
     "get_projects",
     "get_run",
     "get_run_steps",
+    "load_agent_run_context_for_job",
 ]

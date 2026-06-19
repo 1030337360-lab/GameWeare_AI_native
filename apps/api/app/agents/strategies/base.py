@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from app.agents.graphs.llm_adapter import LLMGraphAdapter
+    from app.agents.graphs.recording import LLMCallRecorder
+    from app.agents.graphs.types import AgentGraphResult
+    from app.agents.tools import ToolRegistry
 
 DEFAULT_WORKSPACE_CAPABILITY = "read_write"
 DEFAULT_WORKSPACE_BOUNDARY = ".worktrees/create-main"
@@ -114,6 +120,17 @@ class AgentStrategy(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def run_langgraph(
+        self,
+        *,
+        settings: AgentRequestSettings,
+        model: str,
+        adapter: LLMGraphAdapter,
+        registry: ToolRegistry | None = None,
+        recorder: LLMCallRecorder | None = None,
+    ) -> AgentGraphResult:
+        ...
+
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
@@ -209,4 +226,23 @@ class BaseAgentStrategy:
             system_prompt=self.system_prompt(settings),
             user_prompt=self.user_prompt(settings),
             max_output_tokens=max_output_tokens,
+        )
+
+    def run_langgraph(
+        self,
+        *,
+        settings: AgentRequestSettings,
+        model: str,
+        adapter: LLMGraphAdapter,
+        registry: ToolRegistry | None = None,
+        recorder: LLMCallRecorder | None = None,
+    ) -> AgentGraphResult:
+        from app.agents.graphs.single_step_graph import run_single_step_graph
+
+        return run_single_step_graph(
+            strategy=self,
+            settings=settings,
+            model=model,
+            adapter=adapter,
+            recorder=recorder,
         )

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["CREATE_VALIDATE_LLM_CONFIG"] = "false"
+os.environ["CREATE_STATIC_GENERATION"] = "true"
 
 from app.main import app
 
@@ -19,7 +20,7 @@ def run() -> None:
 
     public_ai_config = client.get("/create/ai-config")
     assert public_ai_config.status_code == 200
-    assert public_ai_config.json() == {"authenticated": False, "configured": False, "baseUrl": None, "model": None, "provider": None}
+    assert public_ai_config.json() == {"authenticated": False, "configured": False, "baseUrl": None, "model": None, "provider": None, "staticGeneration": True}
 
     games = client.get("/games")
     assert games.status_code == 200
@@ -80,17 +81,21 @@ def run() -> None:
         json={"prompt": "collect bright stars with pointer controls", "files": [], "agentMode": "opt", "createType": "init"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert create_job.status_code == 200
+    assert create_job.status_code == 202
     create_payload = create_job.json()
-    assert create_payload["status"] == "completed"
-    assert create_payload["gameSlug"]
-    assert create_payload["playUrl"] == f"/play/{create_payload['gameSlug']}"
+    assert create_payload["status"] == "planning"
     assert create_payload["agentMode"] == "opt"
     assert create_payload["createType"] == "init"
     assert create_payload["projectId"]
     assert create_payload["runId"]
     assert create_payload["taskId"]
     assert create_payload["resumeStatus"] == "fresh"
+    completed_job = client.get(f"/create/jobs/{create_payload['id']}", headers={"Authorization": f"Bearer {token}"})
+    assert completed_job.status_code == 200
+    create_payload = completed_job.json()
+    assert create_payload["status"] == "completed"
+    assert create_payload["gameSlug"]
+    assert create_payload["playUrl"] == f"/play/{create_payload['gameSlug']}"
 
     projects = client.get("/create/projects", headers={"Authorization": f"Bearer {token}"})
     assert projects.status_code == 200
@@ -112,6 +117,10 @@ def run() -> None:
     assert "run_created" in step_stages
     assert "prompt_rendered" in step_stages
     assert "run_completed" in step_stages
+
+    event_stream = client.get(f"/create/runs/{create_payload['runId']}/events", headers={"Authorization": f"Bearer {token}"})
+    assert event_stream.status_code == 200
+    assert "event: done" in event_stream.text
 
     agent_state = client.get(f"/create/jobs/{create_payload['id']}/agent-state", headers={"Authorization": f"Bearer {token}"})
     assert agent_state.status_code == 200
@@ -136,8 +145,11 @@ def run() -> None:
         },
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert opt_job.status_code == 200
-    opt_payload = opt_job.json()
+    assert opt_job.status_code == 202
+    started_opt_payload = opt_job.json()
+    opt_job_final = client.get(f"/create/jobs/{started_opt_payload['id']}", headers={"Authorization": f"Bearer {token}"})
+    assert opt_job_final.status_code == 200
+    opt_payload = opt_job_final.json()
     assert opt_payload["projectId"] == create_payload["projectId"]
     assert opt_payload["runId"] != create_payload["runId"]
     assert opt_payload["createType"] == "opt"

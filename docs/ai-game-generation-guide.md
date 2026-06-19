@@ -287,7 +287,8 @@ Required behavior:
 ```text
 POST /create/jobs
   create generation_jobs row
-  run or enqueue Agent pipeline
+  run static generator or selected LangGraph Agent strategy
+  record project, run, TaskState, memory, and run_log indexes
 
 Agent Publisher
   upload index.html to MinIO
@@ -317,6 +318,13 @@ POST /events/play
   insert play_events row
   update games.plays_count on game_start
 ```
+
+Current local modes:
+
+- `CREATE_STATIC_GENERATION=false`: default OpenAI Responses-compatible LLM generation through the selected strategy. The final output is parsed into the same `index.html` / `manifest.json` / `source.json` contract and then published through MinIO plus PostgreSQL.
+- `CREATE_STATIC_GENERATION=true`: explicit deterministic backend-generated game package for local persistence testing.
+
+LLM prompts must never receive `api_key`, `projectId`, `runId`, or `taskId`. Those values are backend indexes or secrets. Run logs may record prompt prefixes, language counts, output counts, and provider token usage for debugging and cost tracking. Invalid LLM output should fail the run instead of publishing a fallback static game.
 
 The backend should return playable objects using database records, not guessed paths.
 

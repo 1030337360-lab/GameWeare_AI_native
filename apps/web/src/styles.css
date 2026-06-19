@@ -469,6 +469,14 @@ main {
   color: #ffd2d2;
 }
 
+.static-warning {
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.12);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  color: #ffe8a3;
+  padding: 14px;
+}
+
 .job-panel {
   display: grid;
   gap: 14px;
@@ -491,6 +499,13 @@ main {
   min-width: 0;
 }
 
+.result-actions {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px !important;
+}
+
 .result-panel strong {
   overflow-wrap: anywhere;
 }
@@ -510,6 +525,32 @@ main {
 .log-list p {
   margin: 4px 0 0;
   color: #d6deef;
+}
+
+.run-step-list {
+  display: grid;
+  gap: 8px;
+}
+
+.run-step-list div {
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(110, 231, 255, 0.08);
+  border: 1px solid rgba(110, 231, 255, 0.16);
+}
+
+.run-step-list span {
+  color: #b8eefe;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.run-step-list p,
+.run-step-list small {
+  display: block;
+  margin: 4px 0 0;
+  color: #d6deef;
+  overflow-wrap: anywhere;
 }
 
 .auth-layout {

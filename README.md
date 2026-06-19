@@ -6,10 +6,10 @@ This build follows the technical route in `Yahaha-MVP-技术路线报告.md`:
 
 - Frontend: React + Vite + TypeScript on port `1314`
 - Backend: Python + FastAPI on port `8080`
-- Local dependencies: PostgreSQL and MinIO via Docker Compose
+- Local dependencies: PostgreSQL, MinIO, and Redis via Docker Compose
 - Auth cache: Redis via Docker Compose
 - MinIO local storage path: `D:\yahaha`
-- Create generation: intentionally stubbed, with API routes preserved
+- Create generation: real LLM generation by default; static test generation is available only when `CREATE_STATIC_GENERATION=true`
 
 ## Requirements
 
@@ -59,6 +59,13 @@ Run backend smoke checks:
 
 ```powershell
 .venv\Scripts\python tests\test_smoke.py
+.venv\Scripts\python tests\test_create_llm_generation.py
+.venv\Scripts\python tests\test_langgraph_react.py
+.venv\Scripts\python tests\test_llm_service.py
+.venv\Scripts\python tests\test_prompt_templates.py
+.venv\Scripts\python tests\test_agent_tools.py
+.venv\Scripts\python tests\test_agent_strategies.py
+.venv\Scripts\python tests\test_workspace_isolation.py
 ```
 
 ## Start frontend
@@ -85,10 +92,36 @@ Open `http://localhost:1314`.
 - `POST /auth/logout`
 - `GET /auth/google/start`
 - `GET /auth/google/callback`
+- `GET /create/ai-config`
+- `PUT /create/ai-config`
+- `POST /create/ai-config/test`
+- `GET /create/recent-game`
+- `GET /create/projects`
+- `GET /create/projects/{project_id}`
+- `GET /create/runs/{run_id}`
+- `GET /create/runs/{run_id}/steps`
+- `GET /create/runs/{run_id}/events`
 - `POST /create/jobs`
 - `GET /create/jobs/{job_id}`
 - `POST /create/jobs/{job_id}/publish`
+- `GET /create/jobs/{job_id}/agent-state`
 - `POST /uploads`
+
+## Create and LLM generation
+
+Create jobs require login and a saved AI configuration. The AI config contains `baseUrl`, `model`, `provider`, and an encrypted `apiKey`; API responses and logs never return the key.
+
+By default, `.env.example` sets `CREATE_STATIC_GENERATION=false`. Create jobs run the selected LangGraph strategy through the OpenAI-compatible Responses adapter. Static generation is still available for local testing when `CREATE_STATIC_GENERATION=true`; in that mode the Create page shows a warning so it is not confused with real LLM generation.
+
+`POST /create/jobs` now returns `202 Accepted` after creating the job/run/task records. Generation continues in a FastAPI background task. The web app opens `GET /create/runs/{run_id}/events` with a fetch stream and receives replayed plus live SSE events for `step`, `llm_call`, `tool_call`, `done`, `error`, and `heartbeat`.
+
+The first experimental LLM path is ReAct: it can call registered JSON tools, stops only when the LLM returns `Finished=true`, and caps execution at 4 iterations. Parsed LLM output is normalized into the same artifact pipeline used by static generation, so publishing still goes through PostgreSQL plus MinIO. If real LLM output does not include the required game package contract, the run fails instead of silently publishing a fallback static game.
+
+LLM requests use `LLM_REQUEST_TIMEOUT_SECONDS`, defaulting to `120` seconds. Keep this above typical model latency when using a local or proxy Responses API provider; a timeout only means the provider did not answer before this backend deadline.
+
+The current strategy modules are `react`, `plan`, `refine`, `centralized`, and `decentralized`. Full multi-agent scheduling is still framework-only; real production planner/asset/code/build/safety/publisher coordination is a later phase.
+
+Each LLM call records a `llm_call` run step with prompt prefix counts, English word counts, Chinese character counts, output counts, and provider token usage when the response includes it. The recorder writes summaries into SQL run steps, full JSONL run logs in MinIO, Redis short-term memory, and Redis long-term session history.
 
 ## Game artifact contract
 
@@ -96,4 +129,4 @@ AI-generated games should follow `docs/ai-game-generation-guide.md`. The target 
 
 ## Current scope
 
-The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events, and MinIO-backed uploads. The full multi-agent generation worker is still intentionally left for the next implementation phase, but Create jobs are now persisted in PostgreSQL.
+The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events, MinIO-backed uploads, Create project/run tracking, an experimental LangGraph LLM generation path, and live Create progress streaming. The full multi-agent worker, stronger safety scanning, and retry/recovery policy are still intentionally left for the next implementation phase.

@@ -12,9 +12,23 @@ from minio import Minio
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from app.agents.create import run_create_pipeline
-from app.agents.framework import create_agent_run_context, finalize_agent_run
+from app.agents.create import (
+    COVER_AGENT_NAME,
+    COVER_AGENT_VERSION,
+    COVER_HEIGHT,
+    COVER_WIDTH,
+    AgentArtifact,
+    CoverAgentArtifact,
+    build_cover_responses_payload,
+    build_pipeline_from_main_agent_output,
+    parse_cover_agent_output,
+    parse_main_agent_json_output,
+    run_create_pipeline,
+)
+from app.agents.framework import create_agent_run_context, finalize_agent_run, load_agent_run_context_for_job
 from app.agents.framework.schema import ensure_agent_framework_schema
+from app.agents.graphs.llm_adapter import OpenAIResponsesGraphAdapter
+from app.agents.graphs.recording import LLMCallRecorder
 from app.agents.prompts import (
     CREATE_GAME_TEMPLATE_NAME,
     CREATE_GAME_TEMPLATE_VERSION,
@@ -124,7 +138,7 @@ def _cache_ai_config(user_id: str, jwt_jti: str | None, payload: dict[str, str])
 
 def get_ai_config_state(user: UserProfile | None, jwt_jti: str | None = None) -> AIConfigState:
     if not user:
-        return AIConfigState(authenticated=False, configured=False)
+        return AIConfigState(authenticated=False, configured=False, staticGeneration=get_settings().create_static_generation)
     ensure_create_runtime_schema()
 
     cached = redis_client().get(_ai_config_cache_key(user.id, jwt_jti))
@@ -137,13 +151,14 @@ def get_ai_config_state(user: UserProfile | None, jwt_jti: str | None = None) ->
                 baseUrl=payload.get("baseUrl"),
                 model=payload.get("model"),
                 provider=payload.get("provider"),
+                staticGeneration=get_settings().create_static_generation,
             )
         except json.JSONDecodeError:
             pass
 
     config = _load_ai_config(user.id)
     if not config:
-        return AIConfigState(authenticated=True, configured=False)
+        return AIConfigState(authenticated=True, configured=False, staticGeneration=get_settings().create_static_generation)
     _cache_ai_config(user.id, jwt_jti, config)
     return AIConfigState(
         authenticated=True,
@@ -151,6 +166,7 @@ def get_ai_config_state(user: UserProfile | None, jwt_jti: str | None = None) ->
         baseUrl=config["baseUrl"],
         model=config["model"],
         provider=config["provider"],
+        staticGeneration=get_settings().create_static_generation,
     )
 
 
@@ -182,7 +198,7 @@ ON CONFLICT (user_id) DO UPDATE SET
         jwt_jti,
         {"baseUrl": base_url, "model": model, "provider": provider, "apiKey": api_key},
     )
-    return AIConfigState(authenticated=True, configured=True, baseUrl=base_url, model=model, provider=provider)
+    return AIConfigState(authenticated=True, configured=True, baseUrl=base_url, model=model, provider=provider, staticGeneration=get_settings().create_static_generation)
 
 
 def test_ai_config_payload(payload: AIConfigRequest) -> LLMTestResult:
@@ -248,6 +264,13 @@ def _minio_client() -> Minio:
     )
 
 
+def _make_graph_adapter(ai_config: dict[str, str]) -> OpenAIResponsesGraphAdapter:
+    return OpenAIResponsesGraphAdapter(
+        base_url=ai_config["baseUrl"],
+        api_key=ai_config["apiKey"],
+    )
+
+
 def _put_object(object_key: str, content: bytes, content_type: str) -> str:
     settings = get_settings()
     client = _minio_client()
@@ -282,11 +305,908 @@ RETURNING stage, status, input_summary, output_summary
     ).fetchone()
 
 
+def _main_agent_output_value(graph_result: Any) -> str | dict[str, Any]:
+    def unwrap(value: str | dict[str, Any]) -> str | dict[str, Any]:
+        parsed = value
+        if isinstance(value, str):
+            try:
+                loaded = json.loads(value)
+                parsed = loaded if isinstance(loaded, dict) else value
+            except json.JSONDecodeError:
+                return value
+        if isinstance(parsed, dict) and parsed.get("type") == "final" and isinstance(parsed.get("output"), dict):
+            return parsed["output"]
+        return parsed
+
+    final_output = graph_result.final_output
+    if isinstance(final_output, dict):
+        text = final_output.get("text")
+        if isinstance(text, str) and text.strip():
+            return unwrap(text)
+        output = final_output.get("output")
+        if isinstance(output, dict):
+            return unwrap(output)
+        return unwrap(final_output)
+    last_message = graph_result.messages[-1] if graph_result.messages else {}
+    text = last_message.get("text") if isinstance(last_message, dict) else None
+    return unwrap(text) if isinstance(text, str) else ""
+
+
+def _cover_prompt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    rendered = json.dumps(payload, ensure_ascii=False, default=str)
+    return {
+        "agent": COVER_AGENT_NAME,
+        "version": COVER_AGENT_VERSION,
+        "targetWidth": COVER_WIDTH,
+        "targetHeight": COVER_HEIGHT,
+        "renderedCharacters": len(rendered),
+        "injectedFields": [
+            "createRequest",
+            "gameTitle",
+            "gameDescription",
+            "implementationSummary",
+            "styleTags",
+            "coverSpec",
+        ],
+    }
+
+
+def _safe_cover_llm_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    token_usage = metrics.get("tokenUsage") if isinstance(metrics.get("tokenUsage"), dict) else {}
+    return {
+        "agent": COVER_AGENT_NAME,
+        "version": COVER_AGENT_VERSION,
+        "promptEnglishWords": metrics.get("promptEnglishWords"),
+        "promptChineseChars": metrics.get("promptChineseChars"),
+        "prefixEnglishWords": metrics.get("prefixEnglishWords"),
+        "prefixChineseChars": metrics.get("prefixChineseChars"),
+        "outputEnglishWords": metrics.get("outputEnglishWords"),
+        "outputChineseChars": metrics.get("outputChineseChars"),
+        "outputTokens": token_usage.get("outputTokens"),
+        "tokenUsage": token_usage,
+    }
+
+
+def _cover_extension_for_content_type(content_type: str) -> str:
+    normalized = content_type.split(";", 1)[0].strip().lower()
+    return {
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/jpeg": "jpg",
+        "image/svg+xml": "svg",
+    }.get(normalized, "png")
+
+
+def _cover_filename(artifact: AgentArtifact) -> str:
+    return f"cover.{_cover_extension_for_content_type(artifact.content_type)}"
+
+
+def _source_with_cover_metadata(
+    *,
+    artifact: AgentArtifact,
+    filenames: list[str],
+    cover_artifact: CoverAgentArtifact | None,
+    use_static_generation: bool,
+) -> AgentArtifact:
+    try:
+        source_document = json.loads(artifact.content.decode("utf-8"))
+        if not isinstance(source_document, dict):
+            source_document = {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        source_document = {"rawSource": artifact.content.decode("utf-8", errors="replace")[:4000]}
+    source_document["files"] = ["manifest.json", *filenames]
+    if cover_artifact:
+        source_document["coverAgent"] = {
+            "agent": COVER_AGENT_NAME,
+            "version": COVER_AGENT_VERSION,
+            "required": True,
+            "contentType": cover_artifact.content_type,
+            "width": cover_artifact.width,
+            "height": cover_artifact.height,
+            "sizeBytes": cover_artifact.size_bytes,
+            "rawKind": cover_artifact.raw_kind,
+        }
+    else:
+        source_document["coverAgent"] = {
+            "agent": "static-test-cover",
+            "required": False,
+            "staticGeneration": use_static_generation,
+        }
+    return AgentArtifact(
+        artifact.filename,
+        json.dumps(source_document, ensure_ascii=False, indent=2).encode("utf-8"),
+        artifact.content_type,
+        artifact.kind,
+        artifact.purpose,
+    )
+
+
+def _publish_artifacts(
+    *,
+    pipeline: Any,
+    cover_artifact: CoverAgentArtifact | None,
+    use_static_generation: bool,
+) -> list[AgentArtifact]:
+    artifacts: list[AgentArtifact] = []
+    for artifact in pipeline.artifacts:
+        if cover_artifact and artifact.kind == "cover":
+            continue
+        artifacts.append(artifact)
+    if cover_artifact:
+        artifacts.append(
+            AgentArtifact(
+                _cover_filename(cover_artifact.artifact),
+                cover_artifact.artifact.content,
+                cover_artifact.artifact.content_type,
+                "cover",
+                "preview",
+            )
+        )
+    if not use_static_generation and not any(artifact.kind == "cover" for artifact in artifacts):
+        raise RuntimeError("Cover Agent did not produce the required cover asset.")
+
+    filenames = [artifact.filename for artifact in artifacts]
+    return [
+        _source_with_cover_metadata(
+            artifact=artifact,
+            filenames=filenames,
+            cover_artifact=cover_artifact,
+            use_static_generation=use_static_generation,
+        )
+        if artifact.kind == "source" or artifact.filename == "source.json"
+        else artifact
+        for artifact in artifacts
+    ]
+
+
+def _generate_required_cover_artifact(
+    *,
+    ai_config: dict[str, str],
+    context: Any,
+    cleaned_prompt: str,
+    pipeline: Any,
+    parsed_output: dict[str, Any],
+) -> CoverAgentArtifact:
+    cover = parsed_output.get("cover") if isinstance(parsed_output.get("cover"), dict) else {}
+    tags = cover.get("tags") if isinstance(cover.get("tags"), list) else []
+    prompt_payload = build_cover_responses_payload(
+        model=ai_config["model"],
+        user_request=cleaned_prompt,
+        game_title=pipeline.title,
+        game_description=pipeline.description,
+        implementation_summary=str(parsed_output.get("implementationSummary") or ""),
+        style_tags=[str(tag) for tag in tags if isinstance(tag, str)],
+    )
+    prompt_metadata = _cover_prompt_metadata(prompt_payload)
+    context.run_log.append(
+        stage="cover_prompt_rendered",
+        status="succeeded",
+        input_summary="Cover Agent prompt rendered.",
+        output_summary=f"{COVER_AGENT_NAME}@{COVER_AGENT_VERSION} is ready.",
+        metrics=prompt_metadata,
+    )
+    context.task_store.checkpoint(
+        context.task_state,
+        "cover_prompt_rendered",
+        {"coverPrompt": prompt_metadata},
+        context.run_log.object_key,
+    )
+    context.run_log.append(
+        stage="cover_generation_started",
+        status="running",
+        input_summary="Cover Agent is calling the configured LLM provider.",
+        output_summary="Waiting for one durable catalog cover image.",
+        metrics={
+            "agent": COVER_AGENT_NAME,
+            "model": ai_config["model"],
+            "targetWidth": COVER_WIDTH,
+            "targetHeight": COVER_HEIGHT,
+        },
+    )
+    result = _make_graph_adapter(ai_config).invoke(prompt_payload)
+    context.short_term_memory.record_llm_call(
+        {
+            "kind": "cover_llm_call",
+            "agent": COVER_AGENT_NAME,
+            "metrics": _safe_cover_llm_metrics(result.metrics),
+            "recordedAt": None,
+        }
+    )
+    context.long_term_memory.append_history(
+        "llm",
+        "Cover Agent returned a cover candidate.",
+        metadata={"kind": "cover_llm_call", "metrics": _safe_cover_llm_metrics(result.metrics)},
+    )
+    context.run_log.append(
+        stage="cover_llm_call",
+        status="failed" if isinstance(result.raw, dict) and result.raw.get("ok") is False else "succeeded",
+        input_summary=str(result.metrics.get("promptPrefix") or "")[:500],
+        output_summary="Cover model response received." if result.text or result.raw else "Cover model returned an empty response.",
+        metrics=_safe_cover_llm_metrics(result.metrics),
+    )
+    if isinstance(result.raw, dict) and result.raw.get("ok") is False:
+        raise RuntimeError("Cover Agent provider call failed.")
+    cover_artifact = parse_cover_agent_output(result)
+    context.run_log.append(
+        stage="cover_generated",
+        status="succeeded",
+        input_summary="Cover Agent output parsed.",
+        output_summary=cover_artifact.summary,
+        metrics={
+            "agent": COVER_AGENT_NAME,
+            "contentType": cover_artifact.content_type,
+            "sizeBytes": cover_artifact.size_bytes,
+            "width": cover_artifact.width,
+            "height": cover_artifact.height,
+            "rawKind": cover_artifact.raw_kind,
+        },
+    )
+    return cover_artifact
+
+
 def _cache_recent_game(user_id: str, payload: RecentGame) -> None:
     redis_client().setex(
         _recent_game_cache_key(user_id),
         get_settings().create_recent_game_ttl_seconds,
         payload.model_dump_json(),
+    )
+
+
+def _fail_generation_job(
+    *,
+    context: Any | None,
+    job_id: str,
+    code: str,
+    message: str,
+    stage: str,
+    metrics: dict[str, Any] | None = None,
+) -> None:
+    if context:
+        context.run_log.append(
+            stage=stage,
+            status="failed",
+            input_summary="Create generation failed.",
+            output_summary=message[:500],
+            metrics={"code": code, **(metrics or {})},
+        )
+        context.run_log.append(
+            stage="job_failed",
+            status="failed",
+            input_summary="Create job failed.",
+            output_summary=message[:500],
+            metrics={"code": code, "stage": stage},
+        )
+        finalize_agent_run(
+            context=context,
+            status_value="failed",
+            job_id=job_id,
+            summary={"code": code, "message": message, "stage": stage},
+            final_answer=message,
+        )
+    with db_connection() as connection:
+        connection.execute(
+            """
+UPDATE generation_jobs
+SET status = 'failed', current_stage = %s, error_code = %s, error_message = %s, completed_at = now()
+WHERE id = %s
+""",
+            (stage, code, message[:1000], job_id),
+        )
+
+
+def _insert_pending_generation_job(
+    *,
+    creator_id: str,
+    prompt: str,
+    files: list[str],
+    agent_mode: str,
+    context: Any,
+    ai_config: dict[str, str],
+) -> CreateJob:
+    with db_connection() as connection:
+        row = connection.execute(
+            """
+INSERT INTO generation_jobs (creator_id, prompt, input_payload, status, current_stage, started_at)
+VALUES (%s, %s, %s, 'planning', 'run_created', now())
+RETURNING id, status, prompt, input_payload, created_at, game_id
+""",
+            (
+                creator_id,
+                prompt,
+                Jsonb(
+                    {
+                        "files": files,
+                        "agentMode": agent_mode,
+                        "createType": context.create_type,
+                        "projectId": context.project_id,
+                        "runId": context.run_id,
+                        "taskId": context.task_id,
+                        "resumeStatus": context.task_state.resume_status,
+                        "aiConfig": {"model": ai_config["model"], "provider": ai_config["provider"]},
+                    }
+                ),
+            ),
+        ).fetchone()
+        connection.execute("UPDATE create_runs SET job_id = %s WHERE id = %s", (row["id"], context.run_id))
+    context.run_log.append(
+        stage="job_created",
+        status="succeeded",
+        input_summary="Create job row created for background generation.",
+        output_summary="The browser can now subscribe to run events.",
+        metrics={"jobId": str(row["id"]), "staticGeneration": get_settings().create_static_generation},
+    )
+    return _job_from_row(row, [])
+
+
+def create_generation_job_start(
+    creator_id: str,
+    prompt: str,
+    files: list[str],
+    agent_mode: str = "chat",
+    create_type: str = "init",
+    project_id: str | None = None,
+    jwt_jti: str | None = None,
+) -> CreateJob:
+    ensure_create_runtime_schema()
+    ai_config = _load_ai_config(creator_id, jwt_jti)
+    if not ai_config:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "AI_CONFIG_REQUIRED",
+                "message": "AI configuration is required before creating.",
+            },
+        )
+    if get_settings().create_validate_llm_config:
+        llm_result = test_llm_config(
+            base_url=ai_config["baseUrl"],
+            model=ai_config["model"],
+            api_key=ai_config["apiKey"],
+        )
+        if not llm_result.ok:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "LLM_CONFIG_INVALID",
+                    "message": llm_result.message,
+                    "llm": llm_result.model_dump(),
+                },
+            )
+    cleaned_prompt = prompt.strip() or "Create a fast arcade collection game with pointer controls."
+    context = create_agent_run_context(
+        user_id=creator_id,
+        prompt=cleaned_prompt,
+        files=files,
+        agent_mode=agent_mode,
+        create_type=create_type,
+        project_id=project_id,
+        session_id=jwt_jti or "anonymous",
+    )
+    context.run_log.append(
+        stage="ai_config_validated",
+        status="succeeded",
+        input_summary="AI configuration is available for this user.",
+        output_summary=(
+            "Static test generation is explicitly enabled."
+            if get_settings().create_static_generation
+            else "Real LLM generation will run in the background."
+        ),
+        metrics={"provider": ai_config["provider"], "model": ai_config["model"], "staticGeneration": get_settings().create_static_generation},
+    )
+    context.task_store.checkpoint(
+        context.task_state,
+        "ai_config_validated",
+        {"provider": ai_config["provider"], "model": ai_config["model"]},
+        context.run_log.object_key,
+    )
+    return _insert_pending_generation_job(
+        creator_id=creator_id,
+        prompt=cleaned_prompt,
+        files=files,
+        agent_mode=agent_mode,
+        context=context,
+        ai_config=ai_config,
+    )
+
+
+def _update_job_stage(job_id: str, status_value: str, stage: str) -> None:
+    with db_connection() as connection:
+        connection.execute(
+            "UPDATE generation_jobs SET status = %s, current_stage = %s WHERE id = %s",
+            (status_value, stage, job_id),
+        )
+
+
+def execute_generation_job(job_id: str, creator_id: str, jwt_jti: str | None = None) -> None:
+    context = None
+    try:
+        ensure_create_runtime_schema()
+        ai_config = _load_ai_config(creator_id, jwt_jti)
+        if not ai_config:
+            raise RuntimeError("AI configuration is no longer available for this job.")
+        context, cleaned_prompt, files = load_agent_run_context_for_job(
+            user_id=creator_id,
+            job_id=job_id,
+            session_id=jwt_jti or "anonymous",
+        )
+        _execute_generation_job_loaded(
+            job_id=job_id,
+            creator_id=creator_id,
+            cleaned_prompt=cleaned_prompt,
+            files=files,
+            ai_config=ai_config,
+            context=context,
+        )
+    except Exception as exc:
+        _fail_generation_job(
+            context=context,
+            job_id=job_id,
+            code=exc.__class__.__name__,
+            message=str(exc) or "Create generation failed.",
+            stage="run_failed",
+        )
+
+
+def _execute_generation_job_loaded(
+    *,
+    job_id: str,
+    creator_id: str,
+    cleaned_prompt: str,
+    files: list[str],
+    ai_config: dict[str, str],
+    context: Any,
+) -> None:
+    _update_job_stage(job_id, "planning", "prompt_render")
+    tool_metadata = list_builtin_tool_metadata()
+    prompt_settings = AgentRequestSettings.from_create_context(
+        user_request=cleaned_prompt,
+        create_type=context.create_type,
+        agent_mode=context.agent_mode,
+        recent_8_history=context.long_term_memory.snapshot().get("history", []),
+        workspace_capability=context.workspace.capability,
+        workspace_boundary=context.workspace.worktree_stub_path,
+        persistent_memory_summary=context.persistent_memory.list(
+            user_id=creator_id,
+            project_id=context.project_id,
+        ),
+        tool_metadata=tool_metadata,
+    )
+    prompt_tool_result = build_builtin_tool_registry().call(
+        "llm.prompt_render",
+        {
+            "userRequest": prompt_settings.user_request,
+            "createType": prompt_settings.create_type,
+            "agentMode": prompt_settings.agent_mode,
+            "recent8History": prompt_settings.recent_8_history,
+            "workspaceCapability": prompt_settings.workspace_capability,
+            "workspaceBoundary": prompt_settings.workspace_boundary,
+            "persistentMemorySummary": prompt_settings.persistent_memory_summary,
+            "toolMetadata": tool_metadata,
+            "model": ai_config["model"],
+        },
+    )
+    context.short_term_memory.record_tool_call(
+        {"tool": "llm.prompt_render", "status": "succeeded" if prompt_tool_result["ok"] else "failed", "dryRun": True}
+    )
+    if not prompt_tool_result["ok"] or "payload" not in prompt_tool_result.get("data", {}):
+        raise RuntimeError("Create prompt rendering failed.")
+
+    prompt_payload = prompt_tool_result["data"]["payload"]
+    prompt_template = template_metadata(prompt_payload)
+    strategy = select_agent_strategy(prompt_settings)
+    strategy_metadata = strategy.plan(prompt_settings).to_metadata()
+    context.run_log.append(
+        stage="agent_strategy_selected",
+        status="succeeded",
+        input_summary="Backend selected the agent strategy from createType and agentMode.",
+        output_summary=f"{strategy_metadata['strategy']} strategy framework selected.",
+        metrics=strategy_metadata,
+    )
+    context.run_log.append(
+        stage="prompt_rendered",
+        status="succeeded",
+        input_summary="Create game prompt template rendered.",
+        output_summary=f"{CREATE_GAME_TEMPLATE_NAME}@{CREATE_GAME_TEMPLATE_VERSION} is ready.",
+        metrics={**prompt_template, "strategy": strategy_metadata, "renderedCharacters": len(json.dumps(prompt_payload, ensure_ascii=False))},
+    )
+    context.task_store.checkpoint(
+        context.task_state,
+        "prompt_rendered",
+        {"promptTemplate": prompt_template, "agentStrategy": strategy_metadata, "responsesPayload": prompt_payload},
+        context.run_log.object_key,
+    )
+
+    game_id = str(uuid4())
+    version_id = str(uuid4())
+    use_static_generation = get_settings().create_static_generation
+    cover_artifact: CoverAgentArtifact | None = None
+    _update_job_stage(job_id, "generating", "static_generation" if use_static_generation else "llm_generation")
+    context.run_log.append(
+        stage="static_generation_started" if use_static_generation else "llm_generation_started",
+        status="running",
+        input_summary=("Static generation pipeline is starting." if use_static_generation else "LangGraph LLM generation is starting."),
+        output_summary="Game and version identifiers allocated.",
+        metrics={"gameId": game_id, "versionId": version_id, "staticGeneration": use_static_generation},
+    )
+    if use_static_generation:
+        draft_pipeline = run_create_pipeline(
+            prompt=cleaned_prompt,
+            agent_mode=context.agent_mode,
+            game_slug="pending",
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+        )
+        game_slug = f"{_slugify(draft_pipeline.title)}-{game_id[:8]}"
+        pipeline = run_create_pipeline(
+            prompt=cleaned_prompt,
+            agent_mode=context.agent_mode,
+            game_slug=game_slug,
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+        )
+        llm_metrics: dict[str, Any] = {}
+        cover_artifact = None
+    else:
+        recorder = LLMCallRecorder(
+            long_term_memory=context.long_term_memory,
+            short_term_memory=context.short_term_memory,
+            run_log=context.run_log,
+        )
+        graph_result = strategy.run_langgraph(
+            settings=prompt_settings,
+            model=ai_config["model"],
+            adapter=_make_graph_adapter(ai_config),
+            registry=build_builtin_tool_registry(),
+            recorder=recorder,
+        )
+        if graph_result.messages:
+            last_raw = graph_result.messages[-1].get("raw")
+            if isinstance(last_raw, dict) and last_raw.get("ok") is False:
+                raise RuntimeError("The LLM provider call failed during generation.")
+        last_message = graph_result.messages[-1] if graph_result.messages else {}
+        llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
+        parsed_output = parse_main_agent_json_output(_main_agent_output_value(graph_result))
+        if parsed_output.get("fallback"):
+            reason = str(parsed_output.get("fallbackReason") or "invalid_llm_output")
+            raise RuntimeError(f"LLM output did not match the required game package contract: {reason}")
+        draft_pipeline = build_pipeline_from_main_agent_output(
+            prompt=cleaned_prompt,
+            agent_mode=context.agent_mode,
+            game_slug="pending",
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            parsed_output=parsed_output,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+            llm_metrics=llm_metrics,
+        )
+        game_slug = f"{_slugify(draft_pipeline.title)}-{game_id[:8]}"
+        pipeline = build_pipeline_from_main_agent_output(
+            prompt=cleaned_prompt,
+            agent_mode=context.agent_mode,
+            game_slug=game_slug,
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            parsed_output=parsed_output,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+            llm_metrics=llm_metrics,
+        )
+        cover_artifact = _generate_required_cover_artifact(
+            ai_config=ai_config,
+            context=context,
+            cleaned_prompt=cleaned_prompt,
+            pipeline=pipeline,
+            parsed_output=parsed_output,
+        )
+
+    _publish_pipeline_for_existing_job(
+        job_id=job_id,
+        creator_id=creator_id,
+        context=context,
+        pipeline=pipeline,
+        game_id=game_id,
+        version_id=version_id,
+        game_slug=game_slug,
+        prompt_template=prompt_template,
+        strategy_metadata=strategy_metadata,
+        llm_metrics=llm_metrics,
+        use_static_generation=use_static_generation,
+        cover_artifact=cover_artifact,
+    )
+
+
+def _publish_pipeline_for_existing_job(
+    *,
+    job_id: str,
+    creator_id: str,
+    context: Any,
+    pipeline: Any,
+    game_id: str,
+    version_id: str,
+    game_slug: str,
+    prompt_template: dict[str, Any],
+    strategy_metadata: dict[str, Any],
+    llm_metrics: dict[str, Any],
+    use_static_generation: bool,
+    cover_artifact: CoverAgentArtifact | None = None,
+) -> None:
+    agent_mode = pipeline.source["agentMode"]
+    publish_artifacts = _publish_artifacts(
+        pipeline=pipeline,
+        cover_artifact=cover_artifact,
+        use_static_generation=use_static_generation,
+    )
+    context.agent_mode = agent_mode
+    context.short_term_memory.record_tool_call({"tool": "run_create_pipeline", "status": "succeeded", "agentMode": agent_mode})
+    context.run_log.append(
+        stage="static_generation_completed" if use_static_generation else "llm_generation_completed",
+        status="succeeded",
+        input_summary="Static pipeline returned generated artifacts." if use_static_generation else "LangGraph strategy returned generated artifacts.",
+        output_summary=f"{len(publish_artifacts)} artifacts are ready for object storage.",
+        metrics={
+            "artifactCount": len(publish_artifacts),
+            "runtime": pipeline.runtime,
+            "staticGeneration": use_static_generation,
+            "llmMetrics": llm_metrics,
+            "coverAgent": bool(cover_artifact),
+        },
+    )
+    context.task_store.checkpoint(
+        context.task_state,
+        "static_generation_completed" if use_static_generation else "llm_generation_completed",
+        {
+            "artifactCount": len(publish_artifacts),
+            "runtime": pipeline.runtime,
+            "staticGeneration": use_static_generation,
+            "llmMetrics": llm_metrics,
+            "coverAgent": bool(cover_artifact),
+        },
+        context.run_log.object_key,
+    )
+
+    _update_job_stage(job_id, "uploading", "object_storage")
+    storage_prefix = f"games/{game_id}/versions/1"
+    api_base = f"http://localhost:{get_settings().api_port}"
+    document_url = f"{api_base}/play/{game_slug}/document"
+    manifest = {
+        "id": game_slug,
+        "gameId": game_id,
+        "versionId": version_id,
+        "version": "1",
+        "runtime": pipeline.runtime,
+        "entry": pipeline.entry_file,
+        "documentUrl": document_url,
+        "bundleUrl": document_url,
+        "sandbox": ["allow-scripts"],
+        "input": ["pointer", "mouse", "keyboard", "touch"],
+        "communication": "postMessage",
+        "agentMode": agent_mode,
+        "assets": [],
+        "limits": {"maxInitialBytes": 10485760, "maxTotalBytes": 20971520},
+    }
+    manifest_key = f"{storage_prefix}/manifest.json"
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+    manifest_public_url = _put_object(manifest_key, manifest_bytes, "application/json")
+    uploaded_artifacts = []
+    for artifact in publish_artifacts:
+        object_key = f"{storage_prefix}/{artifact.filename}"
+        stored_url = _put_object(object_key, artifact.content, artifact.content_type)
+        public_url = document_url if artifact.filename == pipeline.entry_file else stored_url
+        uploaded_artifacts.append((artifact, object_key, public_url))
+        if artifact.kind == "cover":
+            context.run_log.append(
+                stage="cover_uploaded",
+                status="succeeded",
+                input_summary="Cover asset uploaded to MinIO.",
+                output_summary="Cover is ready for dynamic catalog responses.",
+                metrics={
+                    "objectKey": object_key,
+                    "contentType": artifact.content_type.split(";", 1)[0],
+                    "sizeBytes": len(artifact.content),
+                    "width": COVER_WIDTH,
+                    "height": COVER_HEIGHT,
+                },
+            )
+    context.short_term_memory.record_file_edit(
+        {"operation": "upload_artifacts", "storagePrefix": storage_prefix, "artifactCount": len(uploaded_artifacts) + 1}
+    )
+    context.run_log.append(
+        stage="objects_uploaded",
+        status="succeeded",
+        input_summary="Generated objects uploaded to MinIO.",
+        output_summary="Manifest and playable artifacts have object keys.",
+        metrics={"storagePrefix": storage_prefix, "manifestObjectKey": manifest_key, "artifactCount": len(uploaded_artifacts)},
+    )
+
+    _update_job_stage(job_id, "building", "sql_persist")
+    with db_connection() as connection:
+        [
+            _insert_agent_log(connection, job_id, run.stage, run.status, run.input_summary, run.output_summary, run.log)
+            for run in pipeline.runs
+        ]
+        game = connection.execute(
+            """
+INSERT INTO games (
+  id, slug, author_id, title, description, visibility, publish_status, metadata, published_at
+)
+VALUES (%s, %s, %s, %s, %s, 'public', 'published', %s, now())
+RETURNING id, slug, title
+""",
+            (
+                game_id,
+                game_slug,
+                creator_id,
+                pipeline.title,
+                pipeline.description,
+                Jsonb({"section": "Recently Created", "createdBy": "static-create" if use_static_generation else "llm-create", "agentMode": agent_mode}),
+            ),
+        ).fetchone()
+        version = connection.execute(
+            """
+INSERT INTO game_versions (
+  id, game_id, version_no, source_job_id, runtime, entry_file, build_status, safety_status, storage_prefix, metadata
+)
+VALUES (%s, %s, 1, %s, %s, %s, 'succeeded', 'passed', %s, %s)
+RETURNING id
+""",
+            (
+                version_id,
+                game_id,
+                job_id,
+                pipeline.runtime,
+                pipeline.entry_file,
+                storage_prefix,
+                Jsonb({"stubbed": use_static_generation, "agentMode": agent_mode, "llmMetrics": llm_metrics}),
+            ),
+        ).fetchone()
+        manifest_asset = connection.execute(
+            """
+INSERT INTO assets (
+  owner_id, game_id, version_id, job_id, kind, bucket, object_key, public_url, content_type, size_bytes, sha256
+)
+VALUES (%s, %s, %s, %s, 'manifest', %s, %s, %s, 'application/json', %s, %s)
+RETURNING id
+""",
+            (
+                creator_id,
+                game_id,
+                version_id,
+                job_id,
+                get_settings().minio_bucket,
+                manifest_key,
+                manifest_public_url,
+                len(manifest_bytes),
+                hashlib.sha256(manifest_bytes).hexdigest(),
+            ),
+        ).fetchone()
+        artifact_asset_ids: list[tuple[str, str]] = []
+        cover_asset_id = None
+        bundle_public_url = document_url
+        for artifact, object_key, public_url in uploaded_artifacts:
+            asset = connection.execute(
+                """
+INSERT INTO assets (
+  owner_id, game_id, version_id, job_id, kind, bucket, object_key, public_url, content_type, size_bytes, sha256, width, height
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+RETURNING id
+""",
+                (
+                    creator_id,
+                    game_id,
+                    version_id,
+                    job_id,
+                    artifact.kind,
+                    get_settings().minio_bucket,
+                    object_key,
+                    public_url,
+                    artifact.content_type.split(";", 1)[0],
+                    len(artifact.content),
+                    hashlib.sha256(artifact.content).hexdigest(),
+                    1200 if artifact.kind == "cover" else None,
+                    900 if artifact.kind == "cover" else None,
+                ),
+            ).fetchone()
+            artifact_asset_ids.append((asset["id"], artifact.purpose))
+            if artifact.kind == "cover":
+                cover_asset_id = asset["id"]
+            if artifact.kind == "bundle":
+                bundle_public_url = public_url
+
+        if not use_static_generation and cover_asset_id is None:
+            raise RuntimeError("Cover Agent asset was not persisted; refusing to publish the game.")
+
+        connection.execute("UPDATE game_versions SET manifest_asset_id = %s WHERE id = %s", (manifest_asset["id"], version["id"]))
+        connection.execute("UPDATE games SET current_version_id = %s, cover_asset_id = %s WHERE id = %s", (version["id"], cover_asset_id, game_id))
+        connection.execute(
+            """
+UPDATE generation_jobs
+SET game_id = %s, version_id = %s, status = 'completed', current_stage = 'publisher', completed_at = now()
+WHERE id = %s
+""",
+            (game_id, version_id, job_id),
+        )
+        for asset_id, purpose in [(manifest_asset["id"], "manifest"), *artifact_asset_ids]:
+            connection.execute(
+                """
+INSERT INTO job_artifacts (job_id, asset_id, purpose)
+VALUES (%s, %s, %s)
+ON CONFLICT DO NOTHING
+""",
+                (job_id, asset_id, purpose),
+            )
+        _insert_agent_log(
+            connection,
+            job_id,
+            "publisher",
+            "succeeded",
+            "Uploaded generated game files to MinIO and persisted SQL metadata.",
+            "Game is published and ready for iframe play.",
+            {"stubbed": use_static_generation, "agentMode": agent_mode, "bundleUrl": bundle_public_url, "manifestUrl": manifest_public_url},
+        )
+
+    context.run_log.append(
+        stage="sql_persisted",
+        status="succeeded",
+        input_summary="Generated game metadata persisted to PostgreSQL.",
+        output_summary="Job, game, version, assets, artifacts, and legacy agent logs are linked.",
+        metrics={"jobId": job_id, "gameSlug": game_slug, "assetCount": len(artifact_asset_ids) + 1},
+    )
+    recent = RecentGame(gameId=game_id, gameSlug=game_slug, title=game["title"], playUrl=f"/play/{game_slug}", jobId=job_id)
+    _cache_recent_game(creator_id, recent)
+    summary = {
+        "title": game["title"],
+        "gameSlug": game_slug,
+        "playUrl": f"/play/{game_slug}",
+        "manifestUrl": f"/play/{game_slug}/manifest",
+        "coverUrl": next((public_url for artifact, _object_key, public_url in uploaded_artifacts if artifact.kind == "cover"), None),
+        "storagePrefix": storage_prefix,
+        "implementationPath": [record["stage"] for record in context.run_log.records],
+        "effectSummary": {
+            "runtime": pipeline.runtime,
+            "entryFile": pipeline.entry_file,
+            "artifactCount": len(uploaded_artifacts) + 1,
+            "stubbed": use_static_generation,
+            "staticGeneration": use_static_generation,
+            "coverAgent": bool(cover_artifact),
+        },
+        "promptTemplate": prompt_template,
+        "agentStrategy": strategy_metadata,
+    }
+    context.persistent_memory.put(
+        user_id=creator_id,
+        project_id=context.project_id,
+        memory_type="project_tag",
+        tags=["published", agent_mode],
+        summary="Generated game was published.",
+        payload=summary,
+    )
+    context.long_term_memory.append_history("assistant", f"Created playable game {game['title']} at /play/{game_slug}.")
+    context.short_term_memory.record_test({"name": "create_generation", "status": "succeeded"})
+    context.run_log.append(
+        stage="run_completed",
+        status="succeeded",
+        input_summary="Create run completed.",
+        output_summary="Playable game is published and run log is finalized.",
+        metrics=summary,
+    )
+    finalize_agent_run(
+        context=context,
+        status_value="completed",
+        job_id=job_id,
+        game_id=game_id,
+        version_id=version_id,
+        summary=summary,
+        final_answer=f"Game {game['title']} is ready to play.",
     )
 
 
@@ -324,9 +1244,6 @@ def create_generation_job(
                     "llm": llm_result.model_dump(),
                 },
             )
-    if not get_settings().create_static_generation:
-        raise HTTPException(status_code=501, detail="Real AI generation is not implemented yet")
-
     cleaned_prompt = prompt.strip() or "Create a fast arcade collection game with pointer controls."
     context = create_agent_run_context(
         user_id=creator_id,
@@ -385,6 +1302,28 @@ def create_generation_job(
             "dryRun": True,
         }
     )
+    if not prompt_tool_result["ok"] or "payload" not in prompt_tool_result.get("data", {}):
+        context.run_log.append(
+            stage="prompt_render_failed",
+            status="failed",
+            input_summary="Create prompt payload could not be rendered.",
+            output_summary=str(prompt_tool_result.get("error") or "Unknown prompt render failure")[:500],
+            metrics={"toolResult": prompt_tool_result},
+        )
+        finalize_agent_run(
+            context=context,
+            status_value="failed",
+            summary={"error": prompt_tool_result.get("error"), "stage": "prompt_render_failed"},
+            final_answer="Prompt rendering failed before generation could start.",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "PROMPT_RENDER_FAILED",
+                "message": "Create prompt rendering failed.",
+                "tool": prompt_tool_result.get("error"),
+            },
+        )
     prompt_payload = prompt_tool_result["data"]["payload"]
     prompt_template = template_metadata(prompt_payload)
     strategy = select_agent_strategy(prompt_settings)
@@ -416,50 +1355,137 @@ def create_generation_job(
     )
     game_id = str(uuid4())
     version_id = str(uuid4())
+    use_static_generation = get_settings().create_static_generation
+    generation_stage = "static_generation_started" if use_static_generation else "llm_generation_started"
     context.run_log.append(
-        stage="static_generation_started",
+        stage=generation_stage,
         status="running",
-        input_summary="Static generation pipeline is starting.",
+        input_summary=("Static generation pipeline is starting." if use_static_generation else "LangGraph LLM generation is starting."),
         output_summary="Game and version identifiers allocated.",
-        metrics={"gameId": game_id, "versionId": version_id},
+        metrics={"gameId": game_id, "versionId": version_id, "staticGeneration": use_static_generation},
     )
-    draft_pipeline = run_create_pipeline(
-        prompt=cleaned_prompt,
-        agent_mode=agent_mode,
-        game_slug="pending",
-        game_id=game_id,
-        version_id=version_id,
-        ai_config=ai_config,
-        prompt_template=prompt_template,
-        agent_strategy=strategy_metadata,
-    )
-    game_slug = f"{_slugify(draft_pipeline.title)}-{game_id[:8]}"
-    pipeline = run_create_pipeline(
-        prompt=cleaned_prompt,
-        agent_mode=agent_mode,
-        game_slug=game_slug,
-        game_id=game_id,
-        version_id=version_id,
-        ai_config=ai_config,
-        prompt_template=prompt_template,
-        agent_strategy=strategy_metadata,
-    )
+    if use_static_generation:
+        draft_pipeline = run_create_pipeline(
+            prompt=cleaned_prompt,
+            agent_mode=agent_mode,
+            game_slug="pending",
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+        )
+        game_slug = f"{_slugify(draft_pipeline.title)}-{game_id[:8]}"
+        pipeline = run_create_pipeline(
+            prompt=cleaned_prompt,
+            agent_mode=agent_mode,
+            game_slug=game_slug,
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+        )
+        llm_metrics: dict[str, Any] = {}
+    else:
+        recorder = LLMCallRecorder(
+            long_term_memory=context.long_term_memory,
+            short_term_memory=context.short_term_memory,
+            run_log=context.run_log,
+        )
+        graph_result = strategy.run_langgraph(
+            settings=prompt_settings,
+            model=ai_config["model"],
+            adapter=_make_graph_adapter(ai_config),
+            registry=build_builtin_tool_registry(),
+            recorder=recorder,
+        )
+        if graph_result.messages:
+            last_raw = graph_result.messages[-1].get("raw")
+            if isinstance(last_raw, dict) and last_raw.get("ok") is False:
+                context.run_log.append(
+                    stage="llm_generation_failed",
+                    status="failed",
+                    input_summary="LLM provider call failed during LangGraph generation.",
+                    output_summary=str(last_raw.get("error") or last_raw)[:500],
+                    metrics={"raw": last_raw},
+                )
+                finalize_agent_run(
+                    context=context,
+                    status_value="failed",
+                    summary={"error": last_raw, "stage": "llm_generation_failed"},
+                    final_answer="LLM generation failed before a playable game could be produced.",
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "LLM_GENERATION_FAILED",
+                        "message": "The LLM provider call failed during generation.",
+                        "llm": last_raw,
+                    },
+                )
+        last_message = graph_result.messages[-1] if graph_result.messages else {}
+        llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
+        parsed_output = parse_main_agent_json_output(_main_agent_output_value(graph_result))
+        if parsed_output.get("fallback"):
+            context.run_log.append(
+                stage="llm_output_fallback",
+                status="succeeded",
+                input_summary="LLM output did not fully match the game package contract.",
+                output_summary="Backend fallback output parser produced a safe minimal game package.",
+                metrics={"fallbackReason": parsed_output.get("fallbackReason"), "finishReason": graph_result.finish_reason},
+            )
+        draft_pipeline = build_pipeline_from_main_agent_output(
+            prompt=cleaned_prompt,
+            agent_mode=agent_mode,
+            game_slug="pending",
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            parsed_output=parsed_output,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+            llm_metrics=llm_metrics,
+        )
+        game_slug = f"{_slugify(draft_pipeline.title)}-{game_id[:8]}"
+        pipeline = build_pipeline_from_main_agent_output(
+            prompt=cleaned_prompt,
+            agent_mode=agent_mode,
+            game_slug=game_slug,
+            game_id=game_id,
+            version_id=version_id,
+            ai_config=ai_config,
+            parsed_output=parsed_output,
+            prompt_template=prompt_template,
+            agent_strategy=strategy_metadata,
+            llm_metrics=llm_metrics,
+        )
     agent_mode = pipeline.source["agentMode"]
     context.agent_mode = agent_mode
     context.short_term_memory.record_tool_call(
         {"tool": "run_create_pipeline", "status": "succeeded", "agentMode": agent_mode}
     )
     context.run_log.append(
-        stage="static_generation_completed",
+        stage="static_generation_completed" if use_static_generation else "llm_generation_completed",
         status="succeeded",
-        input_summary="Static pipeline returned generated artifacts.",
+        input_summary="Static pipeline returned generated artifacts." if use_static_generation else "LangGraph strategy returned generated artifacts.",
         output_summary=f"{len(pipeline.artifacts)} artifacts are ready for object storage.",
-        metrics={"artifactCount": len(pipeline.artifacts), "runtime": pipeline.runtime},
+        metrics={
+            "artifactCount": len(pipeline.artifacts),
+            "runtime": pipeline.runtime,
+            "staticGeneration": use_static_generation,
+            "llmMetrics": llm_metrics,
+        },
     )
     context.task_store.checkpoint(
         context.task_state,
-        "static_generation_completed",
-        {"artifactCount": len(pipeline.artifacts), "runtime": pipeline.runtime},
+        "static_generation_completed" if use_static_generation else "llm_generation_completed",
+        {
+            "artifactCount": len(pipeline.artifacts),
+            "runtime": pipeline.runtime,
+            "staticGeneration": use_static_generation,
+            "llmMetrics": llm_metrics,
+        },
         context.run_log.object_key,
     )
     storage_prefix = f"games/{game_id}/versions/1"
@@ -570,7 +1596,7 @@ RETURNING id, slug, title
                 creator_id,
                 pipeline.title,
                 pipeline.description,
-                Jsonb({"section": "Recently Created", "createdBy": "static-create", "agentMode": agent_mode}),
+                Jsonb({"section": "Recently Created", "createdBy": "static-create" if use_static_generation else "llm-create", "agentMode": agent_mode}),
             ),
         ).fetchone()
 
@@ -598,7 +1624,7 @@ RETURNING id
                 pipeline.runtime,
                 pipeline.entry_file,
                 storage_prefix,
-                Jsonb({"stubbed": True, "agentMode": agent_mode}),
+                Jsonb({"stubbed": use_static_generation, "agentMode": agent_mode, "llmMetrics": llm_metrics}),
             ),
         ).fetchone()
 
@@ -691,7 +1717,7 @@ ON CONFLICT DO NOTHING
                 "Uploaded generated game files to MinIO and persisted SQL metadata.",
                 "Game is published and ready for iframe play.",
                 {
-                    "stubbed": True,
+                    "stubbed": use_static_generation,
                     "agentMode": agent_mode,
                     "bundleUrl": bundle_public_url,
                     "manifestUrl": manifest_public_url,
@@ -735,7 +1761,8 @@ LIMIT 1
             "runtime": pipeline.runtime,
             "entryFile": pipeline.entry_file,
             "artifactCount": len(uploaded_artifacts) + 1,
-            "stubbed": True,
+            "stubbed": use_static_generation,
+            "staticGeneration": use_static_generation,
         },
         "promptTemplate": prompt_template,
         "agentStrategy": strategy_metadata,

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+from pathlib import PurePosixPath
+from typing import Any
 
 AGENT_MODES = ("chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt")
 
@@ -344,6 +346,176 @@ def build_cover_svg(title: str) -> bytes:
 </svg>
 """
     return svg.encode("utf-8")
+
+
+def _content_type_for_path(path: str) -> str:
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix == ".html":
+        return "text/html; charset=utf-8"
+    if suffix == ".json":
+        return "application/json"
+    if suffix == ".css":
+        return "text/css; charset=utf-8"
+    if suffix == ".js":
+        return "application/javascript"
+    if suffix == ".svg":
+        return "image/svg+xml"
+    if suffix == ".png":
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".mp3":
+        return "audio/mpeg"
+    if suffix == ".wav":
+        return "audio/wav"
+    return "application/octet-stream"
+
+
+def _artifact_kind_for_path(path: str) -> str:
+    name = PurePosixPath(path).name.lower()
+    if name == "index.html":
+        return "bundle"
+    if name == "source.json":
+        return "source"
+    if name.startswith("cover.") or name.startswith("thumbnail."):
+        return "cover"
+    return "generated"
+
+
+def _safe_artifact_path(path: str) -> str:
+    normalized = PurePosixPath(path.replace("\\", "/"))
+    parts = [part for part in normalized.parts if part not in {"", ".", ".."}]
+    safe = "/".join(parts)
+    return safe or "asset.bin"
+
+
+def build_pipeline_from_main_agent_output(
+    *,
+    prompt: str,
+    agent_mode: str,
+    game_slug: str,
+    game_id: str,
+    version_id: str,
+    ai_config: dict[str, str],
+    parsed_output: dict[str, Any],
+    prompt_template: dict | None = None,
+    agent_strategy: dict | None = None,
+    llm_metrics: dict[str, Any] | None = None,
+) -> AgentPipelineResult:
+    mode = normalize_agent_mode(agent_mode)
+    cover = parsed_output.get("cover") if isinstance(parsed_output.get("cover"), dict) else {}
+    title = str(cover.get("title") or title_from_prompt(prompt))[:80]
+    description = str(cover.get("description") or prompt)
+    files = parsed_output.get("files") if isinstance(parsed_output.get("files"), list) else []
+    artifacts: list[AgentArtifact] = []
+    source_content: str | None = None
+    has_cover = False
+
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            continue
+        path = _safe_artifact_path(str(file_entry.get("path", "")))
+        if PurePosixPath(path).name == "manifest.json":
+            continue
+        content = str(file_entry.get("content", "")).encode("utf-8")
+        kind = _artifact_kind_for_path(path)
+        if kind == "source":
+            source_content = str(file_entry.get("content", ""))
+        if kind == "cover":
+            has_cover = True
+        artifacts.append(
+            AgentArtifact(
+                filename=path,
+                content=content,
+                content_type=_content_type_for_path(path),
+                kind=kind,
+                purpose="final" if kind == "bundle" else "generated",
+            )
+        )
+
+    if not any(artifact.filename == "index.html" for artifact in artifacts):
+        raise ValueError("main agent output must include index.html")
+
+    source_document: dict[str, Any]
+    if source_content:
+        try:
+            loaded_source = json.loads(source_content)
+            source_document = loaded_source if isinstance(loaded_source, dict) else {}
+        except json.JSONDecodeError:
+            source_document = {"rawSource": source_content[:4000]}
+    else:
+        source_document = {}
+    source_document.update(
+        {
+            "prompt": prompt,
+            "agentMode": mode,
+            "aiConfig": {
+                "baseUrl": ai_config["baseUrl"],
+                "model": ai_config["model"],
+                "provider": ai_config["provider"],
+            },
+            "stubbed": False,
+            "promptTemplate": prompt_template or {},
+            "agentStrategy": agent_strategy or {},
+            "llmMetrics": llm_metrics or {},
+            "implementationSummary": parsed_output.get("implementationSummary", ""),
+            "safetyNotes": parsed_output.get("safetyNotes", []),
+            "files": [artifact.filename for artifact in artifacts],
+        }
+    )
+    artifacts = [artifact for artifact in artifacts if artifact.filename != "source.json"]
+    artifacts.append(
+        AgentArtifact(
+            "source.json",
+            json.dumps(source_document, ensure_ascii=False, indent=2).encode("utf-8"),
+            "application/json",
+            "source",
+            "generated",
+        )
+    )
+    if not has_cover:
+        artifacts.append(AgentArtifact("cover.svg", build_cover_svg(title), "image/svg+xml", "cover", "preview"))
+
+    return AgentPipelineResult(
+        title=title,
+        description=description,
+        runtime="iframe-srcdoc",
+        entry_file="index.html",
+        artifacts=artifacts,
+        runs=[
+            AgentRunRecord(
+                stage="planner",
+                status="succeeded",
+                input_summary=f"{mode} mode planned the game from the user request.",
+                output_summary=str(parsed_output.get("implementationSummary") or "LLM output accepted."),
+                log={"stubbed": False, "agentMode": mode, "llmMetrics": llm_metrics or {}},
+            ),
+            AgentRunRecord(
+                stage="game_code",
+                status="succeeded",
+                input_summary="LLM returned game artifact files.",
+                output_summary="index.html/source.json and optional assets are ready for build packaging.",
+                log={"stubbed": False, "agentMode": mode, "files": [artifact.filename for artifact in artifacts]},
+            ),
+            AgentRunRecord(
+                stage="build",
+                status="succeeded",
+                input_summary="Validated required artifact set.",
+                output_summary="Backend manifest will be generated from SQL/MinIO metadata.",
+                log={"stubbed": False, "agentMode": mode},
+            ),
+            AgentRunRecord(
+                stage="safety",
+                status="succeeded",
+                input_summary="Accepted LLM safety notes for MVP validation.",
+                output_summary="Full static safety scanner is still a follow-up item.",
+                log={"stubbed": False, "agentMode": mode, "safetyNotes": parsed_output.get("safetyNotes", [])},
+            ),
+        ],
+        source=source_document,
+    )
 
 
 def mode_run_records(agent_mode: str, html_size: int) -> list[AgentRunRecord]:

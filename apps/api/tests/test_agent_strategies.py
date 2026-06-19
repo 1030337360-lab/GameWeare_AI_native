@@ -40,6 +40,7 @@ def run() -> None:
         assert system_prompt
         assert user_prompt
         assert payload["model"] == "test-model"
+        assert callable(strategy.run_langgraph)
         rendered = system_prompt + user_prompt
         for forbidden in ("Create type:", "Agent mode:", "Project ID:", "Run ID:", "Task ID:", "api_key"):
             assert forbidden not in rendered

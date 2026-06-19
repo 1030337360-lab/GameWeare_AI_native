@@ -93,6 +93,7 @@ type AIConfigState = {
   baseUrl: string | null;
   model: string | null;
   provider: string | null;
+  staticGeneration: boolean;
 };
 
 type LLMTestResult = {
@@ -126,6 +127,41 @@ type CreateProject = {
   createdAt: string;
   updatedAt: string;
 };
+
+type CreateRunStep = {
+  stepNo: number;
+  stage: string;
+  status: string;
+  inputSummary: string | null;
+  outputSummary: string | null;
+  metrics: Record<string, unknown>;
+  createdAt: string;
+};
+
+type CreateRunEvent = {
+  type: "step" | "llm_call" | "tool_call" | "done" | "error" | "heartbeat";
+  runId: string;
+  stepNo?: number;
+  stage?: string;
+  status?: string;
+  inputSummary?: string | null;
+  outputSummary?: string | null;
+  metrics?: Record<string, unknown>;
+  createdAt?: string;
+  summary?: Record<string, unknown>;
+};
+
+const RUN_STAGE_LABELS: Record<string, string> = {
+  cover_prompt_rendered: "封面提示词已生成",
+  cover_generation_started: "封面智能体开始",
+  cover_llm_call: "封面模型返回",
+  cover_generated: "封面已生成",
+  cover_uploaded: "封面已保存到 MinIO"
+};
+
+function runStageLabel(stage: string) {
+  return RUN_STAGE_LABELS[stage] ?? stage;
+}
 
 type AuthContextValue = SessionState & {
   token: string | null;
@@ -604,9 +640,16 @@ function Create() {
   const [projects, setProjects] = React.useState<CreateProject[]>([]);
   const [modeOpen, setModeOpen] = React.useState(false);
   const [job, setJob] = React.useState<CreateJob | null>(null);
+  const [runSteps, setRunSteps] = React.useState<CreateRunStep[]>([]);
+  const [streaming, setStreaming] = React.useState(false);
   const [recentGame, setRecentGame] = React.useState<RecentGame | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const { apiFetch } = useAuth();
+  const streamAbortRef = React.useRef<AbortController | null>(null);
+  const { apiFetch, token } = useAuth();
+
+  React.useEffect(() => {
+    return () => streamAbortRef.current?.abort();
+  }, []);
 
   const loadCreateState = React.useCallback(async () => {
     const configResponse = await apiFetch("/create/ai-config");
@@ -615,7 +658,7 @@ function Create() {
       setAiConfig(payload);
       if (payload.baseUrl) setBaseUrl(payload.baseUrl);
       if (payload.model) setModel(payload.model);
-      setStatus(payload.configured ? "AI configuration is ready. Static test generation is enabled." : "Add your AI configuration before creating.");
+      setStatus(payload.configured ? "AI configuration is ready. Create generation is enabled." : "Add your AI configuration before creating.");
       setEditingConfig(!payload.configured);
     }
     const recentResponse = await apiFetch("/create/recent-game");
@@ -653,7 +696,7 @@ function Create() {
       setAiConfig(payload);
       setApiKey("");
       setEditingConfig(false);
-      setStatus("AI configuration saved. You can create a static test game now.");
+      setStatus("AI configuration saved. You can create a game now.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "AI configuration could not be saved.");
     } finally {
@@ -685,12 +728,99 @@ function Create() {
     }
   }
 
+  function mergeRunEvent(event: CreateRunEvent) {
+    if (event.type === "heartbeat" || !event.stepNo || !event.stage || !event.status) return;
+    const nextStep: CreateRunStep = {
+      stepNo: event.stepNo,
+      stage: event.stage,
+      status: event.status,
+      inputSummary: event.inputSummary ?? null,
+      outputSummary: event.outputSummary ?? null,
+      metrics: event.metrics ?? {},
+      createdAt: event.createdAt ?? new Date().toISOString()
+    };
+    setRunSteps((current) => {
+      const without = current.filter((step) => step.stepNo !== nextStep.stepNo);
+      return [...without, nextStep].sort((left, right) => left.stepNo - right.stepNo);
+    });
+    if (event.stage?.startsWith("cover_")) {
+      setStatus(runStageLabel(event.stage));
+    } else if (event.type === "llm_call") {
+      setStatus("LLM responded. Updating generation timeline...");
+    } else if (event.type === "tool_call") {
+      setStatus(`Tool step completed: ${event.metrics?.toolName ?? event.stage}`);
+    } else if (event.type === "error") {
+      setStatus(event.outputSummary || "Create generation failed.");
+    } else if (event.type === "done") {
+      setStatus("Create generation completed.");
+    } else if (event.outputSummary) {
+      setStatus(event.outputSummary);
+    }
+  }
+
+  async function loadFinalJob(jobId: string) {
+    const response = await apiFetch(`/create/jobs/${jobId}`);
+    if (response.ok) {
+      const payload = (await response.json()) as CreateJob;
+      setJob(payload);
+      await loadCreateState();
+    }
+  }
+
+  async function connectRunEvents(runId: string, jobId: string) {
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    setStreaming(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/create/runs/${runId}/events`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        signal: controller.signal
+      });
+      if (!response.ok || !response.body) {
+        setStatus("Run event stream could not be opened. Use Run steps to refresh.");
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+          const dataLine = chunk.split("\n").find((line) => line.startsWith("data: "));
+          if (!dataLine) continue;
+          const event = JSON.parse(dataLine.slice(6)) as CreateRunEvent;
+          mergeRunEvent(event);
+          if (event.type === "done") {
+            await loadFinalJob(jobId);
+            return;
+          }
+          if (event.type === "error") {
+            await loadFinalJob(jobId);
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setStatus(error instanceof Error ? error.message : "Run event stream interrupted.");
+      }
+    } finally {
+      setStreaming(false);
+    }
+  }
+
   async function submitJob(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setLlmTest(null);
-    setStatus("Generating static test game...");
+    setStatus("Starting Create run...");
     setJob(null);
+    setRunSteps([]);
     if (createType === "opt" && !projectId) {
       setStatus("Select a project before continuing optimization.");
       setBusy(false);
@@ -705,7 +835,7 @@ function Create() {
       const error = await readApiError(response);
       if (response.status === 409) {
         setStatus("AI configuration is required before creating.");
-        setAiConfig({ authenticated: true, configured: false, baseUrl, model, provider: "fighting" });
+        setAiConfig({ authenticated: true, configured: false, baseUrl, model, provider: "fighting", staticGeneration: false });
         setEditingConfig(true);
       } else if (error.code === "LLM_CONFIG_INVALID" && error.llm) {
         setLlmTest(error.llm);
@@ -722,9 +852,30 @@ function Create() {
     const payload = (await response.json()) as CreateJob;
     setJob(payload);
     if (payload.projectId) setProjectId(payload.projectId);
-    setStatus(`Job ${payload.id} completed. Project ${payload.projectId ?? "created"} is ready to continue.`);
-    await loadCreateState();
+    setStatus(`Job ${payload.id} started. Streaming generation steps...`);
     setBusy(false);
+    if (payload.runId) {
+      void connectRunEvents(payload.runId, payload.id);
+    }
+  }
+
+  async function loadRunSteps() {
+    if (!job?.runId) return;
+    setBusy(true);
+    setStatus("Loading run steps...");
+    try {
+      const response = await apiFetch(`/create/runs/${job.runId}/steps`);
+      if (!response.ok) {
+        const error = await readApiError(response);
+        throw new Error(error.message);
+      }
+      setRunSteps((await response.json()) as CreateRunStep[]);
+      setStatus("Run steps loaded.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Run steps could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -767,7 +918,7 @@ function Create() {
                   setEditingConfig(false);
                   setApiKey("");
                   setLlmTest(null);
-                  setStatus("AI configuration is ready. Static test generation is enabled.");
+                  setStatus("AI configuration is ready. Create generation is enabled.");
                 }}
               >
                 Cancel
@@ -791,6 +942,11 @@ function Create() {
             <Settings size={16} />
             Reconfigure
           </button>
+        </section>
+      )}
+      {aiConfig?.staticGeneration && (
+        <section className="static-warning">
+          Current backend is using static test generation. Set CREATE_STATIC_GENERATION=false and restart the API to use real LLM generation.
         </section>
       )}
       {recentGame && (
@@ -860,7 +1016,9 @@ function Create() {
           placeholder="A neon puzzle game where players connect constellations..."
           disabled={!aiConfig?.configured || editingConfig || busy}
         />
-        <button type="submit" disabled={!aiConfig?.configured || editingConfig || busy}>Create game</button>
+        <button type="submit" disabled={!aiConfig?.configured || editingConfig || busy || streaming}>
+          {streaming ? "Creating..." : "Create game"}
+        </button>
       </form>
       <div className="status-panel">{status}</div>
       {job && (
@@ -873,17 +1031,46 @@ function Create() {
               {job.runId && <span>Run: {job.runId}</span>}
               {job.taskId && <span>Task: {job.taskId}</span>}
               <span>Mode: {job.agentMode ?? agentMode}</span>
+              {streaming && <span>Streaming run events...</span>}
             </div>
-            {job.playUrl && <Link to={job.playUrl} className="primary-action"><Play size={18} />Play now</Link>}
+            <div className="result-actions">
+              {job.runId && <button type="button" className="secondary-action" disabled={busy} onClick={loadRunSteps}>Run steps</button>}
+              {job.playUrl && <Link to={job.playUrl} className="primary-action"><Play size={18} />Play now</Link>}
+            </div>
           </div>
-          <div className="log-list">
+          {job.logs.length > 0 && <div className="log-list">
             {job.logs.map((log) => (
               <div key={`${log.stage}-${log.message}`}>
                 <span>{log.stage} · {log.status}</span>
                 <p>{log.message}</p>
               </div>
             ))}
-          </div>
+          </div>}
+          {runSteps.length > 0 && (
+            <div className="run-step-list">
+              {runSteps.map((step) => {
+                const outputTokens = step.metrics.tokenUsage && typeof step.metrics.tokenUsage === "object"
+                  ? (step.metrics.tokenUsage as Record<string, unknown>).outputTokens
+                  : step.metrics.outputTokens;
+                return (
+                  <div key={step.stepNo}>
+                    <span>#{step.stepNo} {runStageLabel(step.stage)} · {step.status}</span>
+                    {step.inputSummary && <p>{step.inputSummary}</p>}
+                    {(step.stage === "llm_call" || step.stage === "cover_llm_call") && (
+                      <small>
+                        prefix words {String(step.metrics.prefixEnglishWords ?? "-")} · 中文 {String(step.metrics.prefixChineseChars ?? "-")} · output tokens {String(outputTokens ?? "-")}
+                      </small>
+                    )}
+                    {step.stage === "cover_uploaded" && (
+                      <small>
+                        {String(step.metrics.contentType ?? "-")} · {String(step.metrics.sizeBytes ?? "-")} bytes · {String(step.metrics.objectKey ?? "-")}
+                      </small>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
     </main>

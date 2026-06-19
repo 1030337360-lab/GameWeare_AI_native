@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.agents.strategies.base import AgentRequestSettings, AgentStrategyPlan, BaseAgentStrategy, render_context_sections, render_shared_game_contract, steps
+
+if TYPE_CHECKING:
+    from app.agents.graphs.llm_adapter import LLMGraphAdapter
+    from app.agents.graphs.recording import LLMCallRecorder
+    from app.agents.graphs.types import AgentGraphResult
+    from app.agents.tools import ToolRegistry
 
 
 class ReActAgentStrategy(BaseAgentStrategy):
@@ -29,12 +37,13 @@ Rules:
 - Use tools instead of guessing about the workspace.
 - Return exactly one JSON object.
 - For a tool call, return {"type":"tool","tool":{"name":"tool_name","args":{...}}}.
-- For a final answer, return {"type":"final","output":{...}}.
+- For a final answer, return {"type":"final","output":{"Finished":true,...}}.
 - Tool args must be non-empty and must match the declared tool metadata schema.
 - Never invent tool results.
 - Do not repeat the same tool call with the same arguments if it did not help.
 - Before proposing edits or tests for existing code, inspect the relevant implementation through tools.
 - Final output must satisfy the Yahaha game package JSON contract.
+- Final output must include Finished=true only when the complete game package is ready.
 - Do not include markdown fences, XML tags, secrets, or backend-only identifiers.
 """
 
@@ -44,6 +53,37 @@ Rules:
 ReAct task:
 - Think in terms of reason -> act -> observe, but do not expose hidden reasoning.
 - Choose either one valid JSON tool call or one valid JSON final output.
+- Final output must include {{"Finished": true}} plus the required game package fields.
 
 {render_shared_game_contract()}
 """
+
+    def run_langgraph(
+        self,
+        *,
+        settings: AgentRequestSettings,
+        model: str,
+        adapter: "LLMGraphAdapter",
+        registry: "ToolRegistry | None" = None,
+        recorder: "LLMCallRecorder | None" = None,
+    ) -> "AgentGraphResult":
+        from app.agents.graphs.types import AgentGraphResult
+        from app.agents.graphs.react_graph import run_react_graph
+
+        result = run_react_graph(
+            settings=settings,
+            model=model,
+            adapter=adapter,
+            registry=registry,
+            recorder=recorder,
+        )
+        return AgentGraphResult(
+            strategy=self.name,
+            topology=self.topology,
+            finished=result.finished,
+            finish_reason=result.finish_reason,
+            iterations=result.iterations,
+            final_output=result.final_output,
+            tool_results=result.tool_results,
+            messages=result.messages,
+        )

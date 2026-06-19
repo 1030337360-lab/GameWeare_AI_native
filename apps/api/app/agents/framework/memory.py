@@ -129,8 +129,11 @@ class LongTermMemory:
         client.hset(self._files_key(), relative_path, json.dumps(payload, ensure_ascii=False))
         client.expire(self._files_key(), LONG_TERM_TTL_SECONDS)
 
-    def append_history(self, role: str, content: str) -> None:
-        payload = json.dumps({"role": role, "content": content, "createdAt": _now_iso()}, ensure_ascii=False)
+    def append_history(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+        payload = json.dumps(
+            {"role": role, "content": content, "metadata": metadata or {}, "createdAt": _now_iso()},
+            ensure_ascii=False,
+        )
         client = redis_client()
         key = self._history_key()
         client.rpush(key, payload)
@@ -166,6 +169,9 @@ class ShortTermMemory:
     def record_tool_call(self, payload: dict[str, Any]) -> None:
         self.record("tool-calls", payload)
 
+    def record_llm_call(self, payload: dict[str, Any]) -> None:
+        self.record("llm-calls", payload)
+
     def record_test(self, payload: dict[str, Any]) -> None:
         self.record("tests", payload)
 
@@ -175,6 +181,6 @@ class ShortTermMemory:
     def snapshot(self) -> dict[str, list[dict[str, Any]]]:
         client = redis_client()
         result: dict[str, list[dict[str, Any]]] = {}
-        for category in ("tool-calls", "tests", "file-edits"):
+        for category in ("tool-calls", "tests", "file-edits", "llm-calls"):
             result[category] = [json.loads(value) for value in client.lrange(self._key(category), 0, -1)]
         return result
