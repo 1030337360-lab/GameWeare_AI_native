@@ -39,6 +39,7 @@ class AgentRequestSettings:
     recent_8_history: list[dict[str, Any]] = field(default_factory=list)
     persistent_memory_summary: list[dict[str, Any]] = field(default_factory=list)
     tool_metadata: list[dict[str, Any]] = field(default_factory=list)
+    input_assets: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_create_context(
@@ -52,6 +53,7 @@ class AgentRequestSettings:
         recent_8_history: list[dict[str, Any]] | None = None,
         persistent_memory_summary: list[dict[str, Any]] | None = None,
         tool_metadata: list[dict[str, Any]] | None = None,
+        input_assets: list[dict[str, Any]] | None = None,
     ) -> "AgentRequestSettings":
         return cls(
             user_request=user_request,
@@ -62,6 +64,7 @@ class AgentRequestSettings:
             recent_8_history=recent_8_history or [],
             persistent_memory_summary=persistent_memory_summary or [],
             tool_metadata=tool_metadata or [],
+            input_assets=input_assets or [],
         )
 
 
@@ -158,6 +161,21 @@ def render_context_sections(settings: AgentRequestSettings) -> str:
         sections.append(f"Recent conversation history: {_json(settings.recent_8_history)}")
     if settings.persistent_memory_summary:
         sections.append(f"Persistent memory summary: {_json(settings.persistent_memory_summary)}")
+    if settings.input_assets:
+        sections.append(
+            "User input images: "
+            + _json(
+                [
+                    {
+                        "assetId": asset.get("assetId"),
+                        "filename": asset.get("filename"),
+                        "contentType": asset.get("contentType"),
+                        "size": asset.get("size"),
+                    }
+                    for asset in settings.input_assets
+                ]
+            )
+        )
     sections.append(f"Available tool metadata: {_json(settings.tool_metadata)}")
     return "\n".join(sections)
 
@@ -182,11 +200,12 @@ def build_payload(
     user_prompt: str,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
+    user_content: list[dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
     return {
         "model": model,
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+            {"role": "user", "content": user_content},
         ],
         "reasoning": {"effort": DEFAULT_REASONING_EFFORT},
         "max_output_tokens": max_output_tokens,
@@ -221,12 +240,20 @@ class BaseAgentStrategy:
         model: str,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> dict[str, Any]:
-        return build_payload(
+        payload = build_payload(
             model=model,
             system_prompt=self.system_prompt(settings),
             user_prompt=self.user_prompt(settings),
             max_output_tokens=max_output_tokens,
         )
+        if settings.input_assets:
+            user_message = payload["input"][1]
+            content = user_message["content"]
+            for asset in settings.input_assets:
+                data_url = asset.get("dataUrl")
+                if isinstance(data_url, str) and data_url:
+                    content.append({"type": "input_image", "image_url": data_url})
+        return payload
 
     def run_langgraph(
         self,

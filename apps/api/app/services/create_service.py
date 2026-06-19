@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import base64
 from io import BytesIO
 from typing import Any
 from uuid import uuid4
@@ -38,13 +39,17 @@ from app.agents.strategies import AgentRequestSettings, select_agent_strategy
 from app.agents.tools import build_builtin_tool_registry, list_builtin_tool_metadata
 from app.config import get_settings
 from app.database import db_connection
-from app.schemas import AIConfigRequest, AIConfigState, AgentLog, CreateJob, LLMTestResult, RecentGame, UserProfile
+from app.schemas import AIConfigRequest, AIConfigState, AgentLog, CreateInputAsset, CreateJob, LLMTestResult, RecentGame, UserProfile
 from app.services.auth_service import redis_client
 from app.services.llm_service import test_llm_config
 
 AI_CONFIG_KEY_PREFIX = "create:ai-config:"
 RECENT_GAME_KEY_PREFIX = "create:recent-game:"
 _AI_CONFIG_SCHEMA_READY = False
+
+
+class MultimodalUnsupportedError(RuntimeError):
+    pass
 
 
 def ensure_ai_config_schema() -> None:
@@ -284,6 +289,156 @@ def _put_object(object_key: str, content: bytes, content_type: str) -> str:
         content_type=content_type,
     )
     return f"{settings.minio_public_base_url}/{object_key}"
+
+
+def _input_asset_dicts(input_assets: list[CreateInputAsset | dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for asset in input_assets or []:
+        if isinstance(asset, CreateInputAsset):
+            normalized.append(asset.model_dump())
+        elif isinstance(asset, dict):
+            normalized.append(dict(asset))
+    return normalized
+
+
+def _load_create_input_assets(user_id: str, input_assets: list[CreateInputAsset | dict[str, Any]] | None) -> list[dict[str, Any]]:
+    requested = _input_asset_dicts(input_assets)
+    if not requested:
+        return []
+    asset_ids = [asset.get("assetId") for asset in requested if isinstance(asset.get("assetId"), str)]
+    if len(asset_ids) != len(requested):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_INPUT_ASSETS", "message": "Every input asset must include assetId."},
+        )
+    with db_connection() as connection:
+        rows = connection.execute(
+            """
+SELECT id, object_key, public_url, content_type, size_bytes
+FROM assets
+WHERE owner_id = %s AND kind = 'upload' AND id = ANY(%s::uuid[])
+""",
+            (user_id, asset_ids),
+        ).fetchall()
+    rows_by_id = {str(row["id"]): row for row in rows}
+    if len(rows_by_id) != len(set(asset_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "INPUT_ASSET_NOT_FOUND", "message": "One or more uploaded input assets were not found."},
+        )
+    resolved: list[dict[str, Any]] = []
+    for asset in requested:
+        row = rows_by_id[str(asset["assetId"])]
+        content_type = row["content_type"]
+        if content_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail={"code": "UNSUPPORTED_INPUT_ASSET", "message": "Create input assets must be images."},
+            )
+        resolved.append(
+            {
+                "assetId": str(row["id"]),
+                "objectKey": row["object_key"],
+                "publicUrl": row["public_url"],
+                "contentType": content_type,
+                "filename": asset.get("filename"),
+                "size": int(row["size_bytes"] or 0),
+            }
+        )
+    return resolved
+
+
+def _asset_to_data_url(asset: dict[str, Any]) -> dict[str, Any]:
+    settings = get_settings()
+    client = _minio_client()
+    response = client.get_object(settings.minio_bucket, asset["objectKey"])
+    try:
+        content = response.read()
+    finally:
+        response.close()
+        response.release_conn()
+    content_type = str(asset.get("contentType") or "application/octet-stream")
+    return {
+        **asset,
+        "dataUrl": f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}",
+    }
+
+
+def _assets_for_prompt(input_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_asset_to_data_url(asset) for asset in input_assets]
+
+
+def _is_multimodal_unsupported_error(raw: Any) -> bool:
+    text = json.dumps(raw, ensure_ascii=False, default=str).lower()
+    markers = [
+        "input_image",
+        "image_url",
+        "vision",
+        "multimodal",
+        "modalities",
+        "unsupported image",
+        "does not support image",
+        "image input",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _redacted_prompt_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    for item in safe_payload.get("input", []):
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for content_item in content:
+            if isinstance(content_item, dict) and content_item.get("type") == "input_image":
+                content_item["image_url"] = "[image omitted]"
+    return safe_payload
+
+
+def _cleanup_failed_input_assets(*, job_id: str, user_id: str, input_assets: list[dict[str, Any]]) -> None:
+    if not input_assets:
+        return
+    settings = get_settings()
+    client = _minio_client()
+    asset_ids = [asset["assetId"] for asset in input_assets if asset.get("assetId")]
+    for asset in input_assets:
+        object_key = asset.get("objectKey")
+        if isinstance(object_key, str) and object_key:
+            try:
+                client.remove_object(settings.minio_bucket, object_key)
+            except Exception:
+                pass
+    with db_connection() as connection:
+        connection.execute(
+            """
+DELETE FROM assets
+WHERE owner_id = %s AND kind = 'upload' AND id = ANY(%s::uuid[])
+""",
+            (user_id, asset_ids),
+        )
+        connection.execute(
+            """
+UPDATE generation_jobs
+SET input_payload = jsonb_set(COALESCE(input_payload, '{}'::jsonb), '{inputAssets}', '[]'::jsonb, true)
+WHERE id = %s
+""",
+            (job_id,),
+        )
+    try:
+        redis_client().delete(f"create:input-assets:{job_id}")
+    except Exception:
+        pass
+
+
+def _input_assets_for_job(job_id: str) -> list[dict[str, Any]]:
+    with db_connection() as connection:
+        row = connection.execute("SELECT input_payload FROM generation_jobs WHERE id = %s", (job_id,)).fetchone()
+    if not row or not isinstance(row["input_payload"], dict):
+        return []
+    input_assets = row["input_payload"].get("inputAssets")
+    return input_assets if isinstance(input_assets, list) else []
 
 
 def _insert_agent_log(
@@ -599,6 +754,7 @@ def _insert_pending_generation_job(
     creator_id: str,
     prompt: str,
     files: list[str],
+    input_assets: list[dict[str, Any]],
     agent_mode: str,
     context: Any,
     ai_config: dict[str, str],
@@ -616,6 +772,7 @@ RETURNING id, status, prompt, input_payload, created_at, game_id
                 Jsonb(
                     {
                         "files": files,
+                        "inputAssets": input_assets,
                         "agentMode": agent_mode,
                         "createType": context.create_type,
                         "projectId": context.project_id,
@@ -642,6 +799,7 @@ def create_generation_job_start(
     creator_id: str,
     prompt: str,
     files: list[str],
+    input_assets: list[CreateInputAsset | dict[str, Any]] | None = None,
     agent_mode: str = "chat",
     create_type: str = "init",
     project_id: str | None = None,
@@ -672,6 +830,7 @@ def create_generation_job_start(
                     "llm": llm_result.model_dump(),
                 },
             )
+    resolved_input_assets = _load_create_input_assets(creator_id, input_assets)
     cleaned_prompt = prompt.strip() or "Create a fast arcade collection game with pointer controls."
     context = create_agent_run_context(
         user_id=creator_id,
@@ -691,7 +850,12 @@ def create_generation_job_start(
             if get_settings().create_static_generation
             else "Real LLM generation will run in the background."
         ),
-        metrics={"provider": ai_config["provider"], "model": ai_config["model"], "staticGeneration": get_settings().create_static_generation},
+        metrics={
+            "provider": ai_config["provider"],
+            "model": ai_config["model"],
+            "staticGeneration": get_settings().create_static_generation,
+            "inputAssetCount": len(resolved_input_assets),
+        },
     )
     context.task_store.checkpoint(
         context.task_state,
@@ -703,6 +867,7 @@ def create_generation_job_start(
         creator_id=creator_id,
         prompt=cleaned_prompt,
         files=files,
+        input_assets=resolved_input_assets,
         agent_mode=agent_mode,
         context=context,
         ai_config=ai_config,
@@ -724,7 +889,7 @@ def execute_generation_job(job_id: str, creator_id: str, jwt_jti: str | None = N
         ai_config = _load_ai_config(creator_id, jwt_jti)
         if not ai_config:
             raise RuntimeError("AI configuration is no longer available for this job.")
-        context, cleaned_prompt, files = load_agent_run_context_for_job(
+        context, cleaned_prompt, files, input_assets = load_agent_run_context_for_job(
             user_id=creator_id,
             job_id=job_id,
             session_id=jwt_jti or "anonymous",
@@ -734,14 +899,18 @@ def execute_generation_job(job_id: str, creator_id: str, jwt_jti: str | None = N
             creator_id=creator_id,
             cleaned_prompt=cleaned_prompt,
             files=files,
+            input_assets=input_assets,
             ai_config=ai_config,
             context=context,
         )
     except Exception as exc:
+        input_assets = _input_assets_for_job(job_id)
+        if input_assets:
+            _cleanup_failed_input_assets(job_id=job_id, user_id=creator_id, input_assets=input_assets)
         _fail_generation_job(
             context=context,
             job_id=job_id,
-            code=exc.__class__.__name__,
+            code="MULTIMODAL_UNSUPPORTED" if isinstance(exc, MultimodalUnsupportedError) else exc.__class__.__name__,
             message=str(exc) or "Create generation failed.",
             stage="run_failed",
         )
@@ -753,6 +922,7 @@ def _execute_generation_job_loaded(
     creator_id: str,
     cleaned_prompt: str,
     files: list[str],
+    input_assets: list[dict[str, Any]],
     ai_config: dict[str, str],
     context: Any,
 ) -> None:
@@ -770,6 +940,7 @@ def _execute_generation_job_loaded(
             project_id=context.project_id,
         ),
         tool_metadata=tool_metadata,
+        input_assets=_assets_for_prompt(input_assets),
     )
     prompt_tool_result = build_builtin_tool_registry().call(
         "llm.prompt_render",
@@ -782,6 +953,7 @@ def _execute_generation_job_loaded(
             "workspaceBoundary": prompt_settings.workspace_boundary,
             "persistentMemorySummary": prompt_settings.persistent_memory_summary,
             "toolMetadata": tool_metadata,
+            "inputAssets": prompt_settings.input_assets,
             "model": ai_config["model"],
         },
     )
@@ -792,6 +964,7 @@ def _execute_generation_job_loaded(
         raise RuntimeError("Create prompt rendering failed.")
 
     prompt_payload = prompt_tool_result["data"]["payload"]
+    safe_prompt_payload = _redacted_prompt_payload(prompt_payload)
     prompt_template = template_metadata(prompt_payload)
     strategy = select_agent_strategy(prompt_settings)
     strategy_metadata = strategy.plan(prompt_settings).to_metadata()
@@ -807,12 +980,12 @@ def _execute_generation_job_loaded(
         status="succeeded",
         input_summary="Create game prompt template rendered.",
         output_summary=f"{CREATE_GAME_TEMPLATE_NAME}@{CREATE_GAME_TEMPLATE_VERSION} is ready.",
-        metrics={**prompt_template, "strategy": strategy_metadata, "renderedCharacters": len(json.dumps(prompt_payload, ensure_ascii=False))},
+        metrics={**prompt_template, "strategy": strategy_metadata, "renderedCharacters": len(json.dumps(safe_prompt_payload, ensure_ascii=False))},
     )
     context.task_store.checkpoint(
         context.task_state,
         "prompt_rendered",
-        {"promptTemplate": prompt_template, "agentStrategy": strategy_metadata, "responsesPayload": prompt_payload},
+        {"promptTemplate": prompt_template, "agentStrategy": strategy_metadata, "responsesPayload": safe_prompt_payload},
         context.run_log.object_key,
     )
 
@@ -868,6 +1041,12 @@ def _execute_generation_job_loaded(
         if graph_result.messages:
             last_raw = graph_result.messages[-1].get("raw")
             if isinstance(last_raw, dict) and last_raw.get("ok") is False:
+                if input_assets and _is_multimodal_unsupported_error(last_raw):
+                    _cleanup_failed_input_assets(job_id=job_id, user_id=creator_id, input_assets=input_assets)
+                    raise MultimodalUnsupportedError(
+                        "MULTIMODAL_UNSUPPORTED: The configured API/model rejected image input. "
+                        "Please switch to a vision-capable OpenAI Responses-compatible model or create without images."
+                    )
                 raise RuntimeError("The LLM provider call failed during generation.")
         last_message = graph_result.messages[-1] if graph_result.messages else {}
         llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
@@ -1214,6 +1393,7 @@ def create_generation_job(
     creator_id: str,
     prompt: str,
     files: list[str],
+    input_assets: list[CreateInputAsset | dict[str, Any]] | None = None,
     agent_mode: str = "chat",
     create_type: str = "init",
     project_id: str | None = None,
@@ -1244,6 +1424,7 @@ def create_generation_job(
                     "llm": llm_result.model_dump(),
                 },
             )
+    resolved_input_assets = _load_create_input_assets(creator_id, input_assets)
     cleaned_prompt = prompt.strip() or "Create a fast arcade collection game with pointer controls."
     context = create_agent_run_context(
         user_id=creator_id,
@@ -1280,6 +1461,7 @@ def create_generation_job(
             project_id=context.project_id,
         ),
         tool_metadata=tool_metadata,
+        input_assets=_assets_for_prompt(resolved_input_assets),
     )
     prompt_tool_result = build_builtin_tool_registry().call(
         "llm.prompt_render",
@@ -1292,6 +1474,7 @@ def create_generation_job(
             "workspaceBoundary": prompt_settings.workspace_boundary,
             "persistentMemorySummary": prompt_settings.persistent_memory_summary,
             "toolMetadata": tool_metadata,
+            "inputAssets": prompt_settings.input_assets,
             "model": ai_config["model"],
         },
     )
@@ -1325,6 +1508,7 @@ def create_generation_job(
             },
         )
     prompt_payload = prompt_tool_result["data"]["payload"]
+    safe_prompt_payload = _redacted_prompt_payload(prompt_payload)
     prompt_template = template_metadata(prompt_payload)
     strategy = select_agent_strategy(prompt_settings)
     strategy_plan = strategy.plan(prompt_settings)
@@ -1344,13 +1528,13 @@ def create_generation_job(
         metrics={
             **prompt_template,
             "strategy": strategy_metadata,
-            "renderedCharacters": len(json.dumps(prompt_payload, ensure_ascii=False)),
+            "renderedCharacters": len(json.dumps(safe_prompt_payload, ensure_ascii=False)),
         },
     )
     context.task_store.checkpoint(
         context.task_state,
         "prompt_rendered",
-        {"promptTemplate": prompt_template, "agentStrategy": strategy_metadata, "responsesPayload": prompt_payload},
+        {"promptTemplate": prompt_template, "agentStrategy": strategy_metadata, "responsesPayload": safe_prompt_payload},
         context.run_log.object_key,
     )
     game_id = str(uuid4())

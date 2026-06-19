@@ -172,13 +172,14 @@ def run_events(
 @router.post("/jobs", response_model=CreateJob, status_code=status.HTTP_202_ACCEPTED)
 def create_job(payload: CreateJobRequest, background_tasks: BackgroundTasks, request: Request, user=Depends(require_user)) -> CreateJob:
     job = create_generation_job_start(
-        user.id,
-        payload.prompt,
-        payload.files,
-        payload.agentMode,
-        payload.createType,
-        payload.projectId,
-        getattr(request.state, "jwt_jti", None),
+        creator_id=user.id,
+        prompt=payload.prompt,
+        files=payload.files,
+        input_assets=payload.inputAssets,
+        agent_mode=payload.agentMode,
+        create_type=payload.createType,
+        project_id=payload.projectId,
+        jwt_jti=getattr(request.state, "jwt_jti", None),
     )
     background_tasks.add_task(execute_generation_job, job.id, user.id, getattr(request.state, "jwt_jti", None))
     return job

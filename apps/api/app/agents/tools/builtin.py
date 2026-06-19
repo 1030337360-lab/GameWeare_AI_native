@@ -75,6 +75,7 @@ def _prompt_render(payload: dict[str, Any]) -> dict[str, Any]:
         workspace_boundary=payload.get("workspaceBoundary", ".worktrees/create-demo"),
         persistent_memory_summary=payload.get("persistentMemorySummary", []),
         tool_metadata=payload.get("toolMetadata", []),
+        input_assets=payload.get("inputAssets", []),
     )
     strategy = select_agent_strategy(settings)
     response_payload = strategy.build_responses_payload(
@@ -330,6 +331,7 @@ def build_builtin_tool_registry() -> ToolRegistry:
                     "workspaceBoundary": {"type": "string"},
                     "persistentMemorySummary": {"type": "array"},
                     "toolMetadata": {"type": "array"},
+                    "inputAssets": {"type": "array"},
                 },
                 "additionalProperties": False,
             },

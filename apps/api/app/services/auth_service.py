@@ -51,12 +51,18 @@ def redis_client() -> redis.Redis:
 
 
 def serialize_user(row: dict[str, Any]) -> UserProfile:
+    settings = get_settings()
+    configured_maintainer_email = settings.maintainer_email.strip().lower()
+    email = row["email"]
+    role = row["role"]
+    if configured_maintainer_email and (email or "").lower() == configured_maintainer_email:
+        role = "admin"
     return UserProfile(
         id=str(row["id"]),
-        email=row["email"],
+        email=email,
         displayName=row["display_name"],
         avatarUrl=row["avatar_url"],
-        role=row["role"],
+        role=role,
         lastLoginAt=row.get("last_login_at"),
     )
 

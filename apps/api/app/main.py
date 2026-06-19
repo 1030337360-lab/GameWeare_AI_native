@@ -5,7 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import auth, create, games, play, uploads
+from app.routers import auth, create, games, maintenance, play, profile, uploads
+from app.services.maintenance_service import bootstrap_maintainer_account
+from app.services.play_stats_service import flush_pending_play_counts, start_play_stats_flush_thread, stop_play_stats_flush_thread
 
 app = FastAPI(title="Yahaha MVP API", version="0.1.0")
 
@@ -20,8 +22,23 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(games.router)
 app.include_router(play.router)
+app.include_router(profile.router)
 app.include_router(create.router)
 app.include_router(uploads.router)
+app.include_router(maintenance.router)
+
+
+@app.on_event("startup")
+def start_background_workers() -> None:
+    bootstrap_maintainer_account()
+    start_play_stats_flush_thread()
+
+
+@app.on_event("shutdown")
+def stop_background_workers() -> None:
+    flush_pending_play_counts()
+    stop_play_stats_flush_thread()
+
 
 @app.get("/health")
 def health() -> dict[str, str]:

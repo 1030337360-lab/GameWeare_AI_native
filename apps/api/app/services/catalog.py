@@ -4,11 +4,37 @@ from minio import Minio
 
 from app.config import get_settings
 from app.database import db_connection
-from app.schemas import Game, GameManifest
+from app.schemas import Game, GameInteractionState, GameManifest
+from app.services.play_stats_service import pending_play_counts
+
+_CATALOG_SCHEMA_READY = False
+
+
+def ensure_catalog_runtime_schema() -> None:
+    global _CATALOG_SCHEMA_READY
+    if _CATALOG_SCHEMA_READY:
+        return
+    with db_connection() as connection:
+        connection.execute(
+            """
+CREATE INDEX IF NOT EXISTS ix_play_events_user_daily
+  ON play_events(game_id, user_id, event_type, created_at DESC)
+  WHERE user_id IS NOT NULL
+"""
+        )
+        connection.execute(
+            """
+CREATE INDEX IF NOT EXISTS ix_play_events_anonymous_daily
+  ON play_events(game_id, anonymous_id, event_type, created_at DESC)
+  WHERE anonymous_id IS NOT NULL
+"""
+        )
+    _CATALOG_SCHEMA_READY = True
 
 
 GAME_SELECT = """
 SELECT
+  g.id AS db_game_id,
   g.slug AS id,
   g.title,
   u.display_name AS author,
@@ -17,12 +43,18 @@ SELECT
   g.published_at AS "publishedAt",
   COALESCE(cover.public_url, '') AS "coverUrl",
   g.plays_count AS plays,
+  g.likes_count AS likes,
+  g.favorites_count AS favorites,
+  CASE WHEN liked.user_id IS NULL THEN false ELSE true END AS "likedByMe",
+  CASE WHEN favorited.user_id IS NULL THEN false ELSE true END AS "favoritedByMe",
   COALESCE(g.metadata ->> 'section', 'Recently Created') AS section
 FROM games g
 JOIN users u ON u.id = g.author_id
 LEFT JOIN assets cover ON cover.id = g.cover_asset_id
 LEFT JOIN game_tags gt ON gt.game_id = g.id
 LEFT JOIN tags t ON t.id = gt.tag_id
+LEFT JOIN game_likes liked ON liked.game_id = g.id AND liked.user_id = %s
+LEFT JOIN game_favorites favorited ON favorited.game_id = g.id AND favorited.user_id = %s
 WHERE
   g.publish_status = 'published'
   AND g.visibility = 'public'
@@ -30,7 +62,7 @@ WHERE
 """
 
 
-def _game_from_row(row: dict[str, Any]) -> Game:
+def _game_from_row(row: dict[str, Any], pending_plays: int = 0) -> Game:
     return Game(
         id=row["id"],
         title=row["title"],
@@ -39,35 +71,198 @@ def _game_from_row(row: dict[str, Any]) -> Game:
         tags=list(row["tags"]),
         publishedAt=row["publishedAt"],
         coverUrl=row["coverUrl"],
-        plays=row["plays"],
+        plays=row["plays"] + pending_plays,
+        likes=row["likes"],
+        favorites=row["favorites"],
+        likedByMe=row["likedByMe"],
+        favoritedByMe=row["favoritedByMe"],
         section=row["section"],
     )
 
 
-def list_games() -> list[Game]:
+def _games_from_rows(rows: list[dict[str, Any]]) -> list[Game]:
+    pending = pending_play_counts([str(row["db_game_id"]) for row in rows])
+    return [_game_from_row(row, pending.get(str(row["db_game_id"]), 0)) for row in rows]
+
+
+def _user_param(user_id: str | None) -> str | None:
+    return user_id if user_id else None
+
+
+def list_games(*, query: str | None = None, tag: str | None = None, user_id: str | None = None) -> list[Game]:
+    params: list[Any] = [_user_param(user_id), _user_param(user_id)]
+    where = ""
+    cleaned_query = (query or "").strip()
+    cleaned_tag = (tag or "").strip()
+    if cleaned_query:
+        where += """
+  AND (
+    g.title ILIKE %s
+    OR g.description ILIKE %s
+    OR EXISTS (
+      SELECT 1
+      FROM game_tags search_gt
+      JOIN tags search_t ON search_t.id = search_gt.tag_id
+      WHERE search_gt.game_id = g.id AND search_t.name ILIKE %s
+    )
+  )
+"""
+        like_query = f"%{cleaned_query}%"
+        params.extend([like_query, like_query, like_query])
+    if cleaned_tag:
+        where += """
+  AND EXISTS (
+    SELECT 1
+    FROM game_tags filter_gt
+    JOIN tags filter_t ON filter_t.id = filter_gt.tag_id
+    WHERE filter_gt.game_id = g.id AND lower(filter_t.name) = lower(%s)
+  )
+"""
+        params.append(cleaned_tag)
     with db_connection() as connection:
         rows = connection.execute(
             GAME_SELECT
+            + where
             + """
-GROUP BY g.id, u.display_name, cover.public_url
+GROUP BY g.id, u.display_name, cover.public_url, liked.user_id, favorited.user_id
 ORDER BY g.published_at DESC NULLS LAST, g.created_at DESC
-"""
+""",
+            params,
         ).fetchall()
-    return [_game_from_row(row) for row in rows]
+    return _games_from_rows(rows)
 
 
-def get_game(game_id: str) -> Game | None:
+def get_game(game_id: str, *, user_id: str | None = None) -> Game | None:
     with db_connection() as connection:
         row = connection.execute(
             GAME_SELECT
             + """
   AND g.slug = %s
-GROUP BY g.id, u.display_name, cover.public_url
+GROUP BY g.id, u.display_name, cover.public_url, liked.user_id, favorited.user_id
 LIMIT 1
 """,
-            (game_id,),
+            (_user_param(user_id), _user_param(user_id), game_id),
         ).fetchone()
-    return _game_from_row(row) if row else None
+    return _games_from_rows([row])[0] if row else None
+
+
+def list_tags() -> list[str]:
+    with db_connection() as connection:
+        rows = connection.execute(
+            """
+SELECT DISTINCT t.name
+FROM tags t
+JOIN game_tags gt ON gt.tag_id = t.id
+JOIN games g ON g.id = gt.game_id
+WHERE g.publish_status = 'published' AND g.visibility = 'public' AND g.deleted_at IS NULL
+ORDER BY t.name
+"""
+        ).fetchall()
+    return [row["name"] for row in rows]
+
+
+def _interaction_state(connection: Any, *, game_slug: str, user_id: str) -> GameInteractionState | None:
+    row = connection.execute(
+        """
+SELECT
+  g.slug,
+  g.likes_count,
+  g.favorites_count,
+  EXISTS(SELECT 1 FROM game_likes gl WHERE gl.game_id = g.id AND gl.user_id = %s) AS liked,
+  EXISTS(SELECT 1 FROM game_favorites gf WHERE gf.game_id = g.id AND gf.user_id = %s) AS favorited
+FROM games g
+WHERE g.slug = %s AND g.publish_status = 'published' AND g.visibility = 'public' AND g.deleted_at IS NULL
+LIMIT 1
+""",
+        (user_id, user_id, game_slug),
+    ).fetchone()
+    if not row:
+        return None
+    return GameInteractionState(
+        gameId=row["slug"],
+        likes=row["likes_count"],
+        favorites=row["favorites_count"],
+        likedByMe=row["liked"],
+        favoritedByMe=row["favorited"],
+    )
+
+
+def set_game_like(game_slug: str, *, user_id: str, liked: bool) -> GameInteractionState | None:
+    with db_connection() as connection:
+        game = connection.execute(
+            """
+SELECT id
+FROM games
+WHERE slug = %s AND publish_status = 'published' AND visibility = 'public' AND deleted_at IS NULL
+LIMIT 1
+""",
+            (game_slug,),
+        ).fetchone()
+        if not game:
+            return None
+        if liked:
+            inserted = connection.execute(
+                """
+INSERT INTO game_likes (user_id, game_id)
+VALUES (%s, %s)
+ON CONFLICT DO NOTHING
+RETURNING user_id
+""",
+                (user_id, game["id"]),
+            ).fetchone()
+            if inserted:
+                connection.execute("UPDATE games SET likes_count = likes_count + 1 WHERE id = %s", (game["id"],))
+        else:
+            deleted = connection.execute(
+                """
+DELETE FROM game_likes
+WHERE user_id = %s AND game_id = %s
+RETURNING user_id
+""",
+                (user_id, game["id"]),
+            ).fetchone()
+            if deleted:
+                connection.execute("UPDATE games SET likes_count = GREATEST(likes_count - 1, 0) WHERE id = %s", (game["id"],))
+        return _interaction_state(connection, game_slug=game_slug, user_id=user_id)
+
+
+def set_game_favorite(game_slug: str, *, user_id: str, favorited: bool) -> GameInteractionState | None:
+    with db_connection() as connection:
+        game = connection.execute(
+            """
+SELECT id
+FROM games
+WHERE slug = %s AND publish_status = 'published' AND visibility = 'public' AND deleted_at IS NULL
+LIMIT 1
+""",
+            (game_slug,),
+        ).fetchone()
+        if not game:
+            return None
+        if favorited:
+            inserted = connection.execute(
+                """
+INSERT INTO game_favorites (user_id, game_id)
+VALUES (%s, %s)
+ON CONFLICT DO NOTHING
+RETURNING user_id
+""",
+                (user_id, game["id"]),
+            ).fetchone()
+            if inserted:
+                connection.execute("UPDATE games SET favorites_count = favorites_count + 1 WHERE id = %s", (game["id"],))
+        else:
+            deleted = connection.execute(
+                """
+DELETE FROM game_favorites
+WHERE user_id = %s AND game_id = %s
+RETURNING user_id
+""",
+                (user_id, game["id"]),
+            ).fetchone()
+            if deleted:
+                connection.execute("UPDATE games SET favorites_count = GREATEST(favorites_count - 1, 0) WHERE id = %s", (game["id"],))
+        return _interaction_state(connection, game_slug=game_slug, user_id=user_id)
 
 
 def get_game_manifest(game_id: str) -> GameManifest | None:

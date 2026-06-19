@@ -13,6 +13,10 @@ class Game(BaseModel):
     publishedAt: datetime
     coverUrl: str
     plays: int
+    likes: int = 0
+    favorites: int = 0
+    likedByMe: bool = False
+    favoritedByMe: bool = False
     section: str
 
 
@@ -58,9 +62,19 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class CreateInputAsset(BaseModel):
+    assetId: str
+    objectKey: str
+    publicUrl: str | None = None
+    contentType: str
+    filename: str | None = None
+    size: int
+
+
 class CreateJobRequest(BaseModel):
     prompt: str = ""
     files: list[str] = Field(default_factory=list)
+    inputAssets: list[CreateInputAsset] = Field(default_factory=list)
     agentMode: Literal["chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt"] = "chat"
     createType: Literal["init", "opt"] = "init"
     projectId: str | None = None
@@ -173,7 +187,147 @@ class CreateRunStep(BaseModel):
 class PlayEvent(BaseModel):
     gameId: str
     event: Literal["game_view", "game_start", "game_load_error", "game_end"]
+    anonymousId: str | None = None
     occurredAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     durationMs: int | None = None
     errorMessage: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GameInteractionState(BaseModel):
+    gameId: str
+    likes: int
+    favorites: int
+    likedByMe: bool
+    favoritedByMe: bool
+
+
+class ProfilePlayRecord(BaseModel):
+    eventId: str
+    eventType: str
+    playedAt: datetime
+    game: Game
+
+
+class ProfileProjectIndex(BaseModel):
+    projectId: str
+    title: str
+    status: str
+    gameId: str | None = None
+    gameSlug: str | None = None
+    latestRunId: str | None = None
+    latestRunStatus: str | None = None
+    updatedAt: datetime
+
+
+class ProfileActivity(BaseModel):
+    recentPlays: list[ProfilePlayRecord] = Field(default_factory=list)
+    projects: list[ProfileProjectIndex] = Field(default_factory=list)
+
+
+class ProfileRunStepRecord(BaseModel):
+    stepNo: int
+    stage: str
+    status: str
+    inputSummary: str | None = None
+    outputSummary: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    createdAt: datetime
+    recordType: Literal["conversation", "llm", "tool", "lifecycle", "error"]
+
+
+class ProfileProjectRunFeedback(BaseModel):
+    runId: str
+    jobId: str | None = None
+    status: str
+    createType: str
+    agentMode: str
+    promptSummary: str
+    promptFull: str
+    llmSummary: str
+    llmFull: str
+    createdAt: datetime
+    completedAt: datetime | None = None
+    steps: list[ProfileRunStepRecord] = Field(default_factory=list)
+
+
+class ProfileProjectDetail(BaseModel):
+    project: ProfileProjectIndex
+    game: Game | None = None
+    runs: list[ProfileProjectRunFeedback] = Field(default_factory=list)
+
+
+class MaintenanceJob(BaseModel):
+    id: str
+    status: str
+    currentStage: str | None = None
+    errorCode: str | None = None
+    errorMessage: str | None = None
+    promptSummary: str
+    creatorId: str | None = None
+    creatorEmail: str | None = None
+    gameSlug: str | None = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class MaintenanceOverview(BaseModel):
+    jobCounts: dict[str, int] = Field(default_factory=dict)
+    failedJobsLast24h: int = 0
+    pendingReviews: int = 0
+    publicGames: int = 0
+    assetsTotal: int = 0
+    assetsBytes: int = 0
+    recentFailedJobs: list[MaintenanceJob] = Field(default_factory=list)
+
+
+class MaintenanceGame(BaseModel):
+    id: str
+    slug: str
+    title: str
+    description: str | None = None
+    visibility: str
+    publishStatus: str
+    plays: int
+    likes: int
+    favorites: int
+    coverAssetId: str | None = None
+    authorId: str | None = None
+    updatedAt: datetime
+
+
+class MaintenanceGameUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    visibility: Literal["private", "unlisted", "public"] | None = None
+    publishStatus: Literal["draft", "reviewing", "published", "rejected", "archived"] | None = None
+
+
+class MaintenanceModerationRequest(BaseModel):
+    status: Literal["approved", "rejected"]
+    reason: str = ""
+
+
+class MaintenanceReview(BaseModel):
+    id: str
+    targetType: str
+    targetId: str
+    status: str
+    reason: str | None = None
+    reviewerId: str | None = None
+    createdAt: datetime
+    reviewedAt: datetime | None = None
+
+
+class MaintenanceAsset(BaseModel):
+    id: str
+    kind: str
+    bucket: str
+    objectKey: str
+    publicUrl: str | None = None
+    contentType: str | None = None
+    sizeBytes: int
+    gameId: str | None = None
+    versionId: str | None = None
+    jobId: str | None = None
+    createdAt: datetime

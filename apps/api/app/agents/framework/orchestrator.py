@@ -175,7 +175,7 @@ VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s)
     )
 
 
-def load_agent_run_context_for_job(*, user_id: str, job_id: str, session_id: str) -> tuple[CreateAgentRunContext, str, list[str]]:
+def load_agent_run_context_for_job(*, user_id: str, job_id: str, session_id: str) -> tuple[CreateAgentRunContext, str, list[str], list[dict[str, Any]]]:
     ensure_agent_framework_schema()
     with db_connection() as connection:
         row = connection.execute(
@@ -217,6 +217,7 @@ LIMIT 1
 
     input_payload = row["input_payload"] if isinstance(row["input_payload"], dict) else {}
     files = input_payload.get("files") if isinstance(input_payload.get("files"), list) else []
+    input_assets = input_payload.get("inputAssets") if isinstance(input_payload.get("inputAssets"), list) else []
     run_id = str(row["run_id"])
     project_id = str(row["project_id"])
     task_state = TaskState(
@@ -255,7 +256,7 @@ LIMIT 1
             status=row["workspace_status"],
         ),
     )
-    return context, row["prompt"], files
+    return context, row["prompt"], files, input_assets
 
 
 def finalize_agent_run(

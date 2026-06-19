@@ -321,6 +321,14 @@ CREATE INDEX IF NOT EXISTS ix_assets_game_version
 CREATE INDEX IF NOT EXISTS ix_play_events_game_created_at
   ON play_events(game_id, created_at DESC);
 
+CREATE INDEX IF NOT EXISTS ix_play_events_user_daily
+  ON play_events(game_id, user_id, event_type, created_at DESC)
+  WHERE user_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_play_events_anonymous_daily
+  ON play_events(game_id, anonymous_id, event_type, created_at DESC)
+  WHERE anonymous_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS ix_game_tags_tag_game
   ON game_tags(tag_id, game_id);
 

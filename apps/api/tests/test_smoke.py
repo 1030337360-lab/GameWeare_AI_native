@@ -4,12 +4,17 @@ import sys
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["CREATE_VALIDATE_LLM_CONFIG"] = "false"
 os.environ["CREATE_STATIC_GENERATION"] = "true"
 
 from app.main import app
+from app.config import get_settings
+from app.database import db_connection
+from app.services.maintenance_service import bootstrap_maintainer_account
+from app.services.play_stats_service import flush_pending_play_counts
 
 
 client = TestClient(app)
@@ -25,6 +30,24 @@ def run() -> None:
     games = client.get("/games")
     assert games.status_code == 200
     assert len(games.json()) >= 3
+    first_game = games.json()[0]
+    assert "likes" in first_game
+    assert "favorites" in first_game
+    assert "likedByMe" in first_game
+    assert "favoritedByMe" in first_game
+
+    search_games = client.get("/games?q=astro")
+    assert search_games.status_code == 200
+    assert any(game["id"] == "astro-ludo" for game in search_games.json())
+
+    tags = client.get("/games/tags")
+    assert tags.status_code == 200
+    assert "Arcade" in tags.json()
+
+    filtered_games = client.get("/games?tag=Arcade")
+    assert filtered_games.status_code == 200
+    assert filtered_games.json()
+    assert all("Arcade" in game["tags"] for game in filtered_games.json())
 
     manifest = client.get("/play/astro-ludo/manifest")
     assert manifest.status_code == 200
@@ -32,6 +55,30 @@ def run() -> None:
 
     play_event = client.post("/events/play", json={"gameId": "astro-ludo", "event": "game_view"})
     assert play_event.status_code == 200
+
+    anonymous_id = str(uuid4())
+    before_play = client.get("/games/astro-ludo")
+    assert before_play.status_code == 200
+    before_count = before_play.json()["plays"]
+    with db_connection() as connection:
+        before_db_count = connection.execute("SELECT plays_count FROM games WHERE slug = 'astro-ludo'").fetchone()["plays_count"]
+    first_start = client.post("/events/play", json={"gameId": "astro-ludo", "event": "game_start", "anonymousId": anonymous_id})
+    assert first_start.status_code == 200
+    assert first_start.json()["counted"] is True
+    duplicate_start = client.post("/events/play", json={"gameId": "astro-ludo", "event": "game_start", "anonymousId": anonymous_id})
+    assert duplicate_start.status_code == 200
+    assert duplicate_start.json()["counted"] is False
+    after_play = client.get("/games/astro-ludo")
+    assert after_play.status_code == 200
+    assert after_play.json()["plays"] == before_count + 1
+    with db_connection() as connection:
+        pending_db_count = connection.execute("SELECT plays_count FROM games WHERE slug = 'astro-ludo'").fetchone()["plays_count"]
+    flushed = flush_pending_play_counts()
+    with db_connection() as connection:
+        after_db_count = connection.execute("SELECT plays_count FROM games WHERE slug = 'astro-ludo'").fetchone()["plays_count"]
+    assert pending_db_count >= before_db_count
+    assert after_db_count >= before_db_count
+    assert sum(flushed.values()) >= 0
 
     unauthenticated_job = client.post("/create/jobs", json={"prompt": "test", "files": []})
     assert unauthenticated_job.status_code == 401
@@ -52,6 +99,33 @@ def run() -> None:
     session = client.get("/auth/session", headers={"Authorization": f"Bearer {token}"})
     assert session.status_code == 200
     assert session.json()["authenticated"] is True
+
+    user_play = client.post(
+        "/events/play",
+        json={"gameId": "astro-ludo", "event": "game_start"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert user_play.status_code == 200
+
+    like = client.put("/games/astro-ludo/like", headers={"Authorization": f"Bearer {token}"})
+    assert like.status_code == 200
+    assert like.json()["likedByMe"] is True
+    like_again = client.put("/games/astro-ludo/like", headers={"Authorization": f"Bearer {token}"})
+    assert like_again.status_code == 200
+    assert like_again.json()["likes"] == like.json()["likes"]
+    favorite = client.put("/games/astro-ludo/favorite", headers={"Authorization": f"Bearer {token}"})
+    assert favorite.status_code == 200
+    assert favorite.json()["favoritedByMe"] is True
+    authed_detail = client.get("/games/astro-ludo", headers={"Authorization": f"Bearer {token}"})
+    assert authed_detail.status_code == 200
+    assert authed_detail.json()["likedByMe"] is True
+    assert authed_detail.json()["favoritedByMe"] is True
+    unlike = client.delete("/games/astro-ludo/like", headers={"Authorization": f"Bearer {token}"})
+    assert unlike.status_code == 200
+    assert unlike.json()["likedByMe"] is False
+    unfavorite = client.delete("/games/astro-ludo/favorite", headers={"Authorization": f"Bearer {token}"})
+    assert unfavorite.status_code == 200
+    assert unfavorite.json()["favoritedByMe"] is False
 
     create_job = client.post(
         "/create/jobs",
@@ -125,6 +199,161 @@ def run() -> None:
     agent_state = client.get(f"/create/jobs/{create_payload['id']}/agent-state", headers={"Authorization": f"Bearer {token}"})
     assert agent_state.status_code == 200
     assert agent_state.json()["run"]["runId"] == create_payload["runId"]
+
+    profile_activity = client.get("/profile/activity", headers={"Authorization": f"Bearer {token}"})
+    assert profile_activity.status_code == 200
+    profile_payload = profile_activity.json()
+    assert profile_payload["recentPlays"]
+    assert profile_payload["recentPlays"][0]["game"]["id"] == "astro-ludo"
+    assert any(project["projectId"] == create_payload["projectId"] for project in profile_payload["projects"])
+
+    profile_project = client.get(f"/profile/projects/{create_payload['projectId']}", headers={"Authorization": f"Bearer {token}"})
+    assert profile_project.status_code == 200
+    project_payload = profile_project.json()
+    assert project_payload["project"]["projectId"] == create_payload["projectId"]
+    assert project_payload["game"]["id"] == create_payload["gameSlug"]
+    assert project_payload["runs"]
+    assert project_payload["runs"][0]["promptSummary"]
+    assert "llmFull" in project_payload["runs"][0]
+    assert "steps" in project_payload["runs"][0]
+    assert project_payload["runs"][0]["steps"]
+    assert project_payload["runs"][0]["steps"] == sorted(project_payload["runs"][0]["steps"], key=lambda step: step["stepNo"])
+    step_types = {step["recordType"] for step in project_payload["runs"][0]["steps"]}
+    assert step_types & {"conversation", "llm", "lifecycle"}
+
+    with db_connection() as connection:
+        connection.execute(
+            """
+INSERT INTO create_run_steps (run_id, step_no, stage, status, input_summary, output_summary, metrics)
+VALUES (%s, 900, 'llm_call', 'succeeded', %s, %s, %s)
+ON CONFLICT (run_id, step_no) DO UPDATE SET
+  input_summary = EXCLUDED.input_summary,
+  output_summary = EXCLUDED.output_summary,
+  metrics = EXCLUDED.metrics
+""",
+            (
+                create_payload["runId"],
+                "Authorization: Bearer should-not-leak api_key=should-not-leak",
+                "LLM returned data:image/png;base64,AAAA and token=should-not-leak",
+                Jsonb(
+                    {
+                        "outputTokens": 123,
+                        "promptEnglishWords": 12,
+                        "promptChineseChars": 3,
+                        "api_key": "should-not-leak",
+                        "image_url": "data:image/png;base64,AAAA",
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+INSERT INTO create_run_steps (run_id, step_no, stage, status, input_summary, output_summary, metrics)
+VALUES (%s, 901, 'tool_call', 'failed', %s, %s, %s)
+ON CONFLICT (run_id, step_no) DO UPDATE SET
+  input_summary = EXCLUDED.input_summary,
+  output_summary = EXCLUDED.output_summary,
+  metrics = EXCLUDED.metrics
+""",
+            (
+                create_payload["runId"],
+                "write_file request password=should-not-leak",
+                "tool failed with secret=should-not-leak",
+                Jsonb(
+                    {
+                        "toolName": "write_file",
+                        "files": ["games/index.html"],
+                        "ok": False,
+                        "error": {"message": "Authorization: Bearer should-not-leak"},
+                    }
+                ),
+            ),
+        )
+
+    profile_project = client.get(f"/profile/projects/{create_payload['projectId']}", headers={"Authorization": f"Bearer {token}"})
+    assert profile_project.status_code == 200
+    redacted_payload = profile_project.json()
+    redacted_text = str(redacted_payload)
+    assert "should-not-leak" not in redacted_text
+    assert "data:image/png;base64" not in redacted_text
+    target_run = next(run for run in redacted_payload["runs"] if run["runId"] == create_payload["runId"])
+    redacted_steps = target_run["steps"]
+    assert redacted_steps == sorted(redacted_steps, key=lambda step: step["stepNo"])
+    assert any(step["recordType"] == "llm" and step["metrics"]["outputTokens"] == 123 for step in redacted_steps)
+    assert any(step["recordType"] == "tool" and step["metrics"]["toolName"] == "write_file" for step in redacted_steps)
+
+    non_admin_maintenance = client.get("/maintenance/overview", headers={"Authorization": f"Bearer {token}"})
+    assert non_admin_maintenance.status_code == 403
+
+    settings = get_settings()
+    assert settings.maintainer_email
+    assert settings.maintainer_password
+    bootstrap_maintainer_account()
+    admin_email = settings.maintainer_email
+    admin_login = client.post("/auth/login", json={"email": admin_email, "password": "password123"})
+    if admin_login.status_code != 200:
+        admin_login = client.post("/auth/login", json={"email": admin_email, "password": settings.maintainer_password})
+    assert admin_login.status_code == 200
+    admin_token = admin_login.json()["accessToken"]
+    admin_user_id = admin_login.json()["user"]["id"]
+
+    maintenance_overview = client.get("/maintenance/overview", headers={"Authorization": f"Bearer {admin_token}"})
+    assert maintenance_overview.status_code == 200
+    assert "jobCounts" in maintenance_overview.json()
+    assert "assetsTotal" in maintenance_overview.json()
+
+    maintenance_jobs = client.get("/maintenance/jobs?limit=5", headers={"Authorization": f"Bearer {admin_token}"})
+    assert maintenance_jobs.status_code == 200
+    assert any(job["id"] == create_payload["id"] for job in maintenance_jobs.json())
+    review_job = client.post(
+        f"/maintenance/jobs/{create_payload['id']}/mark-reviewed",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert review_job.status_code == 200
+    assert review_job.json()["targetType"] == "job"
+
+    maintenance_games = client.get("/maintenance/games?q=astro-ludo", headers={"Authorization": f"Bearer {admin_token}"})
+    assert maintenance_games.status_code == 200
+    assert maintenance_games.json()
+    managed_game = maintenance_games.json()[0]
+    patch_game = client.patch(
+        f"/maintenance/games/{managed_game['id']}",
+        json={"visibility": "unlisted"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert patch_game.status_code == 200
+    assert patch_game.json()["visibility"] == "unlisted"
+    client.patch(
+        f"/maintenance/games/{managed_game['id']}",
+        json={"visibility": "public"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    moderate_game = client.post(
+        f"/maintenance/games/{managed_game['id']}/moderate",
+        json={"status": "approved", "reason": "Smoke reviewed"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert moderate_game.status_code == 200
+    assert moderate_game.json()["targetType"] == "game"
+
+    maintenance_assets = client.get("/maintenance/assets?limit=5", headers={"Authorization": f"Bearer {admin_token}"})
+    assert maintenance_assets.status_code == 200
+    assert isinstance(maintenance_assets.json(), list)
+    with db_connection() as connection:
+        disposable_asset = connection.execute(
+            """
+INSERT INTO assets (owner_id, kind, bucket, object_key, content_type, size_bytes)
+VALUES (%s, 'upload', 'external', %s, 'text/plain', 4)
+RETURNING id
+""",
+            (admin_user_id, f"maintenance-smoke/{uuid4().hex}.txt"),
+        ).fetchone()
+    delete_asset = client.delete(
+        f"/maintenance/assets/{disposable_asset['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert delete_asset.status_code == 200
+    assert delete_asset.json()["deleted"] is True
 
     missing_project_opt = client.post(
         "/create/jobs",

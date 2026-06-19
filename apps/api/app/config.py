@@ -1,6 +1,11 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+ROOT_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+API_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 class Settings(BaseSettings):
@@ -26,8 +31,12 @@ class Settings(BaseSettings):
     create_worktree_enabled: bool = False
     create_worktree_base_ref: str = "HEAD"
     create_worktree_cleanup_policy: str = "manual"
+    play_stats_flush_interval_seconds: float = 10.0
+    maintainer_email: str = ""
+    maintainer_password: str = ""
+    maintainer_display_name: str = "Platform Maintainer"
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=(ROOT_ENV_FILE, API_ENV_FILE), extra="ignore")
 
 
 @lru_cache

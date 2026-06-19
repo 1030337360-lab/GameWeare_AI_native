@@ -1,4 +1,5 @@
 from pathlib import Path
+import base64
 import json
 import os
 import sys
@@ -63,6 +64,12 @@ class BadCoverLLMAdapter:
             raw = {"output_text": "{\"summary\":\"no image\"}", "usage": {"output_tokens": 3}}
             return LLMGraphResult(text=raw["output_text"], raw=raw, metrics=build_llm_call_metrics(payload, response_text=raw["output_text"], response_raw=raw))
         return FakeLLMAdapter().invoke(payload)
+
+
+class UnsupportedImageLLMAdapter:
+    def invoke(self, payload: dict) -> LLMGraphResult:
+        raw = {"ok": False, "error": {"message": "This model does not support image input."}}
+        return LLMGraphResult(text="", raw=raw, metrics=build_llm_call_metrics(payload, response_text="", response_raw=raw))
 
 
 def run() -> None:
@@ -170,6 +177,41 @@ def run() -> None:
     failed_cover_stages = [step["stage"] for step in failed_cover_steps.json()]
     assert "cover_llm_call" in failed_cover_stages
     assert "run_failed" in failed_cover_stages
+
+    image_bytes = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    upload = client.post(
+        "/uploads",
+        files={"file": ("sketch.png", image_bytes, "image/png")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert upload.status_code == 200
+    input_asset = upload.json()
+    create_service._make_graph_adapter = lambda ai_config: UnsupportedImageLLMAdapter()  # type: ignore[assignment]
+    unsupported_job = client.post(
+        "/create/jobs",
+        json={
+            "prompt": "make a game from this image",
+            "files": [],
+            "inputAssets": [input_asset],
+            "agentMode": "plan",
+            "createType": "init",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert unsupported_job.status_code == 202
+    unsupported_start = unsupported_job.json()
+    unsupported_final = client.get(f"/create/jobs/{unsupported_start['id']}", headers={"Authorization": f"Bearer {token}"})
+    assert unsupported_final.status_code == 200
+    unsupported_payload = unsupported_final.json()
+    assert unsupported_payload["status"] == "failed"
+    assert unsupported_payload["gameSlug"] is None
+    with create_service.db_connection() as connection:
+        asset_row = connection.execute("SELECT id FROM assets WHERE id = %s", (input_asset["assetId"],)).fetchone()
+        job_row = connection.execute("SELECT input_payload, error_code, error_message FROM generation_jobs WHERE id = %s", (unsupported_payload["id"],)).fetchone()
+    assert asset_row is None
+    assert job_row["input_payload"]["inputAssets"] == []
+    assert job_row["error_code"] == "MULTIMODAL_UNSUPPORTED"
+    assert "image input" in job_row["error_message"]
 
 
 if __name__ == "__main__":

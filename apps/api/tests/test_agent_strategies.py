@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents.create import parse_main_agent_json_output
 from app.agents.strategies import AgentRequestSettings, list_agent_strategies, select_agent_strategy
+from app.services.create_service import _is_multimodal_unsupported_error, _redacted_prompt_payload
 
 
 def run() -> None:
@@ -51,6 +52,32 @@ def run() -> None:
     assert '"type":"final"' in react_system
     assert "<tool" not in react_system
     assert "<final" not in react_system
+
+    image_settings = AgentRequestSettings(
+        create_type="init",
+        agent_mode="plan",
+        user_request="make a game from this screenshot",
+        input_assets=[
+            {
+                "assetId": "asset-test",
+                "filename": "sketch.png",
+                "contentType": "image/png",
+                "size": 12,
+                "dataUrl": "data:image/png;base64,AAAA",
+            }
+        ],
+    )
+    image_payload = select_agent_strategy(image_settings).build_responses_payload(image_settings, "test-model")
+    user_content = image_payload["input"][1]["content"]
+    assert any(item.get("type") == "input_image" and item.get("image_url") == "data:image/png;base64,AAAA" for item in user_content)
+    rendered_payload = json.dumps(image_payload, ensure_ascii=False)
+    assert "sketch.png" in rendered_payload
+    assert "api_key" not in rendered_payload
+    redacted_payload = _redacted_prompt_payload(image_payload)
+    redacted_text = json.dumps(redacted_payload, ensure_ascii=False)
+    assert "data:image/png;base64,AAAA" not in redacted_text
+    assert "[image omitted]" in redacted_text
+    assert _is_multimodal_unsupported_error({"error": {"message": "This model does not support image input."}})
 
     valid = {
         "files": [
