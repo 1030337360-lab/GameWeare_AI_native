@@ -20,7 +20,7 @@ def _safe_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
             continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             safe[key] = value if not isinstance(value, str) else value[:1200]
-        elif key in {"tokenUsage", "tool", "error", "raw", "planPreview", "previewState"} and isinstance(value, dict):
+        elif key in {"tokenUsage", "tool", "error", "providerError", "raw", "planPreview", "previewState"} and isinstance(value, dict):
             safe[key] = {
                 str(child_key): child_value
                 for child_key, child_value in value.items()

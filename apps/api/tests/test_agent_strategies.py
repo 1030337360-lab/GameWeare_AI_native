@@ -58,29 +58,45 @@ def run() -> None:
         assert user_prompt
         assert payload["model"] == "test-model"
         assert callable(strategy.run_langgraph)
-        if strategy_name == "refine":
-            assert "complete updated HTML document" in system_prompt
-            assert '"type":"tool"' not in system_prompt
-            assert '"type":"final"' not in system_prompt
+        assert '"type":"tool"' in system_prompt
+        assert '"type":"final"' in system_prompt
+        assert "window.parent.postMessage" in system_prompt
+        assert "Never use parent.postMessage" in system_prompt
+        assert "passive:false" in system_prompt
+        if strategy_name == "plan":
+            assert "Plan preview JSON reference" in system_prompt
+            assert '"acceptanceChecks"' in system_prompt
+            assert '"implementationSummary": "..."' not in system_prompt
         else:
-            assert '"type":"tool"' in system_prompt
-            assert '"type":"final"' in system_prompt
+            assert "Unified JSON response reference" in system_prompt
+            assert '"workspacePath": "index.html"' in system_prompt
+            assert '"implementationSummary": "..."' in system_prompt
+            assert "The only allowed parent window reference" in system_prompt
+        if strategy_name == "refine":
+            assert "complete updated game package" in system_prompt
         assert "Do not execute tools in this strategy response" not in system_prompt
         assert "<tool" not in system_prompt
         assert "<final" not in system_prompt
         rendered = system_prompt + user_prompt
         for forbidden in ("Create type:", "Agent mode:", "Project ID:", "Run ID:", "Task ID:", "api_key"):
             assert forbidden not in rendered
-        if create_type == "opt" and strategy_name != "refine":
+        if create_type == "opt":
             assert "Continue optimization rules" in user_prompt
             assert "final output contract is identical to initial creation" in user_prompt
-        if create_type == "init" and strategy_name != "refine":
+        if create_type == "init":
             assert "Initial creation rules" in user_prompt
+        if strategy_name != "plan":
+            assert "window.parent.postMessage" in rendered
 
     react = select_agent_strategy(context)
     react_system = react.system_prompt(context)
     assert '"type":"tool"' in react_system
     assert '"type":"final"' in react_system
+    assert "The only allowed parent window reference" in react_system
+    assert "Never use parent.postMessage" in react_system
+    assert 'parent["postMessage"]' in react_system
+    assert "globalThis.parent" in react_system
+    assert "Never assign, cache, compare, read, or branch on window.parent" in react_system
     assert "<tool" not in react_system
     assert "<final" not in react_system
 
@@ -109,6 +125,45 @@ def run() -> None:
     assert "data:image/png;base64,AAAA" not in redacted_text
     assert "[image omitted]" in redacted_text
     assert _is_multimodal_unsupported_error({"error": {"message": "This model does not support image input."}})
+
+    large_plan_settings = AgentRequestSettings(
+        create_type="init",
+        agent_mode="plan",
+        user_request="make a planned game",
+        persistent_memory_summary=[
+            {
+                "memoryType": "approved_plan",
+                "payload": json.dumps(
+                    {
+                        "plan": [
+                            {
+                                "id": "step-1",
+                                "title": "Build",
+                                "goal": "G" * 4000,
+                                "toolFamily": "workspace.*",
+                                "expectedOutput": "E" * 4000,
+                                "acceptanceCheckRefs": ["check-1"],
+                            }
+                        ],
+                        "risks": ["R" * 3000],
+                        "acceptanceChecks": [
+                            {"id": "check-1", "description": "C" * 4000, "type": "runtime", "severity": "must"}
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+    )
+    large_plan_prompt = select_agent_strategy(large_plan_settings).user_prompt(large_plan_settings)
+    assert "G" * 1000 not in large_plan_prompt
+    assert "E" * 1000 not in large_plan_prompt
+    assert "C" * 1000 not in large_plan_prompt
+    assert "Approved plan:" in large_plan_prompt
+    large_plan_system = select_agent_strategy(large_plan_settings).system_prompt(large_plan_settings)
+    assert "Unified JSON response reference" in large_plan_system
+    assert '"implementationSummary": "..."' in large_plan_system
+    assert "The only allowed parent window reference" in large_plan_system
 
     valid = {
         "files": [

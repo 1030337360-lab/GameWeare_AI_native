@@ -40,8 +40,12 @@ from app.agents.decentralized.storage import (
     selected_candidate,
 )
 from app.agents.decentralized.types import DecentralizedPreviewState
+from app.agents.graphs.errors import LLMProviderCallError, provider_error_diagnostics
 from app.agents.graphs.llm_adapter import LLMGraphAdapter, LLMGraphResult
 from app.database import db_connection
+
+COVER_WIDTH = 1200
+COVER_HEIGHT = 900
 
 
 @dataclass(frozen=True)
@@ -56,11 +60,16 @@ class DecentralizedFinalResult:
 def _invoke_llm(adapter: LLMGraphAdapter, payload: dict[str, Any], *, context: Any, stage: str, summary: str) -> LLMGraphResult:
     result = adapter.invoke(payload)
     metrics = result.metrics if isinstance(result.metrics, dict) else {}
+    provider_error = provider_error_diagnostics(result.raw if isinstance(result.raw, dict) else None)
     context.run_log.append(
         stage=stage,
-        status="failed" if isinstance(result.raw, dict) and result.raw.get("ok") is False else "succeeded",
+        status="failed" if provider_error else "succeeded",
         input_summary=str(metrics.get("promptPrefix") or "")[:500],
-        output_summary=summary if result.text or result.raw else "LLM returned an empty response.",
+        output_summary=(
+            str(provider_error.get("message") or provider_error.get("code"))[:500]
+            if provider_error
+            else (summary if result.text or result.raw else "LLM returned an empty response.")
+        ),
         metrics={
             "promptEnglishWords": metrics.get("promptEnglishWords"),
             "promptChineseChars": metrics.get("promptChineseChars"),
@@ -71,12 +80,13 @@ def _invoke_llm(adapter: LLMGraphAdapter, payload: dict[str, Any], *, context: A
             "outputTokens": (metrics.get("tokenUsage") or {}).get("outputTokens"),
             "tokenUsage": metrics.get("tokenUsage"),
             "rawKind": stage,
+            "providerError": provider_error,
         },
     )
     context.short_term_memory.record_llm_call({"kind": stage, "metrics": metrics, "outputPreview": result.text[:600]})
     context.long_term_memory.append_history("llm", result.text[:1200], metadata={"kind": stage, "metrics": metrics})
-    if isinstance(result.raw, dict) and result.raw.get("ok") is False:
-        raise RuntimeError(f"{stage} provider call failed")
+    if provider_error:
+        raise LLMProviderCallError({**provider_error, "stage": stage})
     return result
 
 
@@ -91,6 +101,62 @@ def _safe_candidate_metrics(candidate: dict[str, Any]) -> dict[str, Any]:
         "styleTags": candidate.get("styleTags") if isinstance(candidate.get("styleTags"), list) else [],
         "staticHtmlChars": len(str(candidate.get("staticHtml") or "")),
     }
+
+
+def _safe_svg_text(value: Any, limit: int = 160) -> str:
+    text = str(value or "").strip()[:limit]
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _decentralized_fallback_cover(*, selected: dict[str, Any], reason: str) -> AgentArtifact:
+    title = _safe_svg_text(selected.get("title") or "Decentralized Game", 90)
+    expert = _safe_svg_text(selected.get("expertRole") or "Creative direction", 120)
+    summary = _safe_svg_text(selected.get("conceptSummary") or reason, 150)
+    safe_reason = _safe_svg_text(reason, 120)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{COVER_WIDTH}" height="{COVER_HEIGHT}" viewBox="0 0 {COVER_WIDTH} {COVER_HEIGHT}" role="img" aria-label="{title}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="0.55" stop-color="#155e75"/>
+      <stop offset="1" stop-color="#854d0e"/>
+    </linearGradient>
+    <pattern id="dots" width="48" height="48" patternUnits="userSpaceOnUse">
+      <circle cx="8" cy="8" r="3" fill="#ffffff" opacity="0.16"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="900" fill="url(#bg)"/>
+  <rect width="1200" height="900" fill="url(#dots)"/>
+  <rect x="76" y="92" width="1048" height="716" rx="34" fill="#020617" fill-opacity="0.56" stroke="#e2e8f0" stroke-opacity="0.22" stroke-width="3"/>
+  <path d="M178 624 C330 450 482 712 636 500 C760 328 902 330 1048 188" fill="none" stroke="#22d3ee" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="902" cy="294" r="112" fill="#f59e0b" fill-opacity="0.88"/>
+  <circle cx="986" cy="360" r="70" fill="#e879f9" fill-opacity="0.74"/>
+  <text x="124" y="248" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="800">{title}</text>
+  <text x="128" y="322" fill="#bae6fd" font-family="Arial, Helvetica, sans-serif" font-size="30">{expert}</text>
+  <text x="128" y="394" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="26">{summary}</text>
+  <text x="128" y="736" fill="#fed7aa" font-family="Arial, Helvetica, sans-serif" font-size="24">Fallback decentralized cover: {safe_reason}</text>
+</svg>"""
+    return AgentArtifact("cover.svg", svg.encode("utf-8"), "image/svg+xml", "cover", "fallback")
+
+
+def _cover_wrapper(artifact: AgentArtifact, *, raw_kind: str, summary: str) -> Any:
+    return type(
+        "DecentralizedCoverArtifact",
+        (),
+        {
+            "artifact": artifact,
+            "content_type": artifact.content_type,
+            "width": COVER_WIDTH,
+            "height": COVER_HEIGHT,
+            "size_bytes": len(artifact.content),
+            "raw_kind": raw_kind,
+            "summary": summary,
+        },
+    )()
 
 
 def _pipeline_from_final_output(
@@ -420,18 +486,40 @@ def build_decentralized_final_result(
         metrics={"selectedCandidateId": selected.get("candidateId"), "targetWidth": 1200, "targetHeight": 900},
     )
     cover_result = _invoke_llm(adapter, cover_payload, context=context, stage="decentralized_cover_llm_call", summary="Cover agent returned a candidate image.")
-    cover_artifact = parse_cover_artifact(cover_result.text)
-    context.run_log.append(
-        stage="decentralized_cover_generated",
-        status="succeeded",
-        input_summary="Decentralized cover output parsed.",
-        output_summary="Cover asset is ready for MinIO upload.",
-        metrics={
-            "contentType": cover_artifact.content_type,
-            "sizeBytes": len(cover_artifact.content),
-            "selectedCandidateId": selected.get("candidateId"),
-        },
-    )
+    cover_raw_kind = "decentralized_cover"
+    cover_summary = "Decentralized cover generated."
+    try:
+        cover_artifact = parse_cover_artifact(cover_result.text)
+        context.run_log.append(
+            stage="decentralized_cover_generated",
+            status="succeeded",
+            input_summary="Decentralized cover output parsed.",
+            output_summary="Cover asset is ready for MinIO upload.",
+            metrics={
+                "contentType": cover_artifact.content_type,
+                "sizeBytes": len(cover_artifact.content),
+                "selectedCandidateId": selected.get("candidateId"),
+            },
+        )
+    except Exception as exc:
+        cover_artifact = _decentralized_fallback_cover(selected=selected, reason="cover_output_contract_failed")
+        cover_raw_kind = "decentralized_fallback_svg"
+        cover_summary = "Fallback decentralized SVG cover generated by backend."
+        context.run_log.append(
+            stage="decentralized_cover_degraded",
+            status="succeeded",
+            input_summary="Decentralized cover output was unavailable or not publishable.",
+            output_summary=cover_summary,
+            metrics={
+                "reason": "cover_output_contract_failed",
+                "error": exc.__class__.__name__,
+                "message": str(exc)[:500],
+                "outputChars": len(cover_result.text or ""),
+                "contentType": cover_artifact.content_type,
+                "sizeBytes": len(cover_artifact.content),
+                "selectedCandidateId": selected.get("candidateId"),
+            },
+        )
 
     pipeline = _pipeline_from_final_output(
         prompt=user_request,
@@ -448,19 +536,7 @@ def build_decentralized_final_result(
     )
     return DecentralizedFinalResult(
         pipeline=pipeline,
-        cover_artifact=type(
-            "DecentralizedCoverArtifact",
-            (),
-            {
-                "artifact": cover_artifact,
-                "content_type": cover_artifact.content_type,
-                "width": 1200,
-                "height": 900,
-                "size_bytes": len(cover_artifact.content),
-                "raw_kind": "decentralized_cover",
-                "summary": "Decentralized cover generated.",
-            },
-        )(),
+        cover_artifact=_cover_wrapper(cover_artifact, raw_kind=cover_raw_kind, summary=cover_summary),
         prompt_template=prompt_template,
         strategy_metadata=strategy_metadata,
         llm_metrics=final_result.metrics,

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     create_static_generation: bool = False
     create_validate_llm_config: bool = True
     create_recent_game_ttl_seconds: int = 604800
-    llm_request_timeout_seconds: float = 120.0
+    llm_request_timeout_seconds: float = 600.0
     create_worktree_enabled: bool = True
     create_worktree_base_ref: str = "HEAD"
     create_worktree_cleanup_policy: str = "auto_on_success"

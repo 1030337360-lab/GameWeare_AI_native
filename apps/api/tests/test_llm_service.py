@@ -159,6 +159,83 @@ def run() -> None:
     assert graph_result.metrics["prefixChineseChars"] == 2
     assert graph_result.metrics["tokenUsage"]["outputTokens"] == 5
 
+    graph_http_error = OpenAIResponsesGraphAdapter(
+        base_url="https://api.example.test/v1",
+        api_key="test-key",
+        transport=_transport(504, {"error": {"code": "gateway_timeout", "message": "upstream timeout"}}),
+        max_attempts=1,
+    ).invoke(
+        {
+            "model": "test-model",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+            "reasoning": {"effort": "medium"},
+            "max_output_tokens": 16,
+        }
+    )
+    assert graph_http_error.text == ""
+    assert graph_http_error.raw["ok"] is False
+    assert graph_http_error.raw["statusCode"] == 504
+    assert graph_http_error.raw["error"]["code"] == "gateway_timeout"
+    assert graph_http_error.raw["attempts"] == 1
+
+    retry_calls = {"count": 0}
+
+    def flaky_then_success(request: httpx.Request) -> httpx.Response:
+        retry_calls["count"] += 1
+        if retry_calls["count"] == 1:
+            return httpx.Response(504, json={"error": {"code": "gateway_timeout", "message": "try again"}})
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Recovered"}],
+                    }
+                ],
+                "usage": {"output_tokens": 3},
+            },
+        )
+
+    graph_retry = OpenAIResponsesGraphAdapter(
+        base_url="https://api.example.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(flaky_then_success),
+        max_attempts=2,
+    ).invoke(
+        {
+            "model": "test-model",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+            "reasoning": {"effort": "medium"},
+            "max_output_tokens": 16,
+        }
+    )
+    assert retry_calls["count"] == 2
+    assert graph_retry.text == "Recovered"
+    assert graph_retry.raw["attempt"] == 2
+    assert graph_retry.raw["attempts"] == 2
+
+    def graph_timeout_error(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out with test-key", request=request)
+
+    graph_timeout = OpenAIResponsesGraphAdapter(
+        base_url="https://api.example.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(graph_timeout_error),
+        max_attempts=1,
+    ).invoke(
+        {
+            "model": "test-model",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+            "reasoning": {"effort": "medium"},
+            "max_output_tokens": 16,
+        }
+    )
+    assert graph_timeout.raw["ok"] is False
+    assert graph_timeout.raw["error"]["code"] == "llm_timeout"
+    assert "test-key" not in graph_timeout.raw["error"]["message"]
+
 
 if __name__ == "__main__":
     run()

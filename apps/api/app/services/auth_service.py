@@ -92,6 +92,17 @@ def issue_auth_response(user: UserProfile) -> AuthResponse:
     )
 
 
+def token_jti(token: str | None) -> str | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, get_settings().jwt_secret, algorithms=[TOKEN_ALGORITHM])
+    except InvalidTokenError:
+        return None
+    jti = payload.get("jti")
+    return str(jti) if jti else None
+
+
 def load_user(user_id: str) -> UserProfile | None:
     with db_connection() as connection:
         row = connection.execute(

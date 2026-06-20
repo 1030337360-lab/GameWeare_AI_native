@@ -53,6 +53,12 @@ Chat task:
 - If writing large HTML, prefer workspace.file_write with path="index.html", then reference it in final output.
 - Final output must be one JSON object with {{"type": "final", "output": {{...}}}}.
 - Put {{"Finished": true}}, files, cover, implementationSummary, and safetyNotes inside output.
+- Runtime acceptance checklist for index.html:
+  1. Define a helper like send(type, payload={{}}) {{ window.parent.postMessage({{source:"yahaha-game", type, payload}}, "*"); }}.
+  2. Send game_ready after initialization, game_start when gameplay begins, game_end on win/loss/end, and game_load_error from a top-level startup try/catch.
+  3. Implement Arrow keys and WASD for movement when keyboard movement is requested, plus Space for the primary action when requested.
+  4. Use keydown/keyup listeners with {{passive:false}} and preventDefault for every handled game key.
+  5. Do not use parent.postMessage, parent["postMessage"], window["parent"], window?.parent, self.parent, globalThis.parent, const p = window.parent, or any window.parent property other than postMessage.
 
 {render_shared_game_contract()}
 """

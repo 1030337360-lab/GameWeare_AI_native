@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents.framework.workspace import WorkspaceContext
+from app.agents.graphs.errors import LLMProviderCallError
 from app.agents.graphs.llm_adapter import LLMGraphResult
 from app.agents.graphs.recording import LLMCallRecorder
 from app.agents.graphs.react_graph import MAX_REACT_ITERATIONS, run_react_graph
@@ -22,6 +23,43 @@ class FakeAdapter:
         self.calls.append(payload)
         index = min(len(self.calls) - 1, len(self.texts) - 1)
         return LLMGraphResult(text=self.texts[index], raw={"mock": True, "index": index}, metrics=self.metrics)
+
+
+class ProviderErrorAdapter:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def invoke(self, payload: dict) -> LLMGraphResult:
+        self.calls.append(payload)
+        raw = {"ok": False, "statusCode": 502, "error": {"code": "bad_gateway", "message": "upstream timed out"}}
+        return LLMGraphResult(text="", raw=raw, metrics={"promptPrefix": "Create request: failed", "tokenUsage": {"outputTokens": None}})
+
+
+class ToolThenProviderErrorThenRecoveryAdapter:
+    def __init__(self, *, recovery_fails: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.recovery_fails = recovery_fails
+
+    def invoke(self, payload: dict) -> LLMGraphResult:
+        self.calls.append(payload)
+        payload_text = str(payload)
+        index = len(self.calls)
+        if index == 1:
+            text = (
+                '{"type":"tool","tool":{"name":"workspace.file_write","args":{"path":"index.html","content":"'
+                + ("z" * 5000)
+                + '"}}}'
+            )
+            return LLMGraphResult(text=text, raw={"mock": True, "index": index}, metrics={"tokenUsage": {"outputTokens": 50}})
+        if index == 2:
+            raw = {"ok": False, "statusCode": 502, "error": {"code": "llm_http_error", "message": "Bad Gateway"}}
+            return LLMGraphResult(text="", raw=raw, metrics={"promptPrefix": "continuation", "tokenUsage": {"outputTokens": None}})
+        assert "Yahaha ReAct Recovery Agent" in payload_text
+        if self.recovery_fails:
+            raw = {"ok": False, "statusCode": 503, "error": {"code": "llm_http_error", "message": "Recovery unavailable"}}
+            return LLMGraphResult(text="", raw=raw, metrics={"promptPrefix": "recovery", "tokenUsage": {"outputTokens": None}})
+        text = '{"type":"final","output":{"Finished":true,"files":[{"path":"index.html","workspacePath":"index.html"}],"cover":{"title":"Recovered","description":"","tags":[]},"implementationSummary":"Recovered from a provider 502.","safetyNotes":["No privileged APIs."]}}'
+        return LLMGraphResult(text=text, raw={"mock": True, "index": index}, metrics={"promptPrefix": "recovery", "tokenUsage": {"outputTokens": 80}})
 
 
 class MemorySpy:
@@ -90,7 +128,24 @@ def run() -> None:
     assert tool_then_final.tool_results[0]["ok"] is True
     assert tool_then_final.tool_results[0]["data"]["count"] == 0
     assert len(tool_then_final_adapter.calls) == 2
-    assert "toolResults" in tool_then_final_adapter.calls[1]["input"][-1]["content"][0]["text"]
+    continuation_text = tool_then_final_adapter.calls[1]["input"][-1]["content"][0]["text"]
+    assert "toolResults" in continuation_text
+    assert "responseSummary" in continuation_text
+    assert "raw" not in continuation_text
+
+    large_tool_adapter = FakeAdapter(
+        [
+            '{"type":"tool","tool":{"name":"workspace.file_write","args":{"path":"index.html","content":"'
+            + ("x" * 5000)
+            + '"}}}',
+            '{"type":"final","output":{"Finished":true,"message":"after large write"}}',
+        ]
+    )
+    large_tool_result = run_react_graph(settings=_settings(), model="test-model", adapter=large_tool_adapter)
+    assert large_tool_result.finished is True
+    large_continuation_text = large_tool_adapter.calls[1]["input"][-1]["content"][0]["text"]
+    assert '"contentChars":5000' in large_continuation_text or '"contentChars": 5000' in large_continuation_text
+    assert "x" * 2000 not in large_continuation_text
 
     write_root = Path(__file__).resolve().parents[1] / ".worktrees" / "react-write-test"
     write_then_final = run_react_graph(
@@ -144,6 +199,62 @@ def run() -> None:
     assert spy.history[0]["metadata"]["kind"] == "llm_call"
     assert spy.llm_calls[0]["metrics"]["promptPrefix"] == "Create request: hello 你好"
     assert spy.run_log[0]["metrics"]["outputEnglishWords"] == 2
+
+    provider_spy = MemorySpy()
+    try:
+        run_react_graph(
+            settings=_settings(),
+            model="test-model",
+            adapter=ProviderErrorAdapter(),
+            recorder=LLMCallRecorder(short_term_memory=provider_spy, run_log=provider_spy),
+        )
+    except LLMProviderCallError as exc:
+        assert exc.diagnostics["code"] == "bad_gateway"
+        assert exc.diagnostics["statusCode"] == 502
+    else:
+        raise AssertionError("provider errors must stop the ReAct graph")
+    assert provider_spy.run_log[0]["status"] == "failed"
+    assert provider_spy.run_log[0]["providerError"]["message"] == "upstream timed out"
+
+    recovery_spy = MemorySpy()
+    recovery_adapter = ToolThenProviderErrorThenRecoveryAdapter()
+    recovered = run_react_graph(
+        settings=_settings(),
+        model="test-model",
+        adapter=recovery_adapter,
+        recorder=LLMCallRecorder(short_term_memory=recovery_spy, run_log=recovery_spy),
+    )
+    assert recovered.finished is True
+    assert recovered.finish_reason == "recovered_after_provider_error"
+    assert recovered.iterations == 2
+    assert recovered.final_output["cover"]["title"] == "Recovered"
+    assert len(recovery_adapter.calls) == 3
+    normal_continuation = recovery_adapter.calls[1]["input"][-1]["content"][0]["text"]
+    assert "toolResults" in normal_continuation
+    assert "raw" not in normal_continuation
+    recovery_payload_text = str(recovery_adapter.calls[2])
+    assert "Yahaha ReAct Recovery Agent" in recovery_payload_text
+    assert "providerErrorSummary" in recovery_payload_text
+    assert "recentToolCalls" in recovery_payload_text
+    assert "toolResults" in recovery_payload_text
+    assert "raw" not in recovery_payload_text
+    assert "z" * 2000 not in recovery_payload_text
+    assert "contentChars" in recovery_payload_text
+    assert any(call.get("status") == "failed" for call in recovery_spy.run_log if call.get("kind") == "llm_call")
+    assert any(call.get("recovery") is True for call in recovery_spy.run_log if call.get("kind") == "llm_call")
+
+    try:
+        run_react_graph(
+            settings=_settings(),
+            model="test-model",
+            adapter=ToolThenProviderErrorThenRecoveryAdapter(recovery_fails=True),
+        )
+    except LLMProviderCallError as exc:
+        assert exc.diagnostics["code"] == "react_recovery_provider_error"
+        assert exc.diagnostics["providerError"]["statusCode"] == 502
+        assert exc.diagnostics["recoveryProviderError"]["statusCode"] == 503
+    else:
+        raise AssertionError("recovery provider errors must preserve both diagnostics")
 
     tool_spy = MemorySpy()
     run_react_graph(

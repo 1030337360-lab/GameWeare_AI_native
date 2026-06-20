@@ -134,6 +134,23 @@ def extract_responses_text(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _with_attempt(raw: dict[str, Any], *, attempt: int, max_attempts: int) -> dict[str, Any]:
+    raw["attempt"] = attempt
+    raw["attempts"] = max_attempts
+    return raw
+
+
+def _retryable_provider_error(raw: dict[str, Any]) -> bool:
+    if raw.get("ok") is not False:
+        return False
+    status_code = raw.get("statusCode") or raw.get("status_code")
+    if isinstance(status_code, int) and (status_code in {408, 409, 425, 429} or status_code >= 500):
+        return True
+    error = raw.get("error") if isinstance(raw.get("error"), dict) else {}
+    code = str(error.get("code") or raw.get("code") or "")
+    return code in {"llm_timeout", "llm_request_error"}
+
+
 class OpenAIResponsesGraphAdapter:
     def __init__(
         self,
@@ -142,67 +159,152 @@ class OpenAIResponsesGraphAdapter:
         api_key: str,
         timeout_seconds: float | None = None,
         transport: httpx.BaseTransport | None = None,
+        max_attempts: int = 2,
     ):
         self.base_url = base_url
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds if timeout_seconds is not None else get_settings().llm_request_timeout_seconds
         self.transport = transport
+        self.max_attempts = max(1, max_attempts)
 
     def invoke(self, payload: dict[str, Any]) -> LLMGraphResult:
         endpoint = _responses_url(self.base_url)
-        try:
-            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
-                response = client.post(
-                    endpoint,
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
+        last_error: LLMGraphResult | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
+                    response = client.post(
+                        endpoint,
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+            except httpx.TimeoutException as exc:
+                response_raw = _with_attempt(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "llm_timeout",
+                            "message": _redact(str(exc) or "The LLM provider did not respond before the timeout.", self.api_key)[:500],
+                        },
                     },
+                    attempt=attempt,
+                    max_attempts=self.max_attempts,
                 )
-            response_payload = response.json()
-        except httpx.RequestError as exc:
-            response_raw = {
-                "ok": False,
-                "error": {
-                    "code": "llm_request_error",
-                    "message": _redact(str(exc), self.api_key)[:500],
-                },
-            }
-            return LLMGraphResult(
-                text="",
-                raw=response_raw,
-                metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
-            )
-        except ValueError:
-            response_raw = {"ok": False, "error": {"code": "llm_invalid_json_response"}}
-            return LLMGraphResult(
-                text="",
-                raw=response_raw,
-                metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
-            )
+                last_error = LLMGraphResult(
+                    text="",
+                    raw=response_raw,
+                    metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
+                )
+                if attempt < self.max_attempts:
+                    continue
+                return last_error
+            except httpx.RequestError as exc:
+                response_raw = _with_attempt(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "llm_request_error",
+                            "message": _redact(str(exc), self.api_key)[:500],
+                        },
+                    },
+                    attempt=attempt,
+                    max_attempts=self.max_attempts,
+                )
+                last_error = LLMGraphResult(
+                    text="",
+                    raw=response_raw,
+                    metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
+                )
+                if attempt < self.max_attempts:
+                    continue
+                return last_error
 
-        if response.status_code >= 400:
-            response_raw = {
-                "ok": False,
-                "statusCode": response.status_code,
-                "error": response_payload if isinstance(response_payload, dict) else {},
-            }
+            response_text = response.text
+            try:
+                response_payload = response.json()
+            except ValueError:
+                if response.status_code >= 400:
+                    response_raw = _with_attempt(
+                        {
+                            "ok": False,
+                            "statusCode": response.status_code,
+                            "error": {
+                                "code": "llm_http_error",
+                                "message": _redact(response_text or response.reason_phrase or "The LLM provider returned an HTTP error.", self.api_key)[:800],
+                                "bodyPreview": _redact(response_text, self.api_key)[:1200],
+                            },
+                        },
+                        attempt=attempt,
+                        max_attempts=self.max_attempts,
+                    )
+                else:
+                    response_raw = _with_attempt(
+                        {
+                            "ok": False,
+                            "statusCode": response.status_code,
+                            "error": {
+                                "code": "llm_invalid_json_response",
+                                "message": "The LLM provider returned a non-JSON response.",
+                                "bodyPreview": _redact(response_text, self.api_key)[:1200],
+                            },
+                        },
+                        attempt=attempt,
+                        max_attempts=self.max_attempts,
+                    )
+                last_error = LLMGraphResult(
+                    text="",
+                    raw=response_raw,
+                    metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
+                )
+                if attempt < self.max_attempts and _retryable_provider_error(response_raw):
+                    continue
+                return last_error
+
+            if not isinstance(response_payload, dict):
+                response_raw = {
+                    "ok": False,
+                    "statusCode": response.status_code,
+                    "error": {
+                        "code": "llm_invalid_response",
+                        "message": "The LLM provider response root must be a JSON object.",
+                    },
+                }
+                return LLMGraphResult(
+                    text="",
+                    raw=_with_attempt(response_raw, attempt=attempt, max_attempts=self.max_attempts),
+                    metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
+                )
+
+            if response.status_code >= 400:
+                provider_error = response_payload
+                response_raw = {
+                    "ok": False,
+                    "statusCode": response.status_code,
+                    "error": provider_error.get("error") if isinstance(provider_error.get("error"), dict) else provider_error,
+                }
+                response_raw = _with_attempt(response_raw, attempt=attempt, max_attempts=self.max_attempts)
+                last_error = LLMGraphResult(
+                    text="",
+                    raw=response_raw,
+                    metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
+                )
+                if attempt < self.max_attempts and _retryable_provider_error(response_raw):
+                    continue
+                return last_error
+            response_text = extract_responses_text(response_payload)
             return LLMGraphResult(
-                text="",
-                raw=response_raw,
-                metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
+                text=response_text,
+                raw=_with_attempt(response_payload, attempt=attempt, max_attempts=self.max_attempts),
+                metrics=build_llm_call_metrics(payload, response_text=response_text, response_raw=response_payload),
             )
-        if not isinstance(response_payload, dict):
-            response_raw = {"ok": False, "error": {"code": "llm_invalid_response"}}
-            return LLMGraphResult(
-                text="",
-                raw=response_raw,
-                metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
-            )
-        response_text = extract_responses_text(response_payload)
+        if last_error:
+            return last_error
+        response_raw = {"ok": False, "error": {"code": "llm_request_error", "message": "The LLM provider request did not run."}}
         return LLMGraphResult(
-            text=response_text,
-            raw=response_payload,
-            metrics=build_llm_call_metrics(payload, response_text=response_text, response_raw=response_payload),
+            text="",
+            raw=_with_attempt(response_raw, attempt=0, max_attempts=self.max_attempts),
+            metrics=build_llm_call_metrics(payload, response_text="", response_raw=response_raw),
         )

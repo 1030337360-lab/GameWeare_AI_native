@@ -13,7 +13,7 @@ from tests.support.integration import configure_test_environment, isolated_integ
 
 configure_test_environment()
 
-from app.agents.decentralized.prompts import build_expert_payload, build_final_game_payload
+from app.agents.decentralized.prompts import build_cover_payload, build_expert_payload, build_final_game_payload
 from app.agents.graphs.llm_adapter import LLMGraphResult, build_llm_call_metrics
 from app.main import app
 from app.services import create_service
@@ -82,9 +82,20 @@ class DecentralizedFakeAdapter:
         return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
 
 
+class DecentralizedBadCoverAdapter(DecentralizedFakeAdapter):
+    def invoke(self, payload: dict) -> LLMGraphResult:
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        if "Yahaha Decentralized Cover Agent" in payload_text:
+            output = {"summary": "cover concept only without durable image asset"}
+            text = json.dumps(output, ensure_ascii=False)
+            raw = {"output_text": text, "usage": {"input_tokens": 10, "output_tokens": 8, "total_tokens": 18}}
+            return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
+        return super().invoke(payload)
+
+
 def run() -> None:
     init_payload = build_expert_payload(model="test-model", user_request="make a racing game", input_assets=[])
-    continue_context = [{"type": "existing_project_artifacts", "previousIndexHtmlPrefix": "<html>old racer</html>"}]
+    continue_context = [{"type": "existing_project_artifacts", "previousIndexHtmlPrefix": "<html>old racer</html>" + ("A" * 6000)}]
     continue_payload = build_expert_payload(
         model="test-model",
         user_request="make the road more dramatic",
@@ -96,17 +107,46 @@ def run() -> None:
     assert '"creationIntent": "init"' in init_user
     assert '"creationIntent": "continue"' in continue_user
     assert "previousIndexHtmlPrefix" in continue_user
+    assert "A" * 3000 not in continue_user
+    long_static_html = "<!doctype html><html><body><style>.x{color:red}</style><script>bad()</script><main>Preview Direction</main>" + ("B" * 20000) + "</body></html>"
     final_payload = build_final_game_payload(
         model="test-model",
         user_request="continue racer",
         input_assets=[],
-        candidate={"candidateId": "candidate-1", "title": "Racer", "staticHtml": "<html>preview</html>"},
+        candidate={"candidateId": "candidate-1", "title": "Racer", "staticHtml": long_static_html},
         workspace_boundary=".worktrees/create-demo",
         previous_project_context=continue_context,
     )
     final_user = final_payload["input"][1]["content"][0]["text"]
+    final_system = final_payload["input"][0]["content"][0]["text"]
     assert '"creationIntent": "continue"' in final_user
     assert "final output contract remains identical to initial creation" in final_user
+    assert '"staticHtmlChars"' in final_user
+    assert "staticHtmlTextSummary" in final_user
+    assert "B" * 10000 not in final_user
+    assert "window.parent.postMessage" in final_system
+    assert "Never use parent.postMessage" in final_system
+    assert "passive:false" in final_system
+    cover_payload = build_cover_payload(
+        model="test-model",
+        user_request="cover",
+        candidate={"title": "Racer", "conceptSummary": "fast", "staticHtml": long_static_html},
+        game_output={
+            "cover": {"title": "Racer", "description": "fast"},
+            "implementationSummary": "playable" + ("C" * 5000),
+            "safetyNotes": ["ok"],
+            "files": [{"path": "index.html", "content": "D" * 10000}],
+        },
+    )
+    cover_system = cover_payload["input"][0]["content"][0]["text"]
+    cover_user = cover_payload["input"][1]["content"][0]["text"]
+    cover_contract = json.loads(cover_user)["outputContract"]
+    assert "The response must include exactly one durable asset field: imageBase64 or svg" in cover_system
+    assert "Never return only text, only summary" in cover_system
+    assert cover_contract["requiredOneOf"] == ["imageBase64", "svg"]
+    assert "D" * 1000 not in cover_user
+    assert "C" * 3000 not in cover_user
+    assert "filePaths" in cover_user
 
     create_service._make_graph_adapter = lambda ai_config: DecentralizedFakeAdapter()  # type: ignore[assignment]
     client = TestClient(app)
@@ -186,6 +226,40 @@ def run() -> None:
     assert document.status_code == 200
     assert "requestAnimationFrame" in document.text
 
+    create_service._make_graph_adapter = lambda ai_config: DecentralizedBadCoverAdapter()  # type: ignore[assignment]
+    degraded_job = client.post(
+        "/create/jobs",
+        json={"prompt": "make alternatives with degraded cover", "files": [], "agentMode": "decentralized", "createType": "init"},
+        headers=headers,
+    )
+    assert degraded_job.status_code == 202
+    degraded_payload = degraded_job.json()
+    degraded_previews = client.get(f"/create/runs/{degraded_payload['runId']}/decentralized-previews", headers=headers)
+    assert degraded_previews.status_code == 200
+    degraded_candidate = degraded_previews.json()["candidates"][0]["candidateId"]
+    degraded_selected = client.post(
+        f"/create/runs/{degraded_payload['runId']}/decentralized-selection",
+        json={"candidateId": degraded_candidate},
+        headers=headers,
+    )
+    assert degraded_selected.status_code == 200
+    degraded_confirmed = client.post(
+        f"/create/runs/{degraded_payload['runId']}/decentralized-confirm",
+        json={"decision": "accepted"},
+        headers=headers,
+    )
+    assert degraded_confirmed.status_code == 200
+    degraded_final = client.get(f"/create/jobs/{degraded_payload['id']}", headers=headers)
+    assert degraded_final.status_code == 200
+    assert degraded_final.json()["status"] == "completed"
+    degraded_steps = client.get(f"/create/runs/{degraded_payload['runId']}/steps", headers=headers)
+    degraded_stages = [step["stage"] for step in degraded_steps.json()]
+    assert "decentralized_cover_llm_call" in degraded_stages
+    assert "decentralized_cover_degraded" in degraded_stages
+    assert "cover_uploaded" in degraded_stages
+    assert "run_failed" not in degraded_stages
+
+    create_service._make_graph_adapter = lambda ai_config: DecentralizedFakeAdapter()  # type: ignore[assignment]
     reject_job = client.post(
         "/create/jobs",
         json={"prompt": "make alternatives then reject", "files": [], "agentMode": "decentralized", "createType": "init"},

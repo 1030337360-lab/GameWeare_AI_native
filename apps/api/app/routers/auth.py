@@ -18,10 +18,20 @@ from app.services.auth_service import (
     require_user,
     revoke_token,
     serialize_user,
+    token_jti,
     verify_password,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _issue_auth_response_with_ai_cache(user: UserProfile) -> AuthResponse:
+    auth = issue_auth_response(user)
+    if auth.accessToken:
+        from app.services.create_service import warm_ai_config_cache
+
+        warm_ai_config_cache(user.id, token_jti(auth.accessToken))
+    return auth
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -52,7 +62,7 @@ VALUES (%s, 'email', %s, %s, %s)
     except UniqueViolation as exc:
         raise HTTPException(status_code=409, detail="Email already registered") from exc
 
-    return issue_auth_response(serialize_user(user))
+    return _issue_auth_response_with_ai_cache(serialize_user(user))
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -85,7 +95,7 @@ LIMIT 1
 
     with db_connection() as connection:
         connection.execute("UPDATE users SET last_login_at = now() WHERE id = %s", (row["id"],))
-    return issue_auth_response(serialize_user(row))
+    return _issue_auth_response_with_ai_cache(serialize_user(row))
 
 
 @router.post("/logout", response_model=SessionState)
@@ -235,6 +245,6 @@ VALUES (%s, 'google', %s, %s, %s, %s, now() + (%s || ' seconds')::interval)
                 )
             connection.execute("UPDATE users SET last_login_at = now() WHERE id = %s", (user_row["id"],))
 
-    auth = issue_auth_response(serialize_user(user_row))
+    auth = _issue_auth_response_with_ai_cache(serialize_user(user_row))
     redirect_url = f"{settings.web_base_url}/auth/callback#access_token={auth.accessToken}"
     return RedirectResponse(redirect_url)

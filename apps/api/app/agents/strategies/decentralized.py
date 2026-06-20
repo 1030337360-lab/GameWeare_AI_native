@@ -51,6 +51,10 @@ class DecentralizedAgentStrategy(BaseAgentStrategy):
 
 Decentralized peer task:
 Return one JSON tool call or one JSON final output.
+Runtime acceptance checklist for index.html:
+1. Use direct window.parent.postMessage({{"source":"yahaha-game","type":type,"payload":payload}}, "*") for game_ready, game_start, game_end, and game_load_error.
+2. Do not use parent.postMessage, parent["postMessage"], window["parent"], window?.parent, self.parent, globalThis.parent, const p = window.parent, or any window.parent property other than postMessage.
+3. Use requestAnimationFrame for live game loops and preventDefault with passive:false listeners for handled keyboard controls.
 For final output, put this peer payload inside output together with the game package fields:
 {{
   "Finished": true,

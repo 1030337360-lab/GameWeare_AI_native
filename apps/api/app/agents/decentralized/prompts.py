@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -39,8 +40,52 @@ def multimodal_summary(input_assets: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
+def _truncate_text(value: Any, limit: int) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text[:limit]
+
+
+def _html_text_summary(html: str, *, limit: int = 1600) -> str:
+    text = re.sub(r"<script\b.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _compact_previous_project_item(item: dict[str, Any]) -> dict[str, Any]:
+    artifacts = item.get("artifacts") if isinstance(item.get("artifacts"), list) else []
+    files = item.get("workspaceFiles") if isinstance(item.get("workspaceFiles"), list) else []
+    return {
+        "type": item.get("type"),
+        "summary": _truncate_text(item.get("summary", ""), 800),
+        "gameSlug": item.get("gameSlug"),
+        "title": item.get("title"),
+        "description": _truncate_text(item.get("description", ""), 800),
+        "versionNo": item.get("versionNo"),
+        "entryFile": item.get("entryFile"),
+        "workspaceFiles": [str(path) for path in files[:80]],
+        "artifacts": [
+            {
+                "filename": artifact.get("filename"),
+                "kind": artifact.get("kind"),
+                "contentType": artifact.get("contentType"),
+                "objectKey": artifact.get("objectKey"),
+            }
+            for artifact in artifacts[:40]
+            if isinstance(artifact, dict)
+        ],
+        "previousIndexHtmlPrefix": _truncate_text(item.get("previousIndexHtmlPrefix", ""), 1800),
+        "previousSourceJsonPrefix": _truncate_text(item.get("previousSourceJson", ""), 1200),
+    }
+
+
 def _previous_project_context(previous_project_context: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    return previous_project_context or []
+    return [
+        _compact_previous_project_item(item)
+        for item in (previous_project_context or [])[:3]
+        if isinstance(item, dict)
+    ]
 
 
 def _intent_label(previous_project_context: list[dict[str, Any]] | None) -> str:
@@ -159,7 +204,11 @@ Return exactly one JSON object and no markdown.
 Use the selected static preview as creative direction, but now produce a fully playable iframe HTML5 game.
 The final output must be:
 {"type":"final","output":{"Finished":true,"files":[{"path":"index.html","content":"..."}],"cover":{"title":"...","description":"...","tags":["..."]},"implementationSummary":"...","safetyNotes":["..."]}}
-The game must be self-contained in index.html, use Canvas or DOM safely, run continuously with requestAnimationFrame when appropriate, prevent keyboard scrolling, keep cursor visible, and post Yahaha lifecycle messages game_ready and game_start.
+The game must be self-contained in index.html, use Canvas or DOM safely, run continuously with requestAnimationFrame when appropriate, prevent keyboard scrolling, keep cursor visible, and post Yahaha lifecycle messages game_ready, game_start, game_end, and game_load_error.
+Use direct window.parent.postMessage({source:"yahaha-game",type,payload}, "*") for lifecycle events.
+The only allowed parent window reference in index.html is the exact member chain window.parent.postMessage(...).
+Never use parent.postMessage, parent["postMessage"], window["parent"], window?.parent, self.parent, globalThis.parent, const p = window.parent, or any window.parent property other than postMessage.
+Keyboard games must support Arrow keys and WASD when movement is requested, Space for the primary action when requested, and preventDefault with passive:false listeners for handled keys.
 Do not include api keys, tokens, backend IDs, remote scripts, eval, local file APIs, pointer lock, or allow-same-origin assumptions."""
     user = json.dumps(
         {
@@ -168,16 +217,7 @@ Do not include api keys, tokens, backend IDs, remote scripts, eval, local file A
             "intentRules": _intent_rules(previous_project_context),
             "multimodalInputs": multimodal_summary(input_assets),
             "previousProjectContext": _previous_project_context(previous_project_context),
-            "selectedDirection": {
-                "candidateId": candidate.get("candidateId"),
-                "title": candidate.get("title"),
-                "conceptSummary": candidate.get("conceptSummary"),
-                "expertRole": candidate.get("expertRole"),
-                "expertDomain": candidate.get("expertDomain"),
-                "expertIntro": candidate.get("expertIntro"),
-                "styleTags": candidate.get("styleTags"),
-                "staticHtmlPreview": str(candidate.get("staticHtml", ""))[:50000],
-            },
+            "selectedDirection": _selected_direction_for_final(candidate),
             "workspaceBoundary": workspace_boundary,
         },
         ensure_ascii=False,
@@ -186,26 +226,67 @@ Do not include api keys, tokens, backend IDs, remote scripts, eval, local file A
     return _responses_payload(model=model, system=system, user=user)
 
 
+def _selected_direction_for_final(candidate: dict[str, Any]) -> dict[str, Any]:
+    static_html = str(candidate.get("staticHtml", ""))
+    return {
+        "candidateId": candidate.get("candidateId"),
+        "title": candidate.get("title"),
+        "conceptSummary": _truncate_text(candidate.get("conceptSummary", ""), 1000),
+        "expertRole": candidate.get("expertRole"),
+        "expertDomain": candidate.get("expertDomain"),
+        "expertIntro": _truncate_text(candidate.get("expertIntro", ""), 900),
+        "styleTags": candidate.get("styleTags"),
+        "staticHtmlPreview": static_html[:8000],
+        "staticHtmlChars": len(static_html),
+        "staticHtmlTextSummary": _html_text_summary(static_html),
+    }
+
+
+def _selected_direction_for_cover(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": candidate.get("title"),
+        "conceptSummary": _truncate_text(candidate.get("conceptSummary", ""), 800),
+        "expertRole": candidate.get("expertRole"),
+        "styleTags": candidate.get("styleTags"),
+    }
+
+
+def _final_game_summary_for_cover(game_output: dict[str, Any]) -> dict[str, Any]:
+    cover = game_output.get("cover") if isinstance(game_output.get("cover"), dict) else {}
+    files = game_output.get("files") if isinstance(game_output.get("files"), list) else []
+    return {
+        "cover": {
+            "title": cover.get("title"),
+            "description": _truncate_text(cover.get("description", ""), 700),
+            "tags": cover.get("tags") if isinstance(cover.get("tags"), list) else [],
+        },
+        "implementationSummary": _truncate_text(game_output.get("implementationSummary", ""), 1200),
+        "safetyNotes": game_output.get("safetyNotes") if isinstance(game_output.get("safetyNotes"), list) else [],
+        "filePaths": [str(file.get("path")) for file in files[:20] if isinstance(file, dict) and file.get("path")],
+    }
+
+
 def build_cover_payload(*, model: str, user_request: str, candidate: dict[str, Any], game_output: dict[str, Any]) -> dict[str, Any]:
     system = """You are the Yahaha Decentralized Cover Agent.
 Create one durable 1200x900 game catalog cover for the selected direction and final game.
 Return exactly one JSON object and no markdown.
-Preferred output is {"imageBase64":"...","mimeType":"image/png","summary":"...","width":1200,"height":900}.
-If image generation is unavailable, return {"svg":"<svg ...>...</svg>","mimeType":"image/svg+xml","summary":"...","width":1200,"height":900}.
+The response must include exactly one durable asset field: imageBase64 or svg.
+Preferred output is {"imageBase64":"...","mimeType":"image/png","summary":"...","width":1200,"height":900}; imageBase64 must be raw base64 bytes or a data:image/...;base64 URL.
+If raster image generation is unavailable, you must return {"svg":"<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='900' viewBox='0 0 1200 900'>...</svg>","mimeType":"image/svg+xml","summary":"...","width":1200,"height":900}.
+Never return only text, only summary, only design instructions, or only a refusal. If you cannot create raster art, create a complete SVG yourself.
+SVG fallback must be self-contained: no external hrefs, images, scripts, foreignObject, animation fetches, or remote fonts.
 Do not return placeholders, remote URLs, api keys, tokens, or base64 in explanations."""
     user = json.dumps(
         {
             "createRequest": user_request,
-            "selectedDirection": {
-                "title": candidate.get("title"),
-                "conceptSummary": candidate.get("conceptSummary"),
-                "expertRole": candidate.get("expertRole"),
-                "styleTags": candidate.get("styleTags"),
-            },
-            "finalGame": {
-                "cover": game_output.get("cover"),
-                "implementationSummary": game_output.get("implementationSummary"),
-                "safetyNotes": game_output.get("safetyNotes"),
+            "selectedDirection": _selected_direction_for_cover(candidate),
+            "finalGame": _final_game_summary_for_cover(game_output),
+            "outputContract": {
+                "requiredOneOf": ["imageBase64", "svg"],
+                "imageBase64": "base64 encoded PNG/WebP/JPEG image bytes, preferred; do not omit unless svg is present",
+                "mimeType": "image/png | image/webp | image/jpeg | image/svg+xml",
+                "svg": "complete self-contained 1200x900 SVG string fallback; required when imageBase64 is absent",
+                "summary": "short non-secret generation summary",
             },
         },
         ensure_ascii=False,

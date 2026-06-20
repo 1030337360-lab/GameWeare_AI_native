@@ -512,6 +512,7 @@ LEFT JOIN LATERAL (
   WHERE
     a.version_id = gv.id
     AND a.kind = 'bundle'
+    AND a.object_key = gv.storage_prefix || '/' || gv.entry_file
     AND a.public_url IS NOT NULL
   ORDER BY a.created_at DESC
   LIMIT 1
@@ -569,7 +570,7 @@ def get_game_document(game_id: str) -> str | None:
 SELECT bundle.bucket, bundle.object_key
 FROM games g
 JOIN game_versions gv ON gv.id = g.current_version_id
-JOIN assets bundle ON bundle.version_id = gv.id AND bundle.kind = 'bundle'
+JOIN assets bundle ON bundle.version_id = gv.id AND bundle.kind = 'bundle' AND bundle.object_key = gv.storage_prefix || '/' || gv.entry_file
 WHERE
   g.slug = %s
   AND g.publish_status = 'published'

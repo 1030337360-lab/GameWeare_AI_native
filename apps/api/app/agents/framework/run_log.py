@@ -79,15 +79,22 @@ ON CONFLICT (run_id, step_no) DO UPDATE SET
 
     def append_llm_call(self, payload: dict[str, Any]) -> dict[str, Any]:
         metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        provider_error = payload.get("providerError") if isinstance(payload.get("providerError"), dict) else None
+        status = "failed" if payload.get("status") == "failed" or provider_error else "succeeded"
         return self.append(
             stage="llm_call",
-            status="succeeded",
+            status=status,
             input_summary=str(metrics.get("promptPrefix", ""))[:500],
-            output_summary=str(payload.get("outputPreview", ""))[:500],
+            output_summary=(
+                str(provider_error.get("message") or provider_error.get("code"))[:500]
+                if provider_error
+                else str(payload.get("outputPreview", ""))[:500]
+            ),
             metrics={
                 "iteration": payload.get("iteration"),
                 "strategy": payload.get("strategy"),
                 "topology": payload.get("topology"),
+                "providerError": provider_error,
                 "promptEnglishWords": metrics.get("promptEnglishWords"),
                 "promptChineseChars": metrics.get("promptChineseChars"),
                 "prefixEnglishWords": metrics.get("prefixEnglishWords"),

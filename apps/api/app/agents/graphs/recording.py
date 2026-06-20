@@ -67,6 +67,11 @@ def build_llm_call_event(
     metrics: dict[str, Any],
     raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    provider_error = None
+    if isinstance(raw, dict):
+        from app.agents.graphs.errors import provider_error_diagnostics
+
+        provider_error = provider_error_diagnostics(raw)
     return {
         "kind": "llm_call",
         "strategy": strategy,
@@ -74,6 +79,8 @@ def build_llm_call_event(
         "iteration": iteration,
         "outputText": output_text,
         "outputPreview": output_text[:600],
+        "status": "failed" if provider_error else "succeeded",
+        "providerError": provider_error,
         "metrics": metrics,
         "raw": raw or {},
     }

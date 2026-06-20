@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import sys
 from uuid import uuid4
@@ -18,6 +19,7 @@ from app.config import get_settings
 from app.database import db_connection
 from app.schemas import LLMTestResult
 from app.services import create_service
+from app.services.auth_service import redis_client, token_jti
 from app.services.maintenance_service import bootstrap_maintainer_account
 from app.services.play_stats_service import flush_pending_play_counts
 
@@ -98,6 +100,7 @@ def run() -> None:
         },
     )
     assert auth_register.status_code == 200
+    user_id = auth_register.json()["user"]["id"]
     token = auth_register.json()["accessToken"]
     assert token
 
@@ -162,9 +165,23 @@ def run() -> None:
     assert "baseUrl" not in saved_config_state.json()
     assert "model" not in saved_config_state.json()
 
+    cache_client = redis_client()
+    ai_config_key_pattern = f"{create_service.AI_CONFIG_KEY_PREFIX}{user_id}:*"
+    for cache_key in list(cache_client.scan_iter(ai_config_key_pattern)):
+        cache_client.delete(cache_key)
+    assert list(cache_client.scan_iter(ai_config_key_pattern)) == []
+
     relogin = client.post("/auth/login", json={"email": email, "password": "password123"})
     assert relogin.status_code == 200
     relogin_token = relogin.json()["accessToken"]
+    relogin_jti = token_jti(relogin_token)
+    assert relogin_jti
+    warmed_config = cache_client.get(f"{create_service.AI_CONFIG_KEY_PREFIX}{user_id}:{relogin_jti}")
+    assert warmed_config
+    warmed_payload = json.loads(warmed_config)
+    assert warmed_payload["baseUrl"] == "https://api.example.test/v1"
+    assert warmed_payload["model"] == "test-model"
+    assert warmed_payload["apiKey"] == "test-api-key"
     relogin_config_state = client.get("/create/ai-config", headers={"Authorization": f"Bearer {relogin_token}"})
     assert relogin_config_state.status_code == 200
     assert relogin_config_state.json()["configured"] is True

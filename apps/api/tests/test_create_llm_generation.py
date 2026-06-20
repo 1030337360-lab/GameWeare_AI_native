@@ -17,6 +17,7 @@ configure_test_environment()
 from app.config import get_settings
 from app.agents.graphs.llm_adapter import LLMGraphResult, build_llm_call_metrics
 from app.agents.create import AgentArtifact
+from app.agents.create.cover_agent import build_cover_responses_payload
 from app.agents.framework.workspace import WorkspaceContext, WorkspaceFS
 from app.main import app
 from app.services import create_service
@@ -127,7 +128,22 @@ class RefineHTMLAdapter:
         assert "Yahaha Refine Create Agent" in payload_text
         assert "requestAnimationFrame" in payload_text
         assert "Previous draft or published game artifacts" in payload_text
-        text = """<!doctype html><html><head><meta charset='utf-8'><title>Optimized LLM Arcade</title></head><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>"""
+        output = {
+            "type": "final",
+            "output": {
+                "Finished": True,
+                "files": [
+                    {
+                        "path": "index.html",
+                        "content": """<!doctype html><html><head><meta charset='utf-8'><title>Optimized LLM Arcade</title></head><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                    }
+                ],
+                "cover": {"title": "Optimized LLM Arcade", "description": "Optimized through refine JSON.", "tags": ["refined"]},
+                "implementationSummary": "Refine returned the same JSON tool/final contract as other strategies.",
+                "safetyNotes": ["No privileged APIs."],
+            },
+        }
+        text = json.dumps(output, ensure_ascii=False)
         raw = {"output_text": text, "usage": {"input_tokens": 20, "output_tokens": 40, "total_tokens": 60}}
         return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
 
@@ -153,9 +169,26 @@ class UnsupportedImageLLMAdapter:
         return LLMGraphResult(text="", raw=raw, metrics=build_llm_call_metrics(payload, response_text="", response_raw=raw))
 
 
+class ProviderFailureLLMAdapter:
+    def invoke(self, payload: dict) -> LLMGraphResult:
+        raw = {"ok": False, "statusCode": 504, "error": {"code": "provider_timeout", "message": "upstream provider timed out"}}
+        return LLMGraphResult(text="", raw=raw, metrics=build_llm_call_metrics(payload, response_text="", response_raw=raw))
+
+
 def run() -> None:
     get_settings.cache_clear()
     assert get_settings().create_static_generation is False
+    cover_prompt_payload = build_cover_responses_payload(
+        model="test-model",
+        user_request="make a game",
+        game_title="Cover Contract",
+        game_description="A game that needs a cover.",
+    )
+    cover_prompt_text = json.dumps(cover_prompt_payload, ensure_ascii=False)
+    cover_user_contract = json.loads(cover_prompt_payload["input"][1]["content"][0]["text"])["outputContract"]
+    assert "The response must include exactly one durable asset field: imageBase64 or svg" in cover_prompt_text
+    assert "Never return only text, only summary" in cover_prompt_text
+    assert cover_user_contract["requiredOneOf"] == ["imageBase64", "svg"]
     safe_scan = create_service._scan_publish_artifacts(
         [
             AgentArtifact(
@@ -169,6 +202,36 @@ def run() -> None:
         "index.html",
     )
     assert safe_scan["passed"] is True
+    allowed_parent_message_scan = create_service._scan_publish_artifacts(
+        [
+            AgentArtifact(
+                "index.html",
+                b"""<!doctype html><html><body><script>window . parent . postMessage({source:'yahaha-game',type:'game_ready',payload:{}}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                "text/html",
+                "bundle",
+                "runtime",
+            )
+        ],
+        "index.html",
+    )
+    assert allowed_parent_message_scan["passed"] is True
+    for blocked_parent_html in (
+        b"""<!doctype html><html><body><script>parent.postMessage({source:'yahaha-game',type:'game_ready'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>const p = window.parent; requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>window.parent.location.href = '/x'; requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>window["parent"].postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>parent["postMessage"]({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>window?.parent.postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>self.parent.postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>globalThis.parent.postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+    ):
+        parent_scan = create_service._scan_publish_artifacts(
+            [AgentArtifact("index.html", blocked_parent_html, "text/html", "bundle", "runtime")],
+            "index.html",
+        )
+        parent_codes = {issue["code"] for issue in parent_scan["issues"]}
+        assert parent_scan["passed"] is False
+        assert "PARENT_ACCESS_BLOCKED" in parent_codes
     blocked_scan = create_service._scan_publish_artifacts(
         [
             AgentArtifact(
@@ -228,6 +291,18 @@ def run() -> None:
     hydrated_file = hydrated["output"]["files"][0]
     assert hydrated_file["content"].startswith("<!doctype html>")
     assert "See workspace file" not in hydrated_file["content"]
+
+    explicit_content = create_service._hydrate_output_from_workspace(
+        {
+            "type": "final",
+            "output": {
+                "Finished": True,
+                "files": [{"path": "index.html", "content": "<!doctype html><html><body>new llm content</body></html>"}],
+            },
+        },
+        hydration_context,
+    )
+    assert explicit_content["output"]["files"][0]["content"] == "<!doctype html><html><body>new llm content</body></html>"
 
     placeholder_scan = create_service._scan_publish_artifacts(
         [AgentArtifact("index.html", b"See workspace file: index.html", "text/html; charset=utf-8", "bundle", "final")],
@@ -380,11 +455,15 @@ def run() -> None:
     opt_step_payload = opt_steps.json()
     opt_stages = [step["stage"] for step in opt_step_payload]
     assert "refinement_context_loaded" in opt_stages
-    assert "refine_html_output_normalized" in opt_stages
+    assert "llm_output_normalized" in opt_stages
     assert opt_payload["publishStatus"] == "draft"
     opt_publish = client.post(f"/create/jobs/{opt_payload['id']}/publish", headers={"Authorization": f"Bearer {token}"})
     assert opt_publish.status_code == 200
     opt_payload = opt_publish.json()
+    opt_versions = client.get(f"/games/{opt_payload['gameSlug']}/versions", headers={"Authorization": f"Bearer {token}"})
+    assert opt_versions.status_code == 200
+    assert opt_versions.json()[0]["versionNo"] == 2
+    assert opt_versions.json()[0]["current"] is True
     opt_document = client.get(f"/play/{opt_payload['gameSlug']}/document")
     assert opt_document.status_code == 200
     assert "optimized=true" in opt_document.text
@@ -406,28 +485,61 @@ def run() -> None:
     assert failed_events.status_code == 200
     assert "event: error" in failed_events.text
 
+    create_service._make_graph_adapter = lambda ai_config: ProviderFailureLLMAdapter()  # type: ignore[assignment]
+    provider_failed_job = client.post(
+        "/create/jobs",
+        json={"prompt": "provider should fail with diagnostics", "files": [], "agentMode": "react", "createType": "init"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert provider_failed_job.status_code == 202
+    provider_failed_start = provider_failed_job.json()
+    provider_failed_final = client.get(f"/create/jobs/{provider_failed_start['id']}", headers={"Authorization": f"Bearer {token}"})
+    assert provider_failed_final.status_code == 200
+    provider_failed_payload = provider_failed_final.json()
+    assert provider_failed_payload["status"] == "failed"
+    provider_failed_steps = client.get(f"/create/runs/{provider_failed_payload['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
+    assert provider_failed_steps.status_code == 200
+    provider_steps = provider_failed_steps.json()
+    provider_llm_step = next(step for step in provider_steps if step["stage"] == "llm_call")
+    assert provider_llm_step["status"] == "failed"
+    assert provider_llm_step["metrics"]["providerError"]["code"] == "provider_timeout"
+    assert any(step["stage"] == "llm_generation_failed" and step["metrics"]["providerError"]["statusCode"] == 504 for step in provider_steps)
+    assert any(step["stage"] == "run_failed" and step["metrics"]["providerError"]["code"] == "provider_timeout" for step in provider_steps)
+    from app.services.maintenance_service import list_failed_create_runs
+
+    maintainer_run = next(run for run in list_failed_create_runs(limit=20) if run.runId == provider_failed_payload["runId"])
+    maintainer_llm_step = next(step for step in maintainer_run.steps if step.stage == "llm_call")
+    assert maintainer_llm_step.metrics["providerError"]["code"] == "provider_timeout"
+
     create_service._make_graph_adapter = lambda ai_config: BadCoverLLMAdapter()  # type: ignore[assignment]
-    failed_cover_job = client.post(
+    degraded_cover_job = client.post(
         "/create/jobs",
         json={"prompt": "valid game but invalid cover", "files": [], "agentMode": "plan", "createType": "init"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert failed_cover_job.status_code == 202
-    failed_cover_start = failed_cover_job.json()
-    failed_cover_accept = client.post(
-        f"/create/runs/{failed_cover_start['runId']}/plan-decision",
+    assert degraded_cover_job.status_code == 202
+    degraded_cover_start = degraded_cover_job.json()
+    degraded_cover_accept = client.post(
+        f"/create/runs/{degraded_cover_start['runId']}/plan-decision",
         json={"decision": "accepted"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert failed_cover_accept.status_code == 200
-    failed_cover_payload = failed_cover_accept.json()
-    assert failed_cover_payload["status"] == "failed"
-    assert failed_cover_payload["gameSlug"] is None
-    failed_cover_steps = client.get(f"/create/runs/{failed_cover_payload['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
-    assert failed_cover_steps.status_code == 200
-    failed_cover_stages = [step["stage"] for step in failed_cover_steps.json()]
-    assert "cover_llm_call" in failed_cover_stages
-    assert "run_failed" in failed_cover_stages
+    assert degraded_cover_accept.status_code == 200
+    degraded_cover_payload = degraded_cover_accept.json()
+    assert degraded_cover_payload["status"] == "completed"
+    assert degraded_cover_payload["gameSlug"]
+    degraded_cover_steps = client.get(f"/create/runs/{degraded_cover_payload['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
+    assert degraded_cover_steps.status_code == 200
+    degraded_cover_step_payload = degraded_cover_steps.json()
+    degraded_cover_stages = [step["stage"] for step in degraded_cover_step_payload]
+    assert "cover_llm_call" in degraded_cover_stages
+    assert "cover_generation_degraded" in degraded_cover_stages
+    assert "cover_uploaded" in degraded_cover_stages
+    assert "run_failed" not in degraded_cover_stages
+    degraded_step = next(step for step in degraded_cover_step_payload if step["stage"] == "cover_generation_degraded")
+    assert degraded_step["metrics"]["reason"] == "cover_output_contract_failed"
+    completed_step = next(step for step in degraded_cover_step_payload if step["stage"] == "run_completed")
+    assert completed_step["metrics"]["coverUrl"]
 
     image_bytes = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
     upload = client.post(

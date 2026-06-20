@@ -59,8 +59,11 @@ Hard requirements:
 - Target size: {COVER_WIDTH}x{COVER_HEIGHT}, 4:3.
 - Use the user's request, game title, gameplay summary, and style tags.
 - Return exactly one JSON object and no markdown fences.
-- Preferred output: {{"imageBase64":"...","mimeType":"image/png","summary":"..."}} or image/webp.
-- If the provider cannot return raster image data, return {{"svg":"<svg ...>...</svg>","mimeType":"image/svg+xml","summary":"..."}}.
+- The response must include exactly one durable asset field: imageBase64 or svg.
+- Preferred output: {{"imageBase64":"...","mimeType":"image/png","summary":"..."}} or image/webp. imageBase64 must be raw base64 bytes or a data:image/...;base64 URL.
+- If raster image generation is unavailable, you must return {{"svg":"<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='900' viewBox='0 0 1200 900'>...</svg>","mimeType":"image/svg+xml","summary":"..."}}.
+- Never return only text, only summary, only design instructions, or only a refusal. If you cannot create raster art, create a complete SVG yourself.
+- SVG fallback must be self-contained: no external hrefs, images, scripts, foreignObject, animation fetches, or remote fonts.
 - Do not return external image URLs.
 - Do not include secrets, API keys, or backend-only identifiers.
 - Do not return a generic template cover.
@@ -79,10 +82,16 @@ Hard requirements:
                 "usage": "home grid card, game detail hero, play manifest asset",
             },
             "outputContract": {
-                "imageBase64": "base64 encoded PNG/WebP/JPEG image bytes, preferred",
+                "requiredOneOf": ["imageBase64", "svg"],
+                "imageBase64": "base64 encoded PNG/WebP/JPEG image bytes, preferred; do not omit unless svg is present",
                 "mimeType": "image/png | image/webp | image/jpeg | image/svg+xml",
-                "svg": "SVG string fallback only when raster image is not available",
+                "svg": "complete self-contained 1200x900 SVG string fallback; required when imageBase64 is absent",
                 "summary": "short non-secret generation summary",
+                "invalidExamples": [
+                    {"summary": "I cannot generate images"},
+                    {"description": "cover concept only"},
+                    {"imageUrl": "https://example.com/cover.png"},
+                ],
             },
         },
         ensure_ascii=False,

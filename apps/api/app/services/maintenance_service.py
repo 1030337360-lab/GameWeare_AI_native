@@ -189,6 +189,7 @@ def _safe_step_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "files",
         "ok",
         "error",
+        "providerError",
         "iteration",
         "strategy",
         "topology",

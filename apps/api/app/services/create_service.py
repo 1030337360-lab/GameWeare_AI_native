@@ -40,6 +40,7 @@ from app.agents.decentralized.storage import clear_decentralized_cache
 from app.agents.framework import create_agent_run_context, finalize_agent_run, load_agent_run_context_for_job
 from app.agents.framework.workspace import WorkspaceFS
 from app.agents.framework.schema import ensure_agent_framework_schema
+from app.agents.graphs.errors import LLMProviderCallError, provider_error_diagnostics
 from app.agents.graphs.llm_adapter import OpenAIResponsesGraphAdapter
 from app.agents.graphs.recording import LLMCallRecorder
 from app.agents.multi_agent import record_multi_agent_contracts
@@ -78,6 +79,12 @@ class MultimodalUnsupportedError(RuntimeError):
     pass
 
 
+class CreateLLMGenerationError(RuntimeError):
+    def __init__(self, message: str, diagnostics: dict[str, Any] | None = None):
+        self.diagnostics = diagnostics or {}
+        super().__init__(message)
+
+
 class PublishHtmlSafetyParser(HTMLParser):
     BLOCKED_TAGS = {"iframe", "object", "embed", "link", "base", "form"}
     URL_ATTRS = {"src", "href", "action", "formaction", "poster"}
@@ -109,6 +116,28 @@ class PublishHtmlSafetyParser(HTMLParser):
                     self.issues.append({"code": "REMOTE_RESOURCE_BLOCKED", "message": f"{self.filename} references remote resource in {name}."})
                 if value.startswith(("javascript:", "data:text/html", "file:", "blob:")):
                     self.issues.append({"code": "DANGEROUS_URL_BLOCKED", "message": f"{self.filename} contains dangerous URL in {name}."})
+
+
+_ALLOWED_PARENT_POST_MESSAGE_RE = re.compile(r"\bwindow\s*\.\s*parent\s*\.\s*postmessage\s*\(", re.IGNORECASE)
+_WINDOW_PARENT_ACCESS_RE = re.compile(r"\bwindow\s*(?:\??\.\s*parent\b|\[\s*['\"]parent['\"]\s*\])", re.IGNORECASE)
+_PARENT_ALIAS_ACCESS_RE = re.compile(
+    r"(?<![\w$.])parent\s*(?:\.\s*|\[\s*['\"])(?:postmessage|location|document|frames|top|opener|history)\b",
+    re.IGNORECASE,
+)
+_INDIRECT_PARENT_ACCESS_RE = re.compile(
+    r"\b(?:self|globalthis)\s*\.\s*parent\b",
+    re.IGNORECASE,
+)
+
+
+def _html_has_blocked_parent_access(html: str) -> bool:
+    """Allow Yahaha iframe lifecycle messaging while blocking direct parent access."""
+    without_allowed_post_message = _ALLOWED_PARENT_POST_MESSAGE_RE.sub("(", html)
+    return bool(
+        _WINDOW_PARENT_ACCESS_RE.search(without_allowed_post_message)
+        or _PARENT_ALIAS_ACCESS_RE.search(without_allowed_post_message)
+        or _INDIRECT_PARENT_ACCESS_RE.search(without_allowed_post_message)
+    )
 
 
 def ensure_ai_config_schema() -> None:
@@ -194,6 +223,10 @@ def _ai_config_cache_key(user_id: str, jwt_jti: str | None) -> str:
     return f"{AI_CONFIG_KEY_PREFIX}{user_id}:{jwt_jti or 'session'}"
 
 
+def _ai_config_session_cache_key(user_id: str) -> str:
+    return _ai_config_cache_key(user_id, None)
+
+
 def _recent_game_cache_key(user_id: str) -> str:
     return f"{RECENT_GAME_KEY_PREFIX}{user_id}"
 
@@ -204,7 +237,38 @@ def _plan_approval_cache_key(run_id: str) -> str:
 
 def _cache_ai_config(user_id: str, jwt_jti: str | None, payload: dict[str, str]) -> None:
     ttl = get_settings().jwt_ttl_seconds
-    redis_client().setex(_ai_config_cache_key(user_id, jwt_jti), ttl, json.dumps(payload))
+    serialized = json.dumps(payload)
+    client = redis_client()
+    client.setex(_ai_config_session_cache_key(user_id), ttl, serialized)
+    if jwt_jti:
+        client.setex(_ai_config_cache_key(user_id, jwt_jti), ttl, serialized)
+
+
+def _clear_ai_config_cache(user_id: str) -> None:
+    client = redis_client()
+    for cache_key in list(client.scan_iter(f"{AI_CONFIG_KEY_PREFIX}{user_id}:*")):
+        client.delete(cache_key)
+
+
+def _cached_ai_config(user_id: str, jwt_jti: str | None = None) -> dict[str, str] | None:
+    client = redis_client()
+    cache_keys = [_ai_config_cache_key(user_id, jwt_jti)]
+    session_key = _ai_config_session_cache_key(user_id)
+    if session_key not in cache_keys:
+        cache_keys.append(session_key)
+    for cache_key in cache_keys:
+        cached = client.get(cache_key)
+        if not cached:
+            continue
+        try:
+            payload = json.loads(cached)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("baseUrl") and payload.get("model") and payload.get("apiKey"):
+            if jwt_jti and cache_key != _ai_config_cache_key(user_id, jwt_jti):
+                _cache_ai_config(user_id, jwt_jti, payload)
+            return payload
+    return None
 
 
 def _ai_config_public_state(config: dict[str, str] | None) -> AIConfigState:
@@ -223,20 +287,21 @@ def get_ai_config_state(user: UserProfile | None, jwt_jti: str | None = None) ->
         return AIConfigState(authenticated=False, configured=False, staticGeneration=get_settings().create_static_generation)
     ensure_create_runtime_schema()
 
-    cached = redis_client().get(_ai_config_cache_key(user.id, jwt_jti))
+    cached = _cached_ai_config(user.id, jwt_jti)
     if cached:
-        try:
-            payload = json.loads(cached)
-            if payload.get("baseUrl") and payload.get("model") and payload.get("apiKey"):
-                return _ai_config_public_state(payload)
-        except json.JSONDecodeError:
-            pass
+        return _ai_config_public_state(cached)
 
-    config = _load_ai_config(user.id)
+    config = _load_ai_config(user.id, jwt_jti)
     if not config:
         return _ai_config_public_state(None)
-    _cache_ai_config(user.id, jwt_jti, config)
     return _ai_config_public_state(config)
+
+
+def warm_ai_config_cache(user_id: str, jwt_jti: str | None = None) -> bool:
+    try:
+        return _load_ai_config(user_id, jwt_jti) is not None
+    except Exception:
+        return False
 
 
 def upsert_ai_config(user_id: str, payload: AIConfigRequest, jwt_jti: str | None = None) -> AIConfigState:
@@ -262,6 +327,7 @@ ON CONFLICT (user_id) DO UPDATE SET
             (user_id, base_url, model, api_key, get_settings().ai_config_encryption_secret, provider),
         )
 
+    _clear_ai_config_cache(user_id)
     _cache_ai_config(
         user_id,
         jwt_jti,
@@ -294,14 +360,9 @@ def test_saved_or_payload_ai_config(user_id: str, payload: AIConfigTestRequest |
 
 def _load_ai_config(user_id: str, jwt_jti: str | None = None) -> dict[str, str] | None:
     ensure_create_runtime_schema()
-    cached = redis_client().get(_ai_config_cache_key(user_id, jwt_jti))
+    cached = _cached_ai_config(user_id, jwt_jti)
     if cached:
-        try:
-            payload = json.loads(cached)
-            if payload.get("baseUrl") and payload.get("model") and payload.get("apiKey"):
-                return payload
-        except json.JSONDecodeError:
-            pass
+        return cached
 
     with db_connection() as connection:
         row = connection.execute(
@@ -382,6 +443,18 @@ def _read_minio_text(object_key: str, *, max_chars: int = 160_000) -> str:
 def _artifact_filename_from_key(object_key: str) -> str:
     name = PurePosixPath(object_key.replace("\\", "/")).name
     return name or "artifact.txt"
+
+
+def _latest_provider_error(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in reversed(messages or []):
+        raw = message.get("raw") if isinstance(message, dict) else None
+        diagnostics = provider_error_diagnostics(raw if isinstance(raw, dict) else None)
+        if diagnostics:
+            return diagnostics
+        direct = message.get("providerError") if isinstance(message, dict) else None
+        if isinstance(direct, dict):
+            return direct
+    return None
 
 
 def _load_project_game_for_write(*, connection: Connection, user_id: str, project_id: str) -> dict[str, Any] | None:
@@ -1323,89 +1396,8 @@ def _append_llm_output_parse_step(context: Any, parsed_output: dict[str, Any], g
         )
 
 
-def _extract_refine_html(value: str | dict[str, Any]) -> str:
-    if isinstance(value, dict):
-        for key in ("html", "indexHtml", "index_html", "documentHtml", "content", "text"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                value = candidate
-                break
-        else:
-            value = json.dumps(value, ensure_ascii=False, default=str)
-    text = str(value or "").strip()
-    fence = re.search(r"```(?:html)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    start = text.lower().find("<!doctype")
-    if start < 0:
-        start = text.lower().find("<html")
-    if start > 0:
-        text = text[start:].strip()
-    return text
-
-
-def _parse_refine_html_output(value: str | dict[str, Any], *, context: Any, graph_result: Any) -> dict[str, Any]:
-    html = _extract_refine_html(value)
-    lower = html.lower()
-    warnings: list[str] = ["refine_html_wrapped_by_backend"]
-    if not html.strip() or "<html" not in lower or "</html>" not in lower:
-        context.run_log.append(
-            stage="llm_output_contract_failed",
-            status="failed",
-            input_summary="Refine LLM output did not contain a complete HTML document.",
-            output_summary="refine_output_must_be_complete_html",
-            metrics={
-                "outputTextChars": len(str(value)),
-                "hasDoctype": "<!doctype" in lower,
-                "hasHtmlOpen": "<html" in lower,
-                "hasHtmlClose": "</html>" in lower,
-                "finishReason": getattr(graph_result, "finish_reason", None),
-            },
-        )
-        return {
-            "fallback": True,
-            "fallbackReason": "refine_output_must_be_complete_html",
-            "diagnostics": {
-                "outputTextChars": len(str(value)),
-                "hasDoctype": "<!doctype" in lower,
-                "hasHtmlOpen": "<html" in lower,
-                "hasHtmlClose": "</html>" in lower,
-                "finishReason": getattr(graph_result, "finish_reason", None),
-            },
-        }
-    parsed = {
-        "files": [{"path": "index.html", "content": html}],
-        "cover": {
-            "title": getattr(context, "existing_game", {}).get("title") if isinstance(getattr(context, "existing_game", None), dict) else "Refined Game",
-            "description": "Refined from the previous project version.",
-            "tags": ["refined"],
-        },
-        "implementationSummary": "Refine mode returned a complete updated index.html document. Backend generated manifest/source metadata.",
-        "safetyNotes": ["Refine mode only accepts complete iframe HTML game output."],
-        "fallback": False,
-        "normalizationWarnings": warnings,
-        "diagnostics": {
-            "outputTextChars": len(html),
-            "hasDoctype": "<!doctype" in lower,
-            "hasHtmlOpen": "<html" in lower,
-            "hasHtmlClose": "</html>" in lower,
-            "finishReason": getattr(graph_result, "finish_reason", None),
-        },
-    }
-    context.run_log.append(
-        stage="refine_html_output_normalized",
-        status="succeeded",
-        input_summary="Refine LLM returned full HTML for the next game version.",
-        output_summary="Backend wrapped the HTML as index.html and will synthesize manifest/source metadata.",
-        metrics={"htmlChars": len(html), "normalizationWarnings": warnings},
-    )
-    return parsed
-
-
 def _parse_generation_output_for_context(context: Any, graph_result: Any) -> dict[str, Any]:
     raw_output = _main_agent_output_value(graph_result)
-    if context.create_type == "opt" and context.agent_mode == "refine":
-        return _parse_refine_html_output(raw_output, context=context, graph_result=graph_result)
     parsed_output = parse_main_agent_json_output(_hydrate_output_from_workspace(raw_output, context))
     _append_llm_output_parse_step(context, parsed_output, graph_result)
     return parsed_output
@@ -1649,7 +1641,14 @@ def _hydrate_output_from_workspace(value: str | dict[str, Any], context: Any) ->
         for entry in files:
             if not isinstance(entry, dict):
                 continue
-            workspace_path = entry.get("workspacePath") or entry.get("workspace_path") or entry.get("path")
+            workspace_path = entry.get("workspacePath") or entry.get("workspace_path")
+            content = entry.get("content")
+            if not workspace_path and (
+                not isinstance(content, str)
+                or not content.strip()
+                or content.strip().lower().startswith("see workspace file")
+            ):
+                workspace_path = entry.get("path")
             if not isinstance(workspace_path, str) or not workspace_path:
                 continue
             try:
@@ -1734,6 +1733,120 @@ def _cover_filename(artifact: AgentArtifact) -> str:
     return f"cover.{_cover_extension_for_content_type(artifact.content_type)}"
 
 
+def _safe_svg_text(value: Any, limit: int = 160) -> str:
+    text = str(value or "").strip()[:limit]
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _default_cover_artifact(*, title: str, description: str, reason: str) -> CoverAgentArtifact:
+    safe_title = _safe_svg_text(title or "Generated Game", 90)
+    safe_description = _safe_svg_text(description or "Playable HTML5 game", 130)
+    safe_reason = _safe_svg_text(reason or "cover fallback", 120)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{COVER_WIDTH}" height="{COVER_HEIGHT}" viewBox="0 0 {COVER_WIDTH} {COVER_HEIGHT}" role="img" aria-label="{safe_title}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="0.52" stop-color="#164e63"/>
+      <stop offset="1" stop-color="#7c2d12"/>
+    </linearGradient>
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0H0V64" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="2"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="900" fill="url(#bg)"/>
+  <rect width="1200" height="900" fill="url(#grid)"/>
+  <rect x="80" y="96" width="1040" height="708" rx="36" fill="#020617" fill-opacity="0.52" stroke="#ffffff" stroke-opacity="0.22" stroke-width="3"/>
+  <circle cx="930" cy="248" r="108" fill="#facc15" fill-opacity="0.88"/>
+  <circle cx="1002" cy="314" r="72" fill="#fb7185" fill-opacity="0.82"/>
+  <path d="M146 660 C300 520 380 612 516 476 C660 332 794 414 1054 218" fill="none" stroke="#38bdf8" stroke-width="18" stroke-linecap="round" stroke-opacity="0.9"/>
+  <text x="120" y="248" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="74" font-weight="800">{safe_title}</text>
+  <text x="124" y="326" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="30">{safe_description}</text>
+  <text x="124" y="736" fill="#fed7aa" font-family="Arial, Helvetica, sans-serif" font-size="24">Fallback cover generated by Yahaha backend: {safe_reason}</text>
+</svg>"""
+    content = svg.encode("utf-8")
+    return CoverAgentArtifact(
+        artifact=AgentArtifact("cover.svg", content, "image/svg+xml", "cover", "fallback"),
+        summary=f"Fallback SVG cover generated by backend because {reason}.",
+        metrics={"agent": "backend-cover-fallback", "reason": reason, "width": COVER_WIDTH, "height": COVER_HEIGHT},
+        raw_kind="fallback_svg",
+    )
+
+
+def _copy_existing_cover_artifact(context: Any) -> CoverAgentArtifact | None:
+    existing_game = getattr(context, "existing_game", None)
+    cover_asset_id = existing_game.get("cover_asset_id") if isinstance(existing_game, dict) else None
+    if not cover_asset_id:
+        return None
+    with db_connection() as connection:
+        asset = connection.execute(
+            """
+SELECT bucket, object_key, content_type, width, height
+FROM assets
+WHERE id = %s AND kind = 'cover'
+LIMIT 1
+""",
+            (cover_asset_id,),
+        ).fetchone()
+    if not asset or not asset["bucket"] or not asset["object_key"]:
+        return None
+    try:
+        response = _minio_client().get_object(asset["bucket"], asset["object_key"])
+        try:
+            content = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+    except Exception:
+        return None
+    content_type = str(asset["content_type"] or "image/svg+xml").split(";", 1)[0]
+    if not content:
+        return None
+    return CoverAgentArtifact(
+        artifact=AgentArtifact(_filename_for_existing_cover(content_type), content, content_type, "cover", "fallback"),
+        width=int(asset["width"] or COVER_WIDTH),
+        height=int(asset["height"] or COVER_HEIGHT),
+        summary="Reused the previous project cover because Cover Agent generation failed.",
+        metrics={"agent": "backend-cover-fallback", "fallback": "previous_cover", "sourceAssetId": str(cover_asset_id)},
+        raw_kind="reused_previous_cover",
+    )
+
+
+def _filename_for_existing_cover(content_type: str) -> str:
+    return f"cover.{_cover_extension_for_content_type(content_type)}"
+
+
+def _fallback_cover_artifact(*, context: Any, pipeline: Any, reason: str) -> CoverAgentArtifact:
+    reused = _copy_existing_cover_artifact(context)
+    if reused:
+        return reused
+    return _default_cover_artifact(title=pipeline.title, description=pipeline.description, reason=reason)
+
+
+def _degraded_cover_artifact(*, context: Any, pipeline: Any, reason: str, diagnostics: dict[str, Any] | None = None) -> CoverAgentArtifact:
+    artifact = _fallback_cover_artifact(context=context, pipeline=pipeline, reason=reason)
+    context.run_log.append(
+        stage="cover_generation_degraded",
+        status="succeeded",
+        input_summary="Cover Agent output was unavailable or not publishable.",
+        output_summary=artifact.summary,
+        metrics={
+            "reason": reason,
+            "diagnostics": diagnostics or {},
+            "fallbackRawKind": artifact.raw_kind,
+            "contentType": artifact.content_type,
+            "sizeBytes": artifact.size_bytes,
+            "width": artifact.width,
+            "height": artifact.height,
+        },
+    )
+    return artifact
+
+
 def _source_with_cover_metadata(
     *,
     artifact: AgentArtifact,
@@ -1752,7 +1865,8 @@ def _source_with_cover_metadata(
         source_document["coverAgent"] = {
             "agent": COVER_AGENT_NAME,
             "version": COVER_AGENT_VERSION,
-            "required": True,
+            "required": False,
+            "degraded": cover_artifact.raw_kind.startswith("fallback") or cover_artifact.raw_kind == "reused_previous_cover",
             "contentType": cover_artifact.content_type,
             "width": cover_artifact.width,
             "height": cover_artifact.height,
@@ -1850,8 +1964,7 @@ def _scan_publish_artifacts(artifacts: list[AgentArtifact], entry_file: str) -> 
         for code, needle in checks.items():
             if needle in html:
                 issues.append({"code": code, "message": f"{artifact.filename} contains blocked browser capability: {needle}"})
-        parent_without_post_message = html.replace("window.parent.postmessage", "")
-        if "window.parent" in parent_without_post_message:
+        if _html_has_blocked_parent_access(html):
             issues.append({"code": "PARENT_ACCESS_BLOCKED", "message": f"{artifact.filename} accesses window.parent outside postMessage."})
         if "<script" in html and "src=\"http" in html:
             issues.append({"code": "REMOTE_SCRIPT_BLOCKED", "message": f"{artifact.filename} references a remote script."})
@@ -1913,7 +2026,15 @@ def _generate_required_cover_artifact(
             "targetHeight": COVER_HEIGHT,
         },
     )
-    result = _make_graph_adapter(ai_config).invoke(prompt_payload)
+    try:
+        result = _make_graph_adapter(ai_config).invoke(prompt_payload)
+    except Exception as exc:
+        return _degraded_cover_artifact(
+            context=context,
+            pipeline=pipeline,
+            reason="cover_provider_exception",
+            diagnostics={"error": exc.__class__.__name__, "message": str(exc)[:500]},
+        )
     context.short_term_memory.record_llm_call(
         {
             "kind": "cover_llm_call",
@@ -1927,16 +2048,38 @@ def _generate_required_cover_artifact(
         "Cover Agent returned a cover candidate.",
         metadata={"kind": "cover_llm_call", "metrics": _safe_cover_llm_metrics(result.metrics)},
     )
+    cover_provider_error = provider_error_diagnostics(result.raw if isinstance(result.raw, dict) else None)
     context.run_log.append(
         stage="cover_llm_call",
-        status="failed" if isinstance(result.raw, dict) and result.raw.get("ok") is False else "succeeded",
+        status="failed" if cover_provider_error else "succeeded",
         input_summary=str(result.metrics.get("promptPrefix") or "")[:500],
-        output_summary="Cover model response received." if result.text or result.raw else "Cover model returned an empty response.",
-        metrics=_safe_cover_llm_metrics(result.metrics),
+        output_summary=(
+            str(cover_provider_error.get("message") or cover_provider_error.get("code"))[:500]
+            if cover_provider_error
+            else ("Cover model response received." if result.text or result.raw else "Cover model returned an empty response.")
+        ),
+        metrics={**_safe_cover_llm_metrics(result.metrics), "providerError": cover_provider_error},
     )
-    if isinstance(result.raw, dict) and result.raw.get("ok") is False:
-        raise RuntimeError("Cover Agent provider call failed.")
-    cover_artifact = parse_cover_agent_output(result)
+    if cover_provider_error:
+        return _degraded_cover_artifact(
+            context=context,
+            pipeline=pipeline,
+            reason="cover_provider_error",
+            diagnostics={"providerError": cover_provider_error},
+        )
+    try:
+        cover_artifact = parse_cover_agent_output(result)
+    except Exception as exc:
+        return _degraded_cover_artifact(
+            context=context,
+            pipeline=pipeline,
+            reason="cover_output_contract_failed",
+            diagnostics={
+                "error": exc.__class__.__name__,
+                "message": str(exc)[:500],
+                "outputChars": len(result.text or ""),
+            },
+        )
     context.run_log.append(
         stage="cover_generated",
         status="succeeded",
@@ -2287,12 +2430,14 @@ def execute_generation_job(job_id: str, creator_id: str, jwt_jti: str | None = N
         input_assets = _input_assets_for_job(job_id)
         if input_assets:
             _cleanup_failed_input_assets(job_id=job_id, user_id=creator_id, input_assets=input_assets)
+        failure_metrics = exc.diagnostics if isinstance(exc, CreateLLMGenerationError) else {}
         _fail_generation_job(
             context=context,
             job_id=job_id,
             code="MULTIMODAL_UNSUPPORTED" if isinstance(exc, MultimodalUnsupportedError) else exc.__class__.__name__,
             message=str(exc) or "Create generation failed.",
             stage="run_failed",
+            metrics=failure_metrics,
         )
 
 
@@ -2438,23 +2583,41 @@ def _execute_generation_job_loaded(
             short_term_memory=context.short_term_memory,
             run_log=context.run_log,
         )
-        graph_result = strategy.run_langgraph(
-            settings=prompt_settings,
-            model=ai_config["model"],
-            adapter=_make_graph_adapter(ai_config),
-            registry=build_builtin_tool_registry(context.workspace),
-            recorder=recorder,
-        )
-        if graph_result.messages:
-            last_raw = graph_result.messages[-1].get("raw")
-            if isinstance(last_raw, dict) and last_raw.get("ok") is False:
-                if input_assets and _is_multimodal_unsupported_error(last_raw):
-                    _cleanup_failed_input_assets(job_id=job_id, user_id=creator_id, input_assets=input_assets)
-                    raise MultimodalUnsupportedError(
-                        "MULTIMODAL_UNSUPPORTED: The configured API/model rejected image input. "
-                        "Please switch to a vision-capable OpenAI Responses-compatible model or create without images."
-                    )
-                raise RuntimeError("The LLM provider call failed during generation.")
+        try:
+            graph_result = strategy.run_langgraph(
+                settings=prompt_settings,
+                model=ai_config["model"],
+                adapter=_make_graph_adapter(ai_config),
+                registry=build_builtin_tool_registry(context.workspace),
+                recorder=recorder,
+            )
+        except LLMProviderCallError as exc:
+            diagnostics = exc.diagnostics
+            raw = {"ok": False, "error": diagnostics}
+            if input_assets and _is_multimodal_unsupported_error(raw):
+                _cleanup_failed_input_assets(job_id=job_id, user_id=creator_id, input_assets=input_assets)
+                raise MultimodalUnsupportedError(
+                    "MULTIMODAL_UNSUPPORTED: The configured API/model rejected image input. "
+                    "Please switch to a vision-capable OpenAI Responses-compatible model or create without images."
+                )
+            context.run_log.append(
+                stage="llm_generation_failed",
+                status="failed",
+                input_summary="LLM provider call failed during LangGraph generation.",
+                output_summary=str(diagnostics.get("message") or diagnostics.get("code") or "Provider call failed.")[:500],
+                metrics={"providerError": diagnostics, "strategy": strategy_metadata.get("strategy")},
+            )
+            raise CreateLLMGenerationError("The LLM provider call failed during generation.", {"providerError": diagnostics}) from exc
+        provider_error = _latest_provider_error(graph_result.messages)
+        if provider_error:
+            context.run_log.append(
+                stage="llm_generation_failed",
+                status="failed",
+                input_summary="LLM provider call failed during LangGraph generation.",
+                output_summary=str(provider_error.get("message") or provider_error.get("code") or "Provider call failed.")[:500],
+                metrics={"providerError": provider_error, "strategy": strategy_metadata.get("strategy")},
+            )
+            raise CreateLLMGenerationError("The LLM provider call failed during generation.", {"providerError": provider_error})
         last_message = graph_result.messages[-1] if graph_result.messages else {}
         llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
         parsed_output = _parse_generation_output_for_context(context, graph_result)
@@ -2534,22 +2697,40 @@ def _execute_plan_preview(
         short_term_memory=context.short_term_memory,
         run_log=context.run_log,
     )
-    graph_result = strategy.run_langgraph(
-        settings=prompt_settings,
-        model=ai_config["model"],
-        adapter=_make_graph_adapter(ai_config),
-        registry=build_builtin_tool_registry(context.workspace),
-        recorder=recorder,
-    )
-    if graph_result.messages:
-        last_raw = graph_result.messages[-1].get("raw")
-        if isinstance(last_raw, dict) and last_raw.get("ok") is False:
-            if _is_multimodal_unsupported_error(last_raw):
-                raise MultimodalUnsupportedError(
-                    "MULTIMODAL_UNSUPPORTED: The configured API/model rejected image input. "
-                    "Please switch to a vision-capable OpenAI Responses-compatible model or create without images."
-                )
-            raise RuntimeError("The LLM provider call failed during plan generation.")
+    try:
+        graph_result = strategy.run_langgraph(
+            settings=prompt_settings,
+            model=ai_config["model"],
+            adapter=_make_graph_adapter(ai_config),
+            registry=build_builtin_tool_registry(context.workspace),
+            recorder=recorder,
+        )
+    except LLMProviderCallError as exc:
+        diagnostics = exc.diagnostics
+        raw = {"ok": False, "error": diagnostics}
+        if _is_multimodal_unsupported_error(raw):
+            raise MultimodalUnsupportedError(
+                "MULTIMODAL_UNSUPPORTED: The configured API/model rejected image input. "
+                "Please switch to a vision-capable OpenAI Responses-compatible model or create without images."
+            ) from exc
+        context.run_log.append(
+            stage="plan_generation_failed",
+            status="failed",
+            input_summary="LLM provider call failed during plan preview generation.",
+            output_summary=str(diagnostics.get("message") or diagnostics.get("code") or "Provider call failed.")[:500],
+            metrics={"providerError": diagnostics},
+        )
+        raise CreateLLMGenerationError("The LLM provider call failed during plan generation.", {"providerError": diagnostics}) from exc
+    provider_error = _latest_provider_error(graph_result.messages)
+    if provider_error:
+        context.run_log.append(
+            stage="plan_generation_failed",
+            status="failed",
+            input_summary="LLM provider call failed during plan preview generation.",
+            output_summary=str(provider_error.get("message") or provider_error.get("code") or "Provider call failed.")[:500],
+            metrics={"providerError": provider_error},
+        )
+        raise CreateLLMGenerationError("The LLM provider call failed during plan generation.", {"providerError": provider_error})
     plan_preview = normalize_plan_preview_output(_main_agent_output_value(graph_result))
     context.run_log.append(
         stage="plan_ready",
@@ -2846,10 +3027,7 @@ RETURNING id
             raise RuntimeError("Cover Agent asset was not persisted; refusing to publish the game.")
 
         connection.execute("UPDATE game_versions SET manifest_asset_id = %s WHERE id = %s", (manifest_asset["id"], version["id"]))
-        if existing_game:
-            connection.execute("UPDATE games SET cover_asset_id = %s WHERE id = %s", (cover_asset_id, game_id))
-        else:
-            connection.execute("UPDATE games SET current_version_id = %s, cover_asset_id = %s WHERE id = %s", (version["id"], cover_asset_id, game_id))
+        connection.execute("UPDATE games SET current_version_id = %s, cover_asset_id = %s WHERE id = %s", (version["id"], cover_asset_id, game_id))
         _prune_old_game_versions(connection, game_id=game_id, keep=2)
         connection.execute(
             """
@@ -3136,37 +3314,60 @@ def create_generation_job(
             short_term_memory=context.short_term_memory,
             run_log=context.run_log,
         )
-        graph_result = strategy.run_langgraph(
-            settings=prompt_settings,
-            model=ai_config["model"],
-            adapter=_make_graph_adapter(ai_config),
-            registry=build_builtin_tool_registry(context.workspace),
-            recorder=recorder,
-        )
-        if graph_result.messages:
-            last_raw = graph_result.messages[-1].get("raw")
-            if isinstance(last_raw, dict) and last_raw.get("ok") is False:
-                context.run_log.append(
-                    stage="llm_generation_failed",
-                    status="failed",
-                    input_summary="LLM provider call failed during LangGraph generation.",
-                    output_summary=str(last_raw.get("error") or last_raw)[:500],
-                    metrics={"raw": last_raw},
-                )
-                finalize_agent_run(
-                    context=context,
-                    status_value="failed",
-                    summary={"error": last_raw, "stage": "llm_generation_failed"},
-                    final_answer="LLM generation failed before a playable game could be produced.",
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "code": "LLM_GENERATION_FAILED",
-                        "message": "The LLM provider call failed during generation.",
-                        "llm": last_raw,
-                    },
-                )
+        try:
+            graph_result = strategy.run_langgraph(
+                settings=prompt_settings,
+                model=ai_config["model"],
+                adapter=_make_graph_adapter(ai_config),
+                registry=build_builtin_tool_registry(context.workspace),
+                recorder=recorder,
+            )
+        except LLMProviderCallError as exc:
+            diagnostics = exc.diagnostics
+            context.run_log.append(
+                stage="llm_generation_failed",
+                status="failed",
+                input_summary="LLM provider call failed during LangGraph generation.",
+                output_summary=str(diagnostics.get("message") or diagnostics.get("code") or "Provider call failed.")[:500],
+                metrics={"providerError": diagnostics},
+            )
+            finalize_agent_run(
+                context=context,
+                status_value="failed",
+                summary={"error": diagnostics, "stage": "llm_generation_failed"},
+                final_answer="LLM generation failed before a playable game could be produced.",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "LLM_GENERATION_FAILED",
+                    "message": "The LLM provider call failed during generation.",
+                    "llm": diagnostics,
+                },
+            ) from exc
+        provider_error = _latest_provider_error(graph_result.messages)
+        if provider_error:
+            context.run_log.append(
+                stage="llm_generation_failed",
+                status="failed",
+                input_summary="LLM provider call failed during LangGraph generation.",
+                output_summary=str(provider_error.get("message") or provider_error.get("code") or "Provider call failed.")[:500],
+                metrics={"providerError": provider_error},
+            )
+            finalize_agent_run(
+                context=context,
+                status_value="failed",
+                summary={"error": provider_error, "stage": "llm_generation_failed"},
+                final_answer="LLM generation failed before a playable game could be produced.",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "LLM_GENERATION_FAILED",
+                    "message": "The LLM provider call failed during generation.",
+                    "llm": provider_error,
+                },
+            )
         last_message = graph_result.messages[-1] if graph_result.messages else {}
         llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
         parsed_output = _parse_generation_output_for_context(context, graph_result)
@@ -3475,8 +3676,8 @@ RETURNING id
             (manifest_asset["id"], version["id"]),
         )
         connection.execute(
-            "UPDATE games SET cover_asset_id = %s WHERE id = %s" if existing_game else "UPDATE games SET current_version_id = %s, cover_asset_id = %s WHERE id = %s",
-            (cover_asset_id, game_id) if existing_game else (version["id"], cover_asset_id, game_id),
+            "UPDATE games SET current_version_id = %s, cover_asset_id = %s WHERE id = %s",
+            (version["id"], cover_asset_id, game_id),
         )
         _prune_old_game_versions(connection, game_id=game_id, keep=2)
         connection.execute(
