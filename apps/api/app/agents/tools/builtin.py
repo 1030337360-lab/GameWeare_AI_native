@@ -403,7 +403,7 @@ def build_builtin_tool_registry(workspace_context: WorkspaceContext | None = Non
                     "createType": {"type": "string", "enum": ["init", "opt"]},
                     "agentMode": {
                         "type": "string",
-                        "enum": ["chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt"],
+                        "enum": ["chat", "react", "plan", "refine", "decentralized", "init", "opt"],
                     },
                     "model": {"type": "string"},
                     "maxOutputTokens": {"type": "integer"},

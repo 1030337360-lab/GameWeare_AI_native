@@ -11,9 +11,16 @@ from app.schemas import (
     CreateJob,
     CreateJobRequest,
     CreateProject,
+    CreateProjectDeleteResult,
+    CreateProjectPreview,
     CreateRun,
     CreateRunStep,
+    DecentralizedDecisionRequest,
+    DecentralizedPreviewResponse,
+    DecentralizedSelectionRequest,
     LLMTestResult,
+    PlanDecisionRequest,
+    PlanPreviewResponse,
     RecentGame,
 )
 from app.agents.framework import (
@@ -28,10 +35,19 @@ from app.services.auth_service import redis_client
 from app.services.auth_service import get_optional_user, require_user
 from app.services.create_service import (
     create_generation_job_start,
+    choose_decentralized_candidate,
+    delete_create_project,
+    decide_plan_run,
+    decide_decentralized_run,
+    execute_decentralized_final_run,
     execute_generation_job,
+    get_decentralized_preview_state,
     get_ai_config_state,
     get_generation_job,
+    get_plan_preview,
+    get_project_preview,
     get_recent_game,
+    publish_generation_job,
     test_saved_or_payload_ai_config,
     upsert_ai_config,
 )
@@ -80,6 +96,19 @@ def project_detail(project_id: str, user=Depends(require_user)) -> CreateProject
     return CreateProject(**project)
 
 
+@router.delete("/projects/{project_id}", response_model=CreateProjectDeleteResult)
+def delete_project(project_id: str, user=Depends(require_user)) -> CreateProjectDeleteResult:
+    result = delete_create_project(user.id, project_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@router.get("/projects/{project_id}/preview", response_model=CreateProjectPreview)
+def project_preview(project_id: str, user=Depends(require_user)) -> CreateProjectPreview:
+    return CreateProjectPreview(**get_project_preview(user.id, project_id))
+
+
 @router.get("/runs/{run_id}", response_model=CreateRun)
 def run_detail(run_id: str, user=Depends(require_user)) -> CreateRun:
     run = get_run(user.id, run_id)
@@ -94,6 +123,49 @@ def run_steps(run_id: str, user=Depends(require_user)) -> list[CreateRunStep]:
     if steps is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return [CreateRunStep(**step) for step in steps]
+
+
+@router.get("/runs/{run_id}/plan-preview", response_model=PlanPreviewResponse)
+def run_plan_preview(run_id: str, user=Depends(require_user)) -> PlanPreviewResponse:
+    return PlanPreviewResponse(**get_plan_preview(user.id, run_id))
+
+
+@router.post("/runs/{run_id}/plan-decision", response_model=CreateJob)
+def run_plan_decision(
+    run_id: str,
+    payload: PlanDecisionRequest,
+    request: Request,
+    user=Depends(require_user),
+) -> CreateJob:
+    return decide_plan_run(user.id, run_id, payload.decision, getattr(request.state, "jwt_jti", None))
+
+
+@router.get("/runs/{run_id}/decentralized-previews", response_model=DecentralizedPreviewResponse)
+def run_decentralized_previews(run_id: str, user=Depends(require_user)) -> DecentralizedPreviewResponse:
+    return DecentralizedPreviewResponse(**get_decentralized_preview_state(user.id, run_id))
+
+
+@router.post("/runs/{run_id}/decentralized-selection", response_model=DecentralizedPreviewResponse)
+def run_decentralized_selection(
+    run_id: str,
+    payload: DecentralizedSelectionRequest,
+    user=Depends(require_user),
+) -> DecentralizedPreviewResponse:
+    return DecentralizedPreviewResponse(**choose_decentralized_candidate(user.id, run_id, payload.candidateId))
+
+
+@router.post("/runs/{run_id}/decentralized-confirm", response_model=CreateJob)
+def run_decentralized_confirm(
+    run_id: str,
+    payload: DecentralizedDecisionRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user=Depends(require_user),
+) -> CreateJob:
+    job = decide_decentralized_run(user.id, run_id, payload.decision, getattr(request.state, "jwt_jti", None))
+    if payload.decision == "accepted":
+        background_tasks.add_task(execute_decentralized_final_run, user.id, run_id, getattr(request.state, "jwt_jti", None))
+    return job
 
 
 @router.get("/runs/{run_id}/events")
@@ -199,11 +271,8 @@ def get_job(job_id: str) -> CreateJob:
 
 
 @router.post("/jobs/{job_id}/publish", response_model=CreateJob)
-def publish_job(job_id: str) -> CreateJob:
-    job = get_generation_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+def publish_job(job_id: str, user=Depends(require_user)) -> CreateJob:
+    return publish_generation_job(user.id, job_id)
 
 
 @router.get("/jobs/{job_id}/agent-state")

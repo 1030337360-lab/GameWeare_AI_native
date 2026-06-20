@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.agents.strategies.base import AgentRequestSettings, AgentStrategyPlan, BaseAgentStrategy, render_context_sections, render_shared_game_contract, steps
+from app.agents.strategies.base import (
+    AgentRequestSettings,
+    AgentStrategyPlan,
+    BaseAgentStrategy,
+    render_context_sections,
+    render_create_intent_rules,
+    render_shared_game_contract,
+    steps,
+)
 
 if TYPE_CHECKING:
     from app.agents.graphs.llm_adapter import LLMGraphAdapter
@@ -51,6 +59,8 @@ Rules:
 
     def user_prompt(self, settings: AgentRequestSettings) -> str:
         return f"""{render_context_sections(settings)}
+
+{render_create_intent_rules(settings)}
 
 ReAct task:
 - Think in terms of reason -> act -> observe, but do not expose hidden reasoning.

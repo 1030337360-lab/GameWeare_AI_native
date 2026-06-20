@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
-from app.schemas import Game, GameInteractionState, GameVersionSummary, RemixResponse
+from app.schemas import Game, GameDeleteResult, GameInteractionState, GameVersionSummary, GameVersionSwitchRequest, RemixResponse
 from app.services.auth_service import get_optional_user, require_user
 from app.services.catalog import (
+    delete_owned_game,
     ensure_catalog_runtime_schema,
     get_game,
     get_game_cover,
@@ -13,6 +14,7 @@ from app.services.catalog import (
     remix_game,
     set_game_favorite,
     set_game_like,
+    switch_game_version,
 )
 
 router = APIRouter(prefix="/games", tags=["games"])
@@ -43,6 +45,15 @@ def game_detail(game_id: str, user=Depends(get_optional_user)) -> Game:
     return game
 
 
+@router.delete("/{game_id}", response_model=GameDeleteResult)
+def delete_game(game_id: str, user=Depends(require_user)) -> GameDeleteResult:
+    ensure_catalog_runtime_schema()
+    result = delete_owned_game(game_id, user_id=user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return result
+
+
 @router.get("/{game_id}/cover", include_in_schema=False)
 def game_cover(game_id: str) -> Response:
     ensure_catalog_runtime_schema()
@@ -65,6 +76,15 @@ def game_versions(game_id: str) -> list[GameVersionSummary]:
     versions = list_game_versions(game_id)
     if not versions:
         raise HTTPException(status_code=404, detail="Game versions not found")
+    return versions
+
+
+@router.post("/{game_id}/versions/switch", response_model=list[GameVersionSummary])
+def switch_version(game_id: str, payload: GameVersionSwitchRequest, user=Depends(require_user)) -> list[GameVersionSummary]:
+    ensure_catalog_runtime_schema()
+    versions = switch_game_version(game_id, version_id=payload.versionId, user_id=user.id)
+    if not versions:
+        raise HTTPException(status_code=404, detail="Game version not found")
     return versions
 
 

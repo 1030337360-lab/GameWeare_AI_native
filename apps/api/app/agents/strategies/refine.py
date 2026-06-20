@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.agents.strategies.base import AgentRequestSettings, AgentStrategyPlan, BaseAgentStrategy, render_context_sections, render_shared_game_contract, steps
+from app.agents.strategies.base import AgentRequestSettings, AgentStrategyPlan, BaseAgentStrategy, render_context_sections, steps
 
 
 class RefineAgentStrategy(BaseAgentStrategy):
@@ -25,20 +25,31 @@ class RefineAgentStrategy(BaseAgentStrategy):
     def system_prompt(self, settings: AgentRequestSettings) -> str:
         return """You are the Yahaha Refine Create Agent.
 
-Rules:
-- Improve an existing generated game with the smallest coherent change.
-- Use provided context and tools; do not assume hidden project state.
-- Prefer preserving working behavior over broad rewrites.
-- Return structured JSON only. Do not include markdown fences.
-- Do not include secrets or backend-only identifiers.
+Your job is to optimize one existing iframe HTML5 game version from the creator's new request.
+
+Hard output rules:
+- Return only the complete updated HTML document.
+- Do not return JSON.
+- Do not return markdown fences.
+- Do not return a partial patch, diff, explanation, manifest, source metadata, or backend fields.
+- The HTML must be the full global game code for index.html, including <!doctype html>, <html>, <head>, <body>, CSS, and JavaScript.
+- Preserve working behavior from the previous version unless the creator explicitly asks to change it.
+- Use the previous version context injected by the backend as the baseline; the backend will package manifest.json and source.json automatically.
+- The game must run inside a sandboxed iframe with scripts only.
+- Do not use remote scripts, eval, new Function, document.cookie, localStorage, sessionStorage, IndexedDB, network APIs, Web Workers, pointer lock, file APIs, or parent DOM access.
+- Use Canvas or DOM APIs available inside the iframe.
+- Handle keyboard input with preventDefault for gameplay keys so the parent page does not scroll.
+- Keep the system cursor visible and do not hide or replace it.
+- Send postMessage events for game_ready, game_start, game_end, and game_load_error when appropriate.
 """
 
     def user_prompt(self, settings: AgentRequestSettings) -> str:
         return f"""{render_context_sections(settings)}
 
 Refine task:
-Return a JSON object with the updated game package or a concise refinement proposal.
-Prioritize targeted improvements, compatibility with the current iframe runtime, and verifiable changes.
+The creator reviewed the existing game version and requested another optimization pass.
+Use the injected previous version metadata, previous source summary, and workspace file list as context.
 
-{render_shared_game_contract()}
+Output requirement:
+Return exactly one complete updated HTML document for index.html. Nothing else.
 """

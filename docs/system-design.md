@@ -7,6 +7,7 @@
 - PostgreSQL, MinIO, and Redis are started by `docker compose up -d`.
 - Redis stores active JWT records plus Create memory and cache data.
 - MinIO stores local object data under `D:\yahaha`.
+- Create agent filesystem work uses `.worktrees/create-{runId}`. With `CREATE_WORKTREE_ENABLED=true`, this is a real git worktree and branch; otherwise it is still an isolated stub directory, never the main repository root.
 
 ## Current MVP Flow
 
@@ -31,12 +32,14 @@
 The current agent framework separates project lifecycle from agent strategy:
 
 - `createType` controls lifecycle: `init` starts a project, `opt` continues an existing project.
-- `agentMode` controls strategy selection: `react`, `plan`, `refine`, `centralized`, or `decentralized`.
+- `agentMode` controls strategy selection: `chat`, `react`, `plan`, `decentralized`, or `refine`. Initial creation supports `chat/react/plan/decentralized`; continuation supports those same modes plus `refine`.
 - Backend routing fields such as `createType`, `agentMode`, `projectId`, `runId`, and `taskId` are not injected into the LLM prompt.
 
 Prompt rendering uses strategy-specific `system_prompt(settings)` and `user_prompt(settings)` methods. Prompts include the user request, workspace capability, workspace boundary, available tool metadata, and non-empty history or memory summaries. They never include API keys.
 
-The LangGraph integration wraps the OpenAI-compatible Responses API through `OpenAIResponsesGraphAdapter`. ReAct is the first executable strategy: it loops through LLM decision and JSON tool calls, terminates only when the final JSON contains `Finished=true`, and stops after 4 iterations. Other strategies currently provide the same interface and framework shape while their production multi-agent behavior remains to be designed.
+The LangGraph integration wraps the OpenAI-compatible Responses API through `OpenAIResponsesGraphAdapter`. ReAct is the first executable strategy: it loops through LLM decision and JSON tool calls, terminates only when the final JSON contains `Finished=true`, and stops after 4 iterations.
+
+`decentralized` multi-agent mode now registers a minimum production orchestration contract for Planner, Asset, GameCode, Build, Safety, and Publisher. Each stage has an input contract, output contract, retry policy, handoff target, SQL run step, JSONL run-log entry, and TaskState checkpoint. The current implementation still uses the existing generation/publish path for execution; a fully independent sub-agent worker loop remains a later production item.
 
 Every LLM call is recorded as:
 
@@ -54,8 +57,7 @@ The recorded metrics include prompt prefix text, prefix English word count, pref
 
 - Hardening the full Astrocade-like iframe `srcdoc` runtime described in `docs/ai-game-generation-guide.md`.
 - Providing Google OAuth Client ID/Secret to make the implemented Google route run against a real Google app.
-- Implementing real Planner / Asset / GameCode / Build / Safety / Publisher multi-agent scheduling.
 - Adding production safety scanning for generated HTML, external scripts, file sizes, and platform-secret access.
 - Adding retry, resume, and failure-recovery policies around LLM/tool/provider errors.
-- Turning the current worktree abstraction into real filesystem-level isolated git worktrees.
+- Expanding multi-agent execution from registered Planner / Asset / GameCode / Build / Safety / Publisher contracts into independently scheduled sub-agent workers.
 - Alembic migrations after the schema stabilizes beyond the SQL init scripts.

@@ -5,7 +5,7 @@ from psycopg.types.json import Jsonb
 
 from app.config import get_settings
 from app.database import db_connection
-from app.schemas import Game, GameInteractionState, GameManifest, GameVersionSummary, RemixResponse
+from app.schemas import Game, GameDeleteResult, GameInteractionState, GameManifest, GameVersionSummary, RemixResponse
 from app.services.play_stats_service import pending_play_counts
 
 _CATALOG_SCHEMA_READY = False
@@ -190,11 +190,12 @@ SELECT
   gv.storage_prefix,
   gv.source_job_id,
   gv.created_at,
-  manifest.public_url AS manifest_url
+  manifest.public_url AS manifest_url,
+  (gv.id = g.current_version_id) AS is_current
 FROM games g
 JOIN game_versions gv ON gv.game_id = g.id
 LEFT JOIN assets manifest ON manifest.id = gv.manifest_asset_id
-WHERE g.slug = %s AND g.deleted_at IS NULL
+WHERE g.slug = %s AND g.publish_status = 'published' AND g.visibility = 'public' AND g.deleted_at IS NULL
 ORDER BY gv.version_no DESC
 """,
             (game_slug,),
@@ -210,10 +211,93 @@ ORDER BY gv.version_no DESC
             storagePrefix=row["storage_prefix"],
             manifestUrl=row["manifest_url"],
             sourceJobId=str(row["source_job_id"]) if row["source_job_id"] else None,
+            current=bool(row["is_current"]),
             createdAt=row["created_at"],
         )
         for row in rows
     ]
+
+
+def switch_game_version(game_slug: str, *, version_id: str, user_id: str) -> list[GameVersionSummary] | None:
+    with db_connection() as connection:
+        game = connection.execute(
+            """
+SELECT g.id
+FROM games g
+WHERE g.slug = %s AND g.author_id = %s AND g.deleted_at IS NULL
+LIMIT 1
+""",
+            (game_slug, user_id),
+        ).fetchone()
+        if not game:
+            return None
+        version = connection.execute(
+            """
+SELECT id
+FROM game_versions
+WHERE id = %s AND game_id = %s
+LIMIT 1
+""",
+            (version_id, game["id"]),
+        ).fetchone()
+        if not version:
+            return None
+        connection.execute("UPDATE games SET current_version_id = %s, updated_at = now() WHERE id = %s", (version_id, game["id"]))
+    return list_game_versions(game_slug)
+
+
+def delete_owned_game(game_slug: str, *, user_id: str) -> GameDeleteResult | None:
+    with db_connection() as connection:
+        game = connection.execute(
+            """
+SELECT id, slug
+FROM games
+WHERE slug = %s AND author_id = %s AND deleted_at IS NULL
+LIMIT 1
+""",
+            (game_slug, user_id),
+        ).fetchone()
+        if not game:
+            return None
+
+        connection.execute(
+            """
+UPDATE games
+SET
+  visibility = 'private',
+  publish_status = 'archived',
+  deleted_at = now(),
+  updated_at = now(),
+  metadata = metadata || %s
+WHERE id = %s AND author_id = %s AND deleted_at IS NULL
+""",
+            (Jsonb({"deletedByCreator": True, "runLogsPreserved": True}), game["id"], user_id),
+        )
+        connection.execute("DELETE FROM game_likes WHERE game_id = %s", (game["id"],))
+        connection.execute("DELETE FROM game_favorites WHERE game_id = %s", (game["id"],))
+        connection.execute(
+            """
+UPDATE game_comments
+SET status = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE game_id = %s AND status <> 'deleted'
+""",
+            (game["id"],),
+        )
+        connection.execute(
+            """
+UPDATE agent_projects
+SET status = 'archived', metadata = metadata || %s, updated_at = now()
+WHERE user_id = %s AND game_id = %s AND status <> 'deleted'
+""",
+            (Jsonb({"deletedGameId": str(game["id"]), "deletedGameSlug": game["slug"], "runLogsPreserved": True}), user_id, game["id"]),
+        )
+
+    return GameDeleteResult(
+        gameId=str(game["id"]),
+        gameSlug=game["slug"],
+        deleted=True,
+        runLogsPreserved=True,
+    )
 
 
 def remix_game(game_slug: str, *, user_id: str) -> RemixResponse | None:

@@ -8,8 +8,11 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ["CREATE_VALIDATE_LLM_CONFIG"] = "false"
 os.environ["CREATE_STATIC_GENERATION"] = "false"
+
+from tests.support.integration import configure_test_environment, isolated_integration_test
+
+configure_test_environment()
 
 from app.config import get_settings
 from app.agents.graphs.llm_adapter import LLMGraphResult, build_llm_call_metrics
@@ -116,6 +119,19 @@ class OptReactLLMAdapter:
         return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
 
 
+class RefineHTMLAdapter:
+    def invoke(self, payload: dict) -> LLMGraphResult:
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        if "Yahaha Cover Agent" in payload_text:
+            return FakeLLMAdapter().invoke(payload)
+        assert "Yahaha Refine Create Agent" in payload_text
+        assert "requestAnimationFrame" in payload_text
+        assert "Previous draft or published game artifacts" in payload_text
+        text = """<!doctype html><html><head><meta charset='utf-8'><title>Optimized LLM Arcade</title></head><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>"""
+        raw = {"output_text": text, "usage": {"input_tokens": 20, "output_tokens": 40, "total_tokens": 60}}
+        return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
+
+
 class BadLLMAdapter:
     def invoke(self, payload: dict) -> LLMGraphResult:
         raw = {"output_text": "not json", "usage": {"output_tokens": 2}}
@@ -140,6 +156,39 @@ class UnsupportedImageLLMAdapter:
 def run() -> None:
     get_settings.cache_clear()
     assert get_settings().create_static_generation is False
+    safe_scan = create_service._scan_publish_artifacts(
+        [
+            AgentArtifact(
+                "index.html",
+                b"<!doctype html><html><body><canvas></canvas><script>requestAnimationFrame(()=>{});</script></body></html>",
+                "text/html",
+                "bundle",
+                "runtime",
+            )
+        ],
+        "index.html",
+    )
+    assert safe_scan["passed"] is True
+    blocked_scan = create_service._scan_publish_artifacts(
+        [
+            AgentArtifact(
+                "index.html",
+                b"""<!doctype html><html><body onload='x()'><iframe src='https://evil.example'></iframe><a href='javascript:alert(1)'>x</a><script>fetch('/x'); localStorage.setItem('x','1');</script></body></html>""",
+                "text/html",
+                "bundle",
+                "runtime",
+            )
+        ],
+        "index.html",
+    )
+    blocked_codes = {issue["code"] for issue in blocked_scan["issues"]}
+    assert blocked_scan["passed"] is False
+    assert {"INLINE_EVENT_HANDLER_BLOCKED", "BLOCKED_HTML_TAG", "DANGEROUS_URL_BLOCKED", "NETWORK_FETCH_BLOCKED", "LOCAL_STORAGE_BLOCKED"} <= blocked_codes
+    oversized_scan = create_service._scan_publish_artifacts(
+        [AgentArtifact("index.html", b"<!doctype html><html><body><script></script>" + (b"x" * 1_500_001), "text/html", "bundle", "runtime")],
+        "index.html",
+    )
+    assert any(issue["code"] == "ENTRY_SIZE_LIMIT" for issue in oversized_scan["issues"])
 
     workspace_root = Path(__file__).resolve().parents[1]
     hydration_worktree = workspace_root / ".worktrees" / "hydrate-test"
@@ -205,6 +254,30 @@ def run() -> None:
     )
     assert ai_config.status_code == 200
 
+    reject_job = client.post(
+        "/create/jobs",
+        json={"prompt": "make a plan that user rejects", "files": [], "agentMode": "plan", "createType": "init"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert reject_job.status_code == 202
+    reject_start = reject_job.json()
+    reject_preview = client.get(f"/create/runs/{reject_start['runId']}/plan-preview", headers={"Authorization": f"Bearer {token}"})
+    assert reject_preview.status_code == 200
+    rejected = client.post(
+        f"/create/runs/{reject_start['runId']}/plan-decision",
+        json={"decision": "rejected"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert rejected.status_code == 200
+    rejected_payload = rejected.json()
+    assert rejected_payload["status"] == "canceled"
+    assert rejected_payload["gameSlug"] is None
+    rejected_steps = client.get(f"/create/runs/{reject_start['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
+    assert rejected_steps.status_code == 200
+    rejected_stages = [step["stage"] for step in rejected_steps.json()]
+    assert "plan_ready" in rejected_stages
+    assert "plan_rejected" in rejected_stages
+
     create_job = client.post(
         "/create/jobs",
         json={"prompt": "make an llm arcade game", "files": [], "agentMode": "plan", "createType": "init"},
@@ -213,9 +286,16 @@ def run() -> None:
     assert create_job.status_code == 202
     payload = create_job.json()
     assert payload["status"] == "planning"
-    final_job = client.get(f"/create/jobs/{payload['id']}", headers={"Authorization": f"Bearer {token}"})
-    assert final_job.status_code == 200
-    payload = final_job.json()
+    preview = client.get(f"/create/runs/{payload['runId']}/plan-preview", headers={"Authorization": f"Bearer {token}"})
+    assert preview.status_code == 200
+    assert preview.json()["planPreview"]["plan"]
+    accepted = client.post(
+        f"/create/runs/{payload['runId']}/plan-decision",
+        json={"decision": "accepted"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert accepted.status_code == 200
+    payload = accepted.json()
     assert payload["status"] == "completed"
     assert payload["agentMode"] == "plan"
     assert payload["gameSlug"].startswith("llm-arcade-")
@@ -231,6 +311,8 @@ def run() -> None:
     assert "cover_uploaded" in stages
     assert "llm_output_normalized" in stages
     assert "llm_generation_completed" in stages
+    assert "plan_ready" in stages
+    assert "plan_accepted" in stages
     llm_step = next(step for step in step_payload if step["stage"] == "llm_call")
     assert llm_step["metrics"]["outputTokens"] == 34
     cover_step = next(step for step in step_payload if step["stage"] == "cover_generated")
@@ -242,6 +324,13 @@ def run() -> None:
     assert "cover_uploaded" in events.text
     assert "event: done" in events.text
 
+    draft_manifest = client.get(f"/play/{payload['gameSlug']}/manifest")
+    assert draft_manifest.status_code == 404
+    publish_response = client.post(f"/create/jobs/{payload['id']}/publish", headers={"Authorization": f"Bearer {token}"})
+    assert publish_response.status_code == 200
+    payload = publish_response.json()
+    assert payload["publishStatus"] == "published"
+
     games = client.get("/games")
     assert games.status_code == 200
     created_game = next(game for game in games.json() if game["id"] == payload["gameSlug"])
@@ -252,19 +341,26 @@ def run() -> None:
 
     manifest = client.get(f"/play/{payload['gameSlug']}/manifest")
     assert manifest.status_code == 200
+    assert manifest.json()["sandbox"] == ["allow-scripts"]
+    assert "allow-same-origin" not in manifest.text
     assert any(asset.endswith(f"/games/{payload['gameSlug']}/cover") for asset in manifest.json()["assets"])
 
     document = client.get(f"/play/{payload['gameSlug']}/document")
     assert document.status_code == 200
     assert "requestAnimationFrame" in document.text
 
-    create_service._make_graph_adapter = lambda ai_config: OptReactLLMAdapter()  # type: ignore[assignment]
+    preview = client.get(f"/create/projects/{payload['projectId']}/preview", headers={"Authorization": f"Bearer {token}"})
+    assert preview.status_code == 200
+    assert preview.json()["versionNo"] == 1
+    assert "requestAnimationFrame" in preview.json()["html"]
+
+    create_service._make_graph_adapter = lambda ai_config: RefineHTMLAdapter()  # type: ignore[assignment]
     opt_job = client.post(
         "/create/jobs",
         json={
             "prompt": "optimize this game with better movement",
             "files": [],
-            "agentMode": "react",
+            "agentMode": "refine",
             "createType": "opt",
             "projectId": payload["projectId"],
         },
@@ -277,16 +373,18 @@ def run() -> None:
     opt_payload = opt_final.json()
     assert opt_payload["status"] == "completed"
     assert opt_payload["createType"] == "opt"
-    assert opt_payload["agentMode"] == "react"
+    assert opt_payload["agentMode"] == "refine"
     assert opt_payload["projectId"] == payload["projectId"]
     opt_steps = client.get(f"/create/runs/{opt_payload['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
     assert opt_steps.status_code == 200
     opt_step_payload = opt_steps.json()
     opt_stages = [step["stage"] for step in opt_step_payload]
     assert "refinement_context_loaded" in opt_stages
-    tool_steps = [step for step in opt_step_payload if step["stage"] == "tool_call"]
-    assert any(step["status"] == "succeeded" and step["metrics"]["toolName"] == "workspace.file_read" for step in tool_steps)
-    assert any(step["status"] == "succeeded" and step["metrics"]["toolName"] == "workspace.file_write" for step in tool_steps)
+    assert "refine_html_output_normalized" in opt_stages
+    assert opt_payload["publishStatus"] == "draft"
+    opt_publish = client.post(f"/create/jobs/{opt_payload['id']}/publish", headers={"Authorization": f"Bearer {token}"})
+    assert opt_publish.status_code == 200
+    opt_payload = opt_publish.json()
     opt_document = client.get(f"/play/{opt_payload['gameSlug']}/document")
     assert opt_document.status_code == 200
     assert "optimized=true" in opt_document.text
@@ -294,7 +392,7 @@ def run() -> None:
     create_service._make_graph_adapter = lambda ai_config: BadLLMAdapter()  # type: ignore[assignment]
     failed_job = client.post(
         "/create/jobs",
-        json={"prompt": "return malformed output", "files": [], "agentMode": "plan", "createType": "init"},
+        json={"prompt": "return malformed output", "files": [], "agentMode": "react", "createType": "init"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert failed_job.status_code == 202
@@ -316,9 +414,13 @@ def run() -> None:
     )
     assert failed_cover_job.status_code == 202
     failed_cover_start = failed_cover_job.json()
-    failed_cover_final = client.get(f"/create/jobs/{failed_cover_start['id']}", headers={"Authorization": f"Bearer {token}"})
-    assert failed_cover_final.status_code == 200
-    failed_cover_payload = failed_cover_final.json()
+    failed_cover_accept = client.post(
+        f"/create/runs/{failed_cover_start['runId']}/plan-decision",
+        json={"decision": "accepted"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert failed_cover_accept.status_code == 200
+    failed_cover_payload = failed_cover_accept.json()
     assert failed_cover_payload["status"] == "failed"
     assert failed_cover_payload["gameSlug"] is None
     failed_cover_steps = client.get(f"/create/runs/{failed_cover_payload['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
@@ -364,5 +466,6 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    with isolated_integration_test():
+        run()
     print("create llm generation checks passed")

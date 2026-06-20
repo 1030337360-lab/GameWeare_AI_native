@@ -75,7 +75,7 @@ These are the tool families the Yahaha Create agent is expected to use as the pr
 | `run_log.*` | Partly implemented | Record structured Create execution steps and reproducible run logs. | SQL/MinIO write |
 | `storage.*` | Planning interface implemented | Upload/download generated files and memory objects from MinIO. | MinIO read/write |
 | `database.*` | Planning interface implemented | Query game/project/run metadata and persist Create results. | SQL read/write |
-| `git.*` | Planning interface implemented | Create, inspect, diff, merge, and clean isolated worktrees. | git state changes |
+| `git.*` | Worktree isolation implemented; merge/diff still planning | Create and clean isolated worktrees for each Create run. | git state changes |
 | `test.*` | Planning interface implemented | Execute focused smoke tests and normalize results into run logs. | process execution |
 | `web.*` | Planning interface implemented | Fetch public documentation or inspect a generated game page when network/browser access is allowed. | network/browser access |
 
@@ -134,8 +134,7 @@ Current strategy modules:
 - `react`: single-agent ReAct loop with JSON tool calls.
 - `plan`: single-agent planning interface.
 - `refine`: single-agent continuation/optimization interface.
-- `centralized`: framework shape for a lead agent that plans, delegates, and merges.
-- `decentralized`: framework shape for peer agents that propose changes through shared state.
+- `decentralized`: peer-agent strategy with registered Planner / Asset / GameCode / Build / Safety / Publisher contracts, claimed work metadata, conflict notes, and run-step audit logging.
 
 All strategies expose `build_responses_payload(...)` and `run_langgraph(...)`. ReAct is the first strategy with a real loop:
 
@@ -157,6 +156,21 @@ Authorization: Bearer {apiKey}
 ```
 
 `apiKey` is used only in the HTTP header and is not put into prompts, run logs, TaskState checkpoints, or frontend responses.
+
+## Multi-Agent Production Contracts
+
+`decentralized` mode registers six durable stages before generation:
+
+| Stage | Role | Output |
+| --- | --- | --- |
+| `planner` | Planner Agent | Game brief, task graph, acceptance criteria |
+| `asset_agent` | Asset Agent | Asset manifest and cover requirements |
+| `game_code_agent` | GameCode Agent | `index.html`, implementation summary, safety notes |
+| `build_agent` | Build Agent | Artifact list, entry file, runtime metadata |
+| `safety_agent` | Safety Agent | Safety decision and structured issues |
+| `publisher_agent` | Publisher Agent | Storage prefix, published game metadata, audit summary |
+
+Each stage writes a `create_run_steps` record and full JSONL run-log entry with input contract, output contract, retry policy, and handoff target. This provides auditable production choreography while the independent sub-agent worker loop is still being hardened.
 
 ## LLM Call Metrics
 
@@ -210,5 +224,5 @@ That test loads the registry, checks every tool has schemas and examples, runs e
 - Tools should return structured errors instead of plain strings when the failure is expected business behavior.
 - Tool-call errors must include the original tool request, involved file paths when present, and an error object in the standard JSON envelope.
 - File tools must use workspace boundary checks.
-- Write tools should require git worktree isolation before writing to the filesystem.
+- Write tools require an isolated workspace before writing to the filesystem. By default, this is a real git worktree when `CREATE_WORKTREE_ENABLED=true`; otherwise it is an isolated stub directory under `.worktrees/`.
 - SQL, Redis, and MinIO tools should log their side effects to `run_log` when they are used inside a Create run.

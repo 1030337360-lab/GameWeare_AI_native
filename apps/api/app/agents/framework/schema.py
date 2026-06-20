@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS create_runs (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT create_runs_create_type_check CHECK (create_type IN ('init', 'opt')),
-  CONSTRAINT create_runs_agent_mode_check CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'centralized', 'decentralized', 'init', 'opt')),
+  CONSTRAINT create_runs_agent_mode_check CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'decentralized', 'init', 'opt')),
   CONSTRAINT create_runs_status_check CHECK (status IN ('running', 'completed', 'failed', 'canceled'))
 )
 """
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS agent_workspace_runs (
   status varchar(30) NOT NULL DEFAULT 'prepared',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT agent_workspace_cleanup_policy_check CHECK (cleanup_policy IN ('manual', 'auto')),
+  CONSTRAINT agent_workspace_cleanup_policy_check CHECK (cleanup_policy IN ('manual', 'auto', 'auto_on_success', 'auto_always')),
   CONSTRAINT agent_workspace_isolation_mode_check CHECK (isolation_mode IN ('stub', 'git_worktree')),
   CONSTRAINT agent_workspace_capability_check CHECK (capability IN ('read_only', 'write_only', 'read_write', 'web_only')),
   CONSTRAINT agent_workspace_status_check CHECK (status IN ('planned', 'prepared', 'running', 'completed', 'failed', 'cleaned'))
@@ -125,17 +125,26 @@ CREATE TABLE IF NOT EXISTS agent_workspace_runs (
 """
         )
         connection.execute("ALTER TABLE create_runs DROP CONSTRAINT IF EXISTS create_runs_agent_mode_check")
+        connection.execute("UPDATE create_runs SET agent_mode = 'decentralized' WHERE agent_mode = 'centralized'")
         connection.execute(
             """
 ALTER TABLE create_runs
 ADD CONSTRAINT create_runs_agent_mode_check
-CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'centralized', 'decentralized', 'init', 'opt'))
+CHECK (agent_mode IN ('chat', 'react', 'plan', 'refine', 'decentralized', 'init', 'opt'))
 """
         )
         connection.execute("ALTER TABLE agent_workspace_runs ADD COLUMN IF NOT EXISTS branch_name text")
         connection.execute("ALTER TABLE agent_workspace_runs ADD COLUMN IF NOT EXISTS base_commit text")
         connection.execute("ALTER TABLE agent_workspace_runs ADD COLUMN IF NOT EXISTS cleanup_policy varchar(30) NOT NULL DEFAULT 'manual'")
         connection.execute("ALTER TABLE agent_workspace_runs ADD COLUMN IF NOT EXISTS isolation_mode varchar(30) NOT NULL DEFAULT 'stub'")
+        connection.execute("ALTER TABLE agent_workspace_runs DROP CONSTRAINT IF EXISTS agent_workspace_cleanup_policy_check")
+        connection.execute(
+            """
+ALTER TABLE agent_workspace_runs
+ADD CONSTRAINT agent_workspace_cleanup_policy_check
+CHECK (cleanup_policy IN ('manual', 'auto', 'auto_on_success', 'auto_always'))
+"""
+        )
         connection.execute("CREATE INDEX IF NOT EXISTS ix_agent_projects_user_updated ON agent_projects(user_id, updated_at DESC)")
         connection.execute("CREATE INDEX IF NOT EXISTS ix_create_runs_project_created ON create_runs(project_id, created_at DESC)")
         connection.execute("CREATE INDEX IF NOT EXISTS ix_create_runs_user_created ON create_runs(user_id, created_at DESC)")

@@ -19,13 +19,17 @@ def run() -> None:
         tool_metadata=[{"name": "workspace.file_read", "inputSchema": {"type": "object"}}],
     )
 
-    assert set(list_agent_strategies()) == {"centralized", "decentralized", "plan", "react", "refine"}
+    assert set(list_agent_strategies()) == {"chat", "decentralized", "plan", "react", "refine"}
 
     expected = {
+        ("init", "chat"): "chat",
         ("init", "react"): "react",
         ("init", "plan"): "plan",
-        ("opt", "chat"): "refine",
-        ("init", "centralized"): "centralized",
+        ("opt", "chat"): "chat",
+        ("opt", "react"): "react",
+        ("opt", "plan"): "plan",
+        ("opt", "decentralized"): "decentralized",
+        ("opt", "refine"): "refine",
         ("init", "decentralized"): "decentralized",
     }
     for (create_type, agent_mode), strategy_name in expected.items():
@@ -37,14 +41,41 @@ def run() -> None:
         payload = strategy.build_responses_payload(settings, "test-model")
         assert plan.strategy == strategy_name
         assert plan.steps
-        assert all(step.implemented is False for step in plan.steps)
+        if strategy_name == "decentralized":
+            assert all(step.implemented is True for step in plan.steps)
+            assert {step.name for step in plan.steps} == {
+                "planner",
+                "asset_agent",
+                "game_code_agent",
+                "build_agent",
+                "safety_agent",
+                "publisher_agent",
+            }
+            assert "stageContracts" in user_prompt
+        else:
+            assert all(step.implemented is False for step in plan.steps)
         assert system_prompt
         assert user_prompt
         assert payload["model"] == "test-model"
         assert callable(strategy.run_langgraph)
+        if strategy_name == "refine":
+            assert "complete updated HTML document" in system_prompt
+            assert '"type":"tool"' not in system_prompt
+            assert '"type":"final"' not in system_prompt
+        else:
+            assert '"type":"tool"' in system_prompt
+            assert '"type":"final"' in system_prompt
+        assert "Do not execute tools in this strategy response" not in system_prompt
+        assert "<tool" not in system_prompt
+        assert "<final" not in system_prompt
         rendered = system_prompt + user_prompt
         for forbidden in ("Create type:", "Agent mode:", "Project ID:", "Run ID:", "Task ID:", "api_key"):
             assert forbidden not in rendered
+        if create_type == "opt" and strategy_name != "refine":
+            assert "Continue optimization rules" in user_prompt
+            assert "final output contract is identical to initial creation" in user_prompt
+        if create_type == "init" and strategy_name != "refine":
+            assert "Initial creation rules" in user_prompt
 
     react = select_agent_strategy(context)
     react_system = react.system_prompt(context)

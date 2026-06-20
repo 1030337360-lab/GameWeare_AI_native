@@ -156,8 +156,13 @@ def delete_sql_records(targets: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Clean generated Create test games without touching seed/static games.")
+    parser = argparse.ArgumentParser(description="Clean generated Create games. Prefer cleanup_test_pollution.py for test cleanup.")
     parser.add_argument("--apply", action="store_true", help="Actually delete SQL, MinIO, and Redis records.")
+    parser.add_argument(
+        "--i-understand-this-deletes-generated-games",
+        action="store_true",
+        help="Required with --apply because this script can delete real generated games.",
+    )
     args = parser.parse_args()
 
     targets = fetch_cleanup_targets()
@@ -167,6 +172,13 @@ def main() -> int:
     if not args.apply:
         print("Dry run only. Re-run with --apply to delete these generated records.")
         return 0
+    if not args.i_understand_this_deletes_generated_games:
+        print(
+            "Refusing to apply. This broad cleanup can delete real generated games. "
+            "Use cleanup_test_pollution.py for test data, or pass "
+            "--i-understand-this-deletes-generated-games."
+        )
+        return 2
 
     delete_minio_objects(targets["assets"])
     delete_sql_records(targets)

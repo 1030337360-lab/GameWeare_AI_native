@@ -36,12 +36,31 @@ class WorktreeManager:
             ["git", *args],
             cwd=cwd,
             shell=False,
-            check=True,
             capture_output=True,
             text=True,
             timeout=30,
         )
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip() or f"git {' '.join(args)} failed"
+            raise subprocess.CalledProcessError(completed.returncode, completed.args, completed.stdout, message)
         return completed.stdout.strip()
+
+    def _branch_exists(self, branch_name: str, cwd: Path) -> bool:
+        try:
+            self._git(["rev-parse", "--verify", branch_name], cwd)
+        except subprocess.CalledProcessError:
+            return False
+        return True
+
+    def _remove_existing_worktree(self, worktree_path: Path, cwd: Path) -> None:
+        if not worktree_path.exists():
+            return
+        try:
+            self._git(["worktree", "remove", str(worktree_path), "--force"], cwd)
+        except subprocess.CalledProcessError:
+            if worktree_path.name.startswith("create-"):
+                shutil.rmtree(worktree_path, ignore_errors=True)
+        self._git(["worktree", "prune"], cwd)
 
     def prepare(self, *, run_id: str, project_id: str) -> WorkspaceContext:
         settings = get_settings()
@@ -55,18 +74,23 @@ class WorktreeManager:
         if settings.create_worktree_enabled:
             base_commit = self._git(["rev-parse", settings.create_worktree_base_ref], repo_root)
             worktree_stub_path.parent.mkdir(parents=True, exist_ok=True)
+            self._remove_existing_worktree(worktree_stub_path, repo_root)
+            if self._branch_exists(branch_name, repo_root):
+                self._git(["branch", "-D", branch_name], repo_root)
             self._git(
                 [
                     "worktree",
                     "add",
-                    str(worktree_stub_path),
                     "-b",
                     branch_name,
+                    str(worktree_stub_path),
                     settings.create_worktree_base_ref,
                 ],
                 repo_root,
             )
             isolation_mode = "git_worktree"
+        else:
+            worktree_stub_path.mkdir(parents=True, exist_ok=True)
 
         context = WorkspaceContext(
             run_id=run_id,
@@ -178,17 +202,36 @@ LIMIT 1
                 (run_id,),
             )
 
+    def mark_status(self, run_id: str, status: str) -> None:
+        with db_connection() as connection:
+            connection.execute(
+                "UPDATE agent_workspace_runs SET status = %s, updated_at = now() WHERE run_id = %s",
+                (status, run_id),
+            )
+
+    def finalize(self, run_id: str, run_status: str) -> None:
+        row = self.status(run_id)
+        if not row:
+            return
+        terminal_status = "completed" if run_status == "completed" else "failed"
+        self.mark_status(run_id, terminal_status)
+        cleanup_policy = row.get("cleanupPolicy") or "manual"
+        should_cleanup = cleanup_policy in {"auto", "auto_always"} or (
+            cleanup_policy == "auto_on_success" and run_status == "completed"
+        )
+        if should_cleanup:
+            self.cleanup(run_id)
+
 
 class WorkspaceFS:
     def __init__(self, context: WorkspaceContext):
         self.context = context
         stub_root = Path(context.worktree_stub_path).resolve()
         self.stub_root = stub_root
-        self.uses_isolated_root = context.isolation_mode == "git_worktree" or stub_root.exists()
-        if context.isolation_mode == "git_worktree" or stub_root.exists():
-            self.root = stub_root
-        else:
-            self.root = Path(context.workspace_root).resolve()
+        self.uses_isolated_root = context.isolation_mode in {"git_worktree", "stub"}
+        if context.isolation_mode == "stub":
+            stub_root.mkdir(parents=True, exist_ok=True)
+        self.root = stub_root if self.uses_isolated_root else Path(context.workspace_root).resolve()
 
     def _resolve(self, relative_path: str) -> Path:
         candidate = Path(relative_path)

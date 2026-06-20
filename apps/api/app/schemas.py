@@ -29,6 +29,7 @@ class GameManifest(BaseModel):
     documentUrl: str | None = None
     assets: list[str] = Field(default_factory=list)
     runtime: str = "iframe-html5"
+    sandbox: list[str] = Field(default_factory=lambda: ["allow-scripts"])
 
 
 class UserProfile(BaseModel):
@@ -75,7 +76,7 @@ class CreateJobRequest(BaseModel):
     prompt: str = ""
     files: list[str] = Field(default_factory=list)
     inputAssets: list[CreateInputAsset] = Field(default_factory=list)
-    agentMode: Literal["chat", "react", "plan", "refine", "centralized", "decentralized", "init", "opt"] = "chat"
+    agentMode: Literal["chat", "react", "plan", "refine", "decentralized", "init", "opt"] = "chat"
     createType: Literal["init", "opt"] = "init"
     projectId: str | None = None
 
@@ -145,6 +146,9 @@ class CreateJob(BaseModel):
     gameSlug: str | None = None
     playUrl: str | None = None
     manifestUrl: str | None = None
+    publishStatus: str | None = None
+    visibility: str | None = None
+    versionNo: int | None = None
     agentMode: str | None = None
     createType: str | None = None
     projectId: str | None = None
@@ -158,11 +162,36 @@ class CreateProject(BaseModel):
     title: str
     status: str
     gameId: str | None = None
+    gameSlug: str | None = None
+    publishStatus: str | None = None
+    visibility: str | None = None
+    currentVersionNo: int | None = None
     latestRunId: str | None = None
     latestRunStatus: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     createdAt: datetime
     updatedAt: datetime
+
+
+class CreateProjectPreview(BaseModel):
+    projectId: str
+    gameId: str
+    gameSlug: str
+    title: str
+    description: str | None = None
+    versionId: str
+    versionNo: int
+    entryFile: str
+    html: str
+    source: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateProjectDeleteResult(BaseModel):
+    projectId: str
+    gameId: str | None = None
+    gameSlug: str | None = None
+    deleted: bool
+    runLogsPreserved: bool = True
 
 
 class CreateRun(BaseModel):
@@ -191,6 +220,44 @@ class CreateRunStep(BaseModel):
     createdAt: datetime
 
 
+class PlanDecisionRequest(BaseModel):
+    decision: Literal["accepted", "rejected"]
+
+
+class PlanPreviewResponse(BaseModel):
+    runId: str
+    jobId: str | None = None
+    phase: str | None = None
+    planPreview: dict[str, Any] = Field(default_factory=dict)
+
+
+class DecentralizedCandidatePreview(BaseModel):
+    candidateId: str
+    title: str
+    conceptSummary: str
+    expertRole: str
+    expertDomain: str
+    expertIntro: str
+    styleTags: list[str] = Field(default_factory=list)
+    staticHtml: str
+
+
+class DecentralizedPreviewResponse(BaseModel):
+    runId: str
+    jobId: str | None = None
+    phase: str | None = None
+    selectedCandidateId: str | None = None
+    candidates: list[DecentralizedCandidatePreview] = Field(default_factory=list)
+
+
+class DecentralizedSelectionRequest(BaseModel):
+    candidateId: str
+
+
+class DecentralizedDecisionRequest(BaseModel):
+    decision: Literal["accepted", "rejected"]
+
+
 class PlayEvent(BaseModel):
     gameId: str
     event: Literal["game_view", "game_start", "game_load_error", "game_end"]
@@ -209,6 +276,13 @@ class GameInteractionState(BaseModel):
     favoritedByMe: bool
 
 
+class GameDeleteResult(BaseModel):
+    gameId: str
+    gameSlug: str
+    deleted: bool
+    runLogsPreserved: bool = True
+
+
 class GameVersionSummary(BaseModel):
     versionId: str
     versionNo: int
@@ -219,7 +293,12 @@ class GameVersionSummary(BaseModel):
     storagePrefix: str
     manifestUrl: str | None = None
     sourceJobId: str | None = None
+    current: bool = False
     createdAt: datetime
+
+
+class GameVersionSwitchRequest(BaseModel):
+    versionId: str
 
 
 class RemixResponse(BaseModel):

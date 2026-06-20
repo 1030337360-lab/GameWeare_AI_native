@@ -105,7 +105,7 @@ The backend encrypts `apiKey` before writing it to PostgreSQL and caches the cur
 
 Allowed `createType` values are `init` and `opt`. `init` creates a new project and returns its `projectId`. `opt` continues an existing project and requires a user-owned `projectId`.
 
-Allowed `agentMode` values are `chat`, `react`, `plan`, `refine`, `centralized`, `decentralized`, `init`, and `opt`. The strategy router maps these to the current strategy set; for example `react` selects the ReAct LangGraph path, and `createType=opt` defaults toward the refine strategy when no more specific strategy is selected.
+Allowed `agentMode` values are `chat`, `react`, `plan`, `refine`, `decentralized`, `init`, and `opt`. For `createType=init`, the supported creation modes are `chat`, `react`, `plan`, and `decentralized`. For `createType=opt`, the supported continuation modes are `chat`, `react`, `plan`, `decentralized`, and `refine`; only the legacy alias `agentMode=opt` maps to `refine`.
 
 `POST /create/jobs` returns `202 Accepted` after the job/run/task records are created. Generation continues in a background task. The initial response includes the run indexes but does not yet include the generated game:
 

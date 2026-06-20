@@ -7,8 +7,11 @@ from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ["CREATE_VALIDATE_LLM_CONFIG"] = "false"
 os.environ["CREATE_STATIC_GENERATION"] = "true"
+
+from tests.support.integration import configure_test_environment, isolated_integration_test
+
+configure_test_environment()
 
 from app.main import app
 from app.config import get_settings
@@ -184,13 +187,13 @@ def run() -> None:
 
     create_job = client.post(
         "/create/jobs",
-        json={"prompt": "collect bright stars with pointer controls", "files": [], "agentMode": "opt", "createType": "init"},
+        json={"prompt": "collect bright stars with pointer controls", "files": [], "agentMode": "chat", "createType": "init"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert create_job.status_code == 202
     create_payload = create_job.json()
     assert create_payload["status"] == "planning"
-    assert create_payload["agentMode"] == "opt"
+    assert create_payload["agentMode"] == "chat"
     assert create_payload["createType"] == "init"
     assert create_payload["projectId"]
     assert create_payload["runId"]
@@ -202,14 +205,29 @@ def run() -> None:
     assert create_payload["status"] == "completed"
     assert create_payload["gameSlug"]
     assert create_payload["playUrl"] == f"/play/{create_payload['gameSlug']}"
+    assert create_payload["publishStatus"] == "draft"
+    assert create_payload["visibility"] == "private"
+    assert create_payload["versionNo"] == 1
+
+    draft_manifest = client.get(f"/play/{create_payload['gameSlug']}/manifest")
+    assert draft_manifest.status_code == 404
+
+    draft_preview = client.get(f"/create/projects/{create_payload['projectId']}/preview", headers={"Authorization": f"Bearer {token}"})
+    assert draft_preview.status_code == 200
+    assert draft_preview.json()["projectId"] == create_payload["projectId"]
+    assert draft_preview.json()["versionNo"] == 1
+    assert "requestAnimationFrame" in draft_preview.json()["html"]
 
     projects = client.get("/create/projects", headers={"Authorization": f"Bearer {token}"})
     assert projects.status_code == 200
-    assert any(project["projectId"] == create_payload["projectId"] for project in projects.json())
+    draft_project = next(project for project in projects.json() if project["projectId"] == create_payload["projectId"])
+    assert draft_project["publishStatus"] == "draft"
+    assert draft_project["currentVersionNo"] == 1
 
     project_detail = client.get(f"/create/projects/{create_payload['projectId']}", headers={"Authorization": f"Bearer {token}"})
     assert project_detail.status_code == 200
     assert project_detail.json()["projectId"] == create_payload["projectId"]
+    assert project_detail.json()["publishStatus"] == "draft"
 
     run_detail = client.get(f"/create/runs/{create_payload['runId']}", headers={"Authorization": f"Bearer {token}"})
     assert run_detail.status_code == 200
@@ -225,9 +243,16 @@ def run() -> None:
     assert "safety_scan" in step_stages
     assert "run_completed" in step_stages
 
+    publish_response = client.post(f"/create/jobs/{create_payload['id']}/publish", headers={"Authorization": f"Bearer {token}"})
+    assert publish_response.status_code == 200
+    create_payload = publish_response.json()
+    assert create_payload["publishStatus"] == "published"
+    assert create_payload["visibility"] == "public"
+
     generated_versions = client.get(f"/games/{create_payload['gameSlug']}/versions", headers={"Authorization": f"Bearer {token}"})
     assert generated_versions.status_code == 200
     assert generated_versions.json()[0]["versionNo"] == 1
+    assert generated_versions.json()[0]["current"] is True
     assert generated_versions.json()[0]["safetyStatus"] == "passed"
 
     remix_response = client.post(f"/games/{create_payload['gameSlug']}/remix", headers={"Authorization": f"Bearer {token}"})
@@ -399,7 +424,7 @@ VALUES
     retry_payload = retry_failed.json()
     assert retry_payload["status"] == "planning"
     assert retry_payload["createType"] == "init"
-    assert retry_payload["agentMode"] == "opt"
+    assert retry_payload["agentMode"] == "chat"
     retry_final = client.get(f"/create/jobs/{retry_payload['id']}", headers={"Authorization": f"Bearer {token}"})
     assert retry_final.status_code == 200
     with db_connection() as connection:
@@ -453,7 +478,7 @@ RETURNING id
 
     missing_project_opt = client.post(
         "/create/jobs",
-        json={"prompt": "make it faster", "files": [], "agentMode": "opt", "createType": "opt"},
+        json={"prompt": "make it faster", "files": [], "agentMode": "refine", "createType": "opt"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert missing_project_opt.status_code == 409
@@ -464,7 +489,7 @@ RETURNING id
         json={
             "prompt": "make it faster",
             "files": [],
-            "agentMode": "opt",
+            "agentMode": "refine",
             "createType": "opt",
             "projectId": create_payload["projectId"],
         },
@@ -478,14 +503,54 @@ RETURNING id
     assert opt_payload["projectId"] == create_payload["projectId"]
     assert opt_payload["runId"] != create_payload["runId"]
     assert opt_payload["createType"] == "opt"
+    assert opt_payload["gameSlug"] == create_payload["gameSlug"]
+    assert opt_payload["versionNo"] == 2
+    assert opt_payload["publishStatus"] == "draft"
+
+    opt_publish = client.post(f"/create/jobs/{opt_payload['id']}/publish", headers={"Authorization": f"Bearer {token}"})
+    assert opt_publish.status_code == 200
+    opt_payload = opt_publish.json()
+    assert opt_payload["publishStatus"] == "published"
 
     recent_game = client.get("/create/recent-game", headers={"Authorization": f"Bearer {token}"})
     assert recent_game.status_code == 200
     assert recent_game.json()["gameSlug"] == opt_payload["gameSlug"]
 
+    opt_versions = client.get(f"/games/{opt_payload['gameSlug']}/versions", headers={"Authorization": f"Bearer {token}"})
+    assert opt_versions.status_code == 200
+    assert [version["versionNo"] for version in opt_versions.json()] == [2, 1]
+    assert opt_versions.json()[0]["current"] is True
+
+    opt_job_3 = client.post(
+        "/create/jobs",
+        json={
+            "prompt": "add a faster bonus round",
+            "files": [],
+            "agentMode": "refine",
+            "createType": "opt",
+            "projectId": create_payload["projectId"],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert opt_job_3.status_code == 202
+    opt_payload_3 = client.get(f"/create/jobs/{opt_job_3.json()['id']}", headers={"Authorization": f"Bearer {token}"}).json()
+    assert opt_payload_3["versionNo"] == 3
+    assert opt_payload_3["publishStatus"] == "draft"
+    opt_draft_preview = client.get(f"/create/projects/{create_payload['projectId']}/preview", headers={"Authorization": f"Bearer {token}"})
+    assert opt_draft_preview.status_code == 200
+    assert opt_draft_preview.json()["versionNo"] == 3
+    assert "requestAnimationFrame" in opt_draft_preview.json()["html"]
+    opt_publish_3 = client.post(f"/create/jobs/{opt_payload_3['id']}/publish", headers={"Authorization": f"Bearer {token}"})
+    assert opt_publish_3.status_code == 200
+    pruned_versions = client.get(f"/games/{opt_payload['gameSlug']}/versions", headers={"Authorization": f"Bearer {token}"})
+    assert pruned_versions.status_code == 200
+    assert [version["versionNo"] for version in pruned_versions.json()] == [3, 2]
+
     generated_manifest = client.get(f"/play/{opt_payload['gameSlug']}/manifest")
     assert generated_manifest.status_code == 200
     assert generated_manifest.json()["runtime"] == "iframe-srcdoc"
+    assert generated_manifest.json()["sandbox"] == ["allow-scripts"]
+    assert "allow-same-origin" not in generated_manifest.text
     assert generated_manifest.json()["documentUrl"].endswith(f"/play/{opt_payload['gameSlug']}/document")
     assert generated_manifest.json()["assets"]
 
@@ -496,6 +561,125 @@ RETURNING id
     assert "AGENT_MODE" in generated_document.text
     assert "requestPointerLock" not in generated_document.text
     assert "preventDefault" in generated_document.text
+
+    other_register = client.post(
+        "/auth/register",
+        json={"email": f"other-{uuid4().hex[:8]}@yahaha.local", "password": "password123", "displayName": "Other User"},
+    )
+    assert other_register.status_code == 200
+    other_token = other_register.json()["accessToken"]
+    other_delete = client.delete(f"/games/{create_payload['gameSlug']}", headers={"Authorization": f"Bearer {other_token}"})
+    assert other_delete.status_code == 404
+
+    with db_connection() as connection:
+        failed_project = connection.execute(
+            """
+INSERT INTO agent_projects (user_id, title, status)
+SELECT id, 'Failed smoke create project', 'active'
+FROM users
+WHERE email = %s
+RETURNING id
+""",
+            (email,),
+        ).fetchone()
+        failed_job = connection.execute(
+            """
+INSERT INTO generation_jobs (creator_id, prompt, input_payload, status, current_stage, started_at, completed_at, error_code, error_message)
+SELECT id, 'failed smoke prompt', %s, 'failed', 'llm_generation', now(), now(), 'SMOKE_FAILED_PROJECT', 'Failed before game publish'
+FROM users
+WHERE email = %s
+RETURNING id
+""",
+            (Jsonb({"projectId": str(failed_project["id"]), "agentMode": "react", "createType": "init"}), email),
+        ).fetchone()
+        failed_project_run = connection.execute(
+            """
+INSERT INTO create_runs (
+  task_id, project_id, user_id, job_id, create_type, agent_mode, status, log_object_key, completed_at
+)
+SELECT gen_random_uuid(), %s, id, %s, 'init', 'react', 'failed', %s, now()
+FROM users
+WHERE email = %s
+RETURNING id
+""",
+            (failed_project["id"], failed_job["id"], f"agent-runs/{uuid4().hex}/run-log.jsonl", email),
+        ).fetchone()
+        connection.execute(
+            """
+INSERT INTO create_run_steps (run_id, step_no, stage, status, input_summary, output_summary, metrics)
+VALUES (%s, 1, 'run_failed', 'failed', 'Create generation failed.', 'Smoke failed before game publish.', %s)
+""",
+            (failed_project_run["id"], Jsonb({"errorCode": "SMOKE_FAILED_PROJECT"})),
+        )
+    failed_project_id = str(failed_project["id"])
+    failed_run_id = str(failed_project_run["id"])
+    failed_before_delete = client.get("/profile/activity", headers={"Authorization": f"Bearer {token}"})
+    assert failed_before_delete.status_code == 200
+    assert any(project["projectId"] == failed_project_id for project in failed_before_delete.json()["projects"])
+    other_failed_delete = client.delete(f"/create/projects/{failed_project_id}", headers={"Authorization": f"Bearer {other_token}"})
+    assert other_failed_delete.status_code == 404
+    delete_failed_project = client.delete(f"/create/projects/{failed_project_id}", headers={"Authorization": f"Bearer {token}"})
+    assert delete_failed_project.status_code == 200
+    assert delete_failed_project.json()["projectId"] == failed_project_id
+    assert delete_failed_project.json()["gameSlug"] is None
+    assert delete_failed_project.json()["runLogsPreserved"] is True
+    failed_after_delete = client.get("/profile/activity", headers={"Authorization": f"Bearer {token}"})
+    assert failed_after_delete.status_code == 200
+    assert all(project["projectId"] != failed_project_id for project in failed_after_delete.json()["projects"])
+    failed_create_project_detail = client.get(f"/create/projects/{failed_project_id}", headers={"Authorization": f"Bearer {token}"})
+    assert failed_create_project_detail.status_code == 404
+    failed_profile_project_detail = client.get(f"/profile/projects/{failed_project_id}", headers={"Authorization": f"Bearer {token}"})
+    assert failed_profile_project_detail.status_code == 404
+    with db_connection() as connection:
+        deleted_failed_project = connection.execute("SELECT status FROM agent_projects WHERE id = %s", (failed_project_id,)).fetchone()
+        preserved_failed_run = connection.execute("SELECT count(*) AS count FROM create_runs WHERE id = %s", (failed_run_id,)).fetchone()
+        preserved_failed_steps = connection.execute("SELECT count(*) AS count FROM create_run_steps WHERE run_id = %s", (failed_run_id,)).fetchone()
+    assert deleted_failed_project["status"] == "deleted"
+    assert preserved_failed_run["count"] == 1
+    assert preserved_failed_steps["count"] == 1
+    failed_runs_after_delete = client.get("/maintenance/create-runs/failed?limit=20", headers={"Authorization": f"Bearer {admin_token}"})
+    assert failed_runs_after_delete.status_code == 200
+    assert any(run["runId"] == failed_run_id for run in failed_runs_after_delete.json())
+
+    delete_game = client.delete(f"/games/{create_payload['gameSlug']}", headers={"Authorization": f"Bearer {token}"})
+    assert delete_game.status_code == 200
+    assert delete_game.json()["deleted"] is True
+    assert delete_game.json()["runLogsPreserved"] is True
+
+    deleted_detail = client.get(f"/games/{create_payload['gameSlug']}", headers={"Authorization": f"Bearer {token}"})
+    assert deleted_detail.status_code == 404
+    deleted_manifest = client.get(f"/play/{create_payload['gameSlug']}/manifest")
+    assert deleted_manifest.status_code == 404
+    deleted_versions = client.get(f"/games/{create_payload['gameSlug']}/versions", headers={"Authorization": f"Bearer {token}"})
+    assert deleted_versions.status_code == 404
+    deleted_games = client.get("/games")
+    assert all(game["id"] != create_payload["gameSlug"] for game in deleted_games.json())
+
+    deleted_profile_activity = client.get("/profile/activity", headers={"Authorization": f"Bearer {token}"})
+    assert deleted_profile_activity.status_code == 200
+    deleted_project = next(project for project in deleted_profile_activity.json()["projects"] if project["projectId"] == create_payload["projectId"])
+    assert deleted_project["status"] == "archived"
+    assert deleted_project["gameSlug"] is None
+    deleted_profile_project = client.get(f"/profile/projects/{create_payload['projectId']}", headers={"Authorization": f"Bearer {token}"})
+    assert deleted_profile_project.status_code == 200
+    deleted_project_payload = deleted_profile_project.json()
+    assert deleted_project_payload["game"] is None
+    assert deleted_project_payload["runs"]
+    assert deleted_project_payload["runs"][0]["steps"]
+    assert deleted_project_payload["runs"][0]["steps"] == sorted(deleted_project_payload["runs"][0]["steps"], key=lambda step: step["stepNo"])
+
+    deleted_opt = client.post(
+        "/create/jobs",
+        json={
+            "prompt": "try to optimize deleted game",
+            "files": [],
+            "agentMode": "refine",
+            "createType": "opt",
+            "projectId": create_payload["projectId"],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert deleted_opt.status_code == 404
 
     logout = client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
     assert logout.status_code == 200
@@ -509,5 +693,6 @@ RETURNING id
 
 
 if __name__ == "__main__":
-    run()
+    with isolated_integration_test():
+        run()
     print("api smoke checks passed")

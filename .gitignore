@@ -8,6 +8,8 @@ dist/
 build/
 out/
 coverage/
+.worktrees/
+apps/api/.worktrees/
 __pycache__/
 *.py[cod]
 .pytest_cache/

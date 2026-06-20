@@ -193,8 +193,29 @@ def _safe_step_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "strategy",
         "topology",
         "tokenUsage",
+        "previewState",
+        "candidateCount",
+        "candidateIds",
+        "selectedCandidate",
+        "selectedCandidateId",
+        "decision",
     }
-    return {key: value for key, value in metrics.items() if key in allowed}
+    safe = {key: value for key, value in metrics.items() if key in allowed}
+    preview_state = safe.get("previewState")
+    if isinstance(preview_state, dict) and isinstance(preview_state.get("candidates"), list):
+        safe["previewState"] = {
+            **preview_state,
+            "candidates": [
+                {**candidate, "staticHtml": f"[html {len(candidate.get('staticHtml', ''))} chars]"}
+                if isinstance(candidate, dict)
+                else candidate
+                for candidate in preview_state["candidates"][:3]
+            ],
+        }
+    selected = safe.get("selectedCandidate")
+    if isinstance(selected, dict) and isinstance(selected.get("staticHtml"), str):
+        safe["selectedCandidate"] = {**selected, "staticHtml": f"[html {len(selected['staticHtml'])} chars]"}
+    return safe
 
 
 def list_failed_create_runs(limit: int = 20) -> list[MaintenanceCreateRun]:

@@ -147,8 +147,13 @@ def _workspace_boundary(value: str | None) -> str:
     return value.strip() if value and value.strip() else DEFAULT_WORKSPACE_BOUNDARY
 
 
-def steps(items: list[tuple[str, str, str]]) -> list[AgentStrategyStep]:
-    return [AgentStrategyStep(name=name, description=description, tool_contract=tool) for name, description, tool in items]
+def steps(items: list[tuple[str, str, str] | tuple[str, str, str, bool]]) -> list[AgentStrategyStep]:
+    normalized: list[AgentStrategyStep] = []
+    for item in items:
+        name, description, tool = item[:3]
+        implemented = bool(item[3]) if len(item) > 3 else False
+        normalized.append(AgentStrategyStep(name=name, description=description, tool_contract=tool, implemented=implemented))
+    return normalized
 
 
 def render_context_sections(settings: AgentRequestSettings) -> str:
@@ -180,6 +185,26 @@ def render_context_sections(settings: AgentRequestSettings) -> str:
     return "\n".join(sections)
 
 
+def is_continue_create(settings: AgentRequestSettings) -> bool:
+    return (settings.create_type or "init").strip().lower() == "opt"
+
+
+def render_create_intent_rules(settings: AgentRequestSettings) -> str:
+    if is_continue_create(settings):
+        return """Continue optimization rules:
+- This is a continuation of an existing creator project.
+- Use the injected persistent memory summary and workspace files as the previous version context.
+- Preserve working behavior from the previous version unless the creator explicitly asks to change it.
+- Produce a complete next version of the game, not a patch, diff, or advice-only response.
+- The final output contract is identical to initial creation: one playable game package with index.html plus cover metadata, implementationSummary, and safetyNotes.
+- Do not expose backend IDs or internal route fields in the prompt or output."""
+    return """Initial creation rules:
+- This is a new creator project.
+- Create the first complete playable game from the creator request and available input assets.
+- The final output contract is the standard Yahaha game package: index.html plus cover metadata, implementationSummary, and safetyNotes.
+- Do not expose backend IDs or internal route fields in the prompt or output."""
+
+
 def render_shared_game_contract() -> str:
     return f"""{OUTPUT_JSON_CONTRACT}
 Runtime requirements:
@@ -192,6 +217,28 @@ Runtime requirements:
 - Send postMessage events for game_ready, game_start, game_end, and game_load_error.
 - Do not access secrets, backend-only APIs, local files, or privileged browser APIs.
 - Return structured JSON only. Do not include markdown fences.
+"""
+
+
+def render_json_tool_final_rules(*, identity: str, strategy_rules: list[str]) -> str:
+    rendered_strategy_rules = "\n".join(f"- {rule}" for rule in strategy_rules)
+    return f"""You are the {identity}, a local game-generation coding agent working inside a bounded workspace.
+
+Rules:
+- Use tools instead of guessing about the workspace.
+- Return exactly one JSON object.
+- For a tool call, return {{"type":"tool","tool":{{"name":"tool_name","args":{{...}}}}}}.
+- For a final answer, return {{"type":"final","output":{{"Finished":true,"files":[...],"cover":{{...}},"implementationSummary":"...","safetyNotes":[...]}}}}.
+- Tool args must be non-empty and must match the declared tool metadata schema.
+- Never invent tool results.
+- Do not repeat the same tool call with the same arguments if it did not help.
+- Before proposing edits or tests for existing code, inspect the relevant implementation through tools.
+- Final output must satisfy the Yahaha game package JSON contract inside the output object.
+- Final output must include Finished=true only when the complete game package is ready.
+- For generated game files, prefer workspace.file_write before final output. Do not put large HTML/CSS/JS in final JSON.
+- After writing files, final output may reference them as {{"path":"index.html","workspacePath":"index.html"}}.
+- Do not include markdown fences, XML tags, secrets, or backend-only identifiers.
+{rendered_strategy_rules}
 """
 
 

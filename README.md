@@ -65,7 +65,14 @@ Run backend smoke checks:
 .venv\Scripts\python tests\test_prompt_templates.py
 .venv\Scripts\python tests\test_agent_tools.py
 .venv\Scripts\python tests\test_agent_strategies.py
+.venv\Scripts\python tests\test_multi_agent_orchestration.py
 .venv\Scripts\python tests\test_workspace_isolation.py
+```
+
+To verify real git worktree isolation, run the workspace test with the opt-in flag:
+
+```powershell
+$env:RUN_GIT_WORKTREE_TEST='1'; .venv\Scripts\python tests\test_workspace_isolation.py
 ```
 
 ## Start frontend
@@ -106,12 +113,24 @@ Open `http://localhost:1314`.
 - `POST /create/jobs/{job_id}/publish`
 - `GET /create/jobs/{job_id}/agent-state`
 - `POST /uploads`
+- `GET /games/{game_id}/versions`
+- `POST /games/{game_id}/remix`
+- `GET /maintenance/overview`
+- `GET /maintenance/create-runs/failed`
+- `GET /maintenance/jobs`
+- `POST /maintenance/jobs/{job_id}/mark-reviewed`
+- `POST /maintenance/jobs/{job_id}/retry`
+- `GET /maintenance/games`
+- `PATCH /maintenance/games/{game_id}`
+- `POST /maintenance/games/{game_id}/moderate`
+- `GET /maintenance/assets`
+- `DELETE /maintenance/assets/{asset_id}`
 
 ## Create and LLM generation
 
 Create jobs require login and a saved AI configuration. The AI config contains `baseUrl`, `model`, `provider`, and an encrypted `apiKey`; API responses and logs never return the key.
 
-By default, `.env.example` sets `CREATE_STATIC_GENERATION=false`. Create jobs run the selected LangGraph strategy through the OpenAI-compatible Responses adapter. Static generation is still available for local testing when `CREATE_STATIC_GENERATION=true`; in that mode the Create page shows a warning so it is not confused with real LLM generation.
+By default, `apps/api/.env.example` sets `CREATE_STATIC_GENERATION=false`. Create jobs run the selected LangGraph strategy through the OpenAI-compatible Responses adapter. Static generation is still available for local testing when `CREATE_STATIC_GENERATION=true`; in that mode the Create page shows a warning so it is not confused with real LLM generation.
 
 `POST /create/jobs` now returns `202 Accepted` after creating the job/run/task records. Generation continues in a FastAPI background task. The web app opens `GET /create/runs/{run_id}/events` with a fetch stream and receives replayed plus live SSE events for `step`, `llm_call`, `tool_call`, `done`, `error`, and `heartbeat`.
 
@@ -119,7 +138,9 @@ The first experimental LLM path is ReAct: it can call registered JSON tools, sto
 
 LLM requests use `LLM_REQUEST_TIMEOUT_SECONDS`, defaulting to `120` seconds. Keep this above typical model latency when using a local or proxy Responses API provider; a timeout only means the provider did not answer before this backend deadline.
 
-The current strategy modules are `react`, `plan`, `refine`, `centralized`, and `decentralized`. Full multi-agent scheduling is still framework-only; real production planner/asset/code/build/safety/publisher coordination is a later phase.
+The current strategy modules are `react`, `plan`, `refine`, and `decentralized`. `decentralized` registers the minimum production multi-agent stages for Planner, Asset, GameCode, Build, Safety, and Publisher. These stages write run steps, contracts, handoff rules, and retry policy metadata; the full independent sub-agent execution loop is still a later production hardening item.
+
+Create workspaces use filesystem isolation by default. `CREATE_WORKTREE_ENABLED=true` creates a git worktree at `.worktrees/create-{runId}` with an isolated branch. `CREATE_WORKTREE_CLEANUP_POLICY=auto_on_success` removes successful run worktrees while preserving failed run worktrees for inspection. If git worktrees are disabled, the backend still uses an isolated stub directory rather than writing into the main repository.
 
 Each LLM call records a `llm_call` run step with prompt prefix counts, English word counts, Chinese character counts, output counts, and provider token usage when the response includes it. The recorder writes summaries into SQL run steps, full JSONL run logs in MinIO, Redis short-term memory, and Redis long-term session history.
 
@@ -129,4 +150,4 @@ AI-generated games should follow `docs/ai-game-generation-guide.md`. The target 
 
 ## Current scope
 
-The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events, MinIO-backed uploads, Create project/run tracking, an experimental LangGraph LLM generation path, and live Create progress streaming. The full multi-agent worker, stronger safety scanning, and retry/recovery policy are still intentionally left for the next implementation phase.
+The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events with Redis-to-PostgreSQL flushing, MinIO-backed uploads, Create project/run tracking, isolated Create workspaces, an experimental LangGraph LLM generation path, live Create progress streaming, MVP safety scanning, Profile run details, maintainer retry/review tooling, and multi-agent production stage contracts. Full independent sub-agent execution, deeper recovery policy, and queue-grade background execution remain later-phase work.

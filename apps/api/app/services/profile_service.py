@@ -113,7 +113,7 @@ SELECT
   p.title,
   p.status,
   p.game_id,
-  g.slug AS game_slug,
+  CASE WHEN g.deleted_at IS NULL THEN g.slug ELSE NULL END AS game_slug,
   latest.id AS latest_run_id,
   latest.status AS latest_run_status,
   p.updated_at

@@ -304,6 +304,7 @@ WHERE id = %s
 """,
                 (game_id, Jsonb({"latestRunId": context.run_id, "latestJobId": job_id}), context.project_id),
             )
+    WorktreeManager().finalize(context.run_id, status_value)
 
 
 def get_projects(user_id: str) -> list[dict[str, Any]]:
@@ -318,9 +319,22 @@ SELECT
   p.status,
   p.created_at,
   p.updated_at,
+  g.slug AS game_slug,
+  g.publish_status,
+  g.visibility,
+  COALESCE(latest_version.version_no, gv.version_no) AS current_version_no,
   r.id AS latest_run_id,
   r.status AS latest_run_status
 FROM agent_projects p
+LEFT JOIN games g ON g.id = p.game_id
+LEFT JOIN game_versions gv ON gv.id = g.current_version_id
+LEFT JOIN LATERAL (
+  SELECT version_no
+  FROM game_versions
+  WHERE game_id = g.id
+  ORDER BY version_no DESC
+  LIMIT 1
+) latest_version ON TRUE
 LEFT JOIN LATERAL (
   SELECT id, status
   FROM create_runs
@@ -338,6 +352,10 @@ LIMIT 100
         {
             "projectId": str(row["id"]),
             "gameId": str(row["game_id"]) if row["game_id"] else None,
+            "gameSlug": row["game_slug"],
+            "publishStatus": row["publish_status"],
+            "visibility": row["visibility"],
+            "currentVersionNo": row["current_version_no"],
             "title": row["title"],
             "status": row["status"],
             "latestRunId": str(row["latest_run_id"]) if row["latest_run_id"] else None,
@@ -354,9 +372,29 @@ def get_project(user_id: str, project_id: str) -> dict[str, Any] | None:
     with db_connection() as connection:
         row = connection.execute(
             """
-SELECT id, game_id, title, status, metadata, created_at, updated_at
-FROM agent_projects
-WHERE id = %s AND user_id = %s
+SELECT
+  p.id,
+  p.game_id,
+  p.title,
+  p.status,
+  p.metadata,
+  p.created_at,
+  p.updated_at,
+  g.slug AS game_slug,
+  g.publish_status,
+  g.visibility,
+  COALESCE(latest_version.version_no, gv.version_no) AS current_version_no
+FROM agent_projects p
+LEFT JOIN games g ON g.id = p.game_id
+LEFT JOIN game_versions gv ON gv.id = g.current_version_id
+LEFT JOIN LATERAL (
+  SELECT version_no
+  FROM game_versions
+  WHERE game_id = g.id
+  ORDER BY version_no DESC
+  LIMIT 1
+) latest_version ON TRUE
+WHERE p.id = %s AND p.user_id = %s AND p.status <> 'deleted'
 LIMIT 1
 """,
             (project_id, user_id),
@@ -366,6 +404,10 @@ LIMIT 1
     return {
         "projectId": str(row["id"]),
         "gameId": str(row["game_id"]) if row["game_id"] else None,
+        "gameSlug": row["game_slug"],
+        "publishStatus": row["publish_status"],
+        "visibility": row["visibility"],
+        "currentVersionNo": row["current_version_no"],
         "title": row["title"],
         "status": row["status"],
         "metadata": row["metadata"],
