@@ -182,7 +182,13 @@ LIMIT 1
 class WorkspaceFS:
     def __init__(self, context: WorkspaceContext):
         self.context = context
-        self.root = Path(context.worktree_stub_path if context.isolation_mode == "git_worktree" else context.workspace_root).resolve()
+        stub_root = Path(context.worktree_stub_path).resolve()
+        self.stub_root = stub_root
+        self.uses_isolated_root = context.isolation_mode == "git_worktree" or stub_root.exists()
+        if context.isolation_mode == "git_worktree" or stub_root.exists():
+            self.root = stub_root
+        else:
+            self.root = Path(context.workspace_root).resolve()
 
     def _resolve(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
@@ -202,8 +208,12 @@ class WorkspaceFS:
             raise PermissionError("Workspace capability does not allow reading.")
 
     def _assert_can_write(self) -> None:
-        if self.context.isolation_mode != "git_worktree":
-            raise PermissionError("Writes require git_worktree isolation mode.")
+        if self.context.isolation_mode == "git_worktree":
+            pass
+        elif self.context.isolation_mode == "stub" and self.uses_isolated_root and self.root == self.stub_root:
+            pass
+        else:
+            raise PermissionError("Writes require an isolated workspace mode.")
         if self.context.capability not in {"write_only", "read_write"}:
             raise PermissionError("Workspace capability does not allow writing.")
 

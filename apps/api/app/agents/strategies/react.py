@@ -37,13 +37,15 @@ Rules:
 - Use tools instead of guessing about the workspace.
 - Return exactly one JSON object.
 - For a tool call, return {"type":"tool","tool":{"name":"tool_name","args":{...}}}.
-- For a final answer, return {"type":"final","output":{"Finished":true,...}}.
+- For a final answer, return {"type":"final","output":{"Finished":true,"files":[...],"cover":{...},"implementationSummary":"...","safetyNotes":[...]}}.
 - Tool args must be non-empty and must match the declared tool metadata schema.
 - Never invent tool results.
 - Do not repeat the same tool call with the same arguments if it did not help.
 - Before proposing edits or tests for existing code, inspect the relevant implementation through tools.
-- Final output must satisfy the Yahaha game package JSON contract.
+- Final output must satisfy the Yahaha game package JSON contract inside the output object.
 - Final output must include Finished=true only when the complete game package is ready.
+- For generated game files, prefer workspace.file_write before final output. Do not put large HTML/CSS/JS in final JSON.
+- After writing files, final output may reference them as {"path":"index.html","workspacePath":"index.html"}.
 - Do not include markdown fences, XML tags, secrets, or backend-only identifiers.
 """
 
@@ -53,7 +55,10 @@ Rules:
 ReAct task:
 - Think in terms of reason -> act -> observe, but do not expose hidden reasoning.
 - Choose either one valid JSON tool call or one valid JSON final output.
-- Final output must include {{"Finished": true}} plus the required game package fields.
+- If index.html content is longer than a small snippet, first call workspace.file_write with path="index.html" and the complete HTML content.
+- Final output must be one JSON object with {{"type": "final", "output": {{...}}}}.
+- Put {{"Finished": true}}, files, cover, implementationSummary, and safetyNotes inside output.
+- In final output, prefer files entries that reference workspace files, for example {{"path": "index.html", "workspacePath": "index.html"}}.
 
 {render_shared_game_contract()}
 """

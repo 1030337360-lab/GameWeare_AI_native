@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.agents.framework.workspace import WorkspaceContext
 from app.agents.tools import build_builtin_tool_registry
 
 
@@ -14,6 +15,7 @@ def run() -> None:
     names = {tool["name"] for tool in metadata}
     assert "workspace.file_read" in names
     assert "workspace.file_list" in names
+    assert "workspace.file_write" in names
     assert "llm.prompt_render" in names
     assert "memory.summary_build" in names
     assert "run_log.preview_step" in names
@@ -42,6 +44,27 @@ def run() -> None:
     assert read_result["ok"] is True
     assert read_result["data"]["path"] == "app/main.py"
     assert read_result["data"]["sha256"]
+
+    isolated_root = Path(__file__).resolve().parents[1] / ".worktrees" / "tool-test-write"
+    write_registry = build_builtin_tool_registry(
+        WorkspaceContext(
+            run_id="tool-test-write",
+            project_id="project-test",
+            workspace_root=str(Path(__file__).resolve().parents[1]),
+            worktree_stub_path=str(isolated_root),
+            branch_name=None,
+            base_commit=None,
+            cleanup_policy="manual",
+            isolation_mode="stub",
+            capability="read_write",
+            status="prepared",
+        )
+    )
+    write_result = write_registry.call("workspace.file_write", {"path": "index.html", "content": "<html>tool write</html>"})
+    assert write_result["ok"] is True
+    assert write_result["data"]["bytes"] > 0
+    written_read = write_registry.call("workspace.file_read", {"path": "index.html"})
+    assert written_read["data"]["content"] == "<html>tool write</html>"
 
     prompt_result = registry.call(
         "llm.prompt_render",

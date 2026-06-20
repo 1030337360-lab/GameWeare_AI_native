@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -59,9 +61,32 @@ def fallback_main_agent_output(reason: str) -> dict[str, Any]:
     }
 
 
+def _safe_json_document(name: str, payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _output_text(value: str | dict[str, Any]) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _extract_json_text(value: str) -> str:
+    text = value.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
+    if fence:
+        return fence.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def _coerce_json(value: str | dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     if isinstance(value, dict):
         return value, None
+    value = _extract_json_text(value)
     try:
         parsed = json.loads(value)
     except json.JSONDecodeError as exc:
@@ -75,19 +100,174 @@ def _valid_file_entry(entry: Any) -> bool:
     return isinstance(entry, dict) and isinstance(entry.get("path"), str) and isinstance(entry.get("content"), str)
 
 
+def _valid_file_reference(entry: Any) -> bool:
+    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+        return False
+    return isinstance(entry.get("content"), str) or isinstance(entry.get("workspacePath"), str)
+
+
+def _safe_path(path: str) -> str:
+    normalized = PurePosixPath(path.replace("\\", "/"))
+    parts = [part for part in normalized.parts if part not in {"", ".", ".."}]
+    return "/".join(parts) or "asset.bin"
+
+
+def _file_paths(files: Any) -> list[str]:
+    if not isinstance(files, list):
+        return []
+    paths: list[str] = []
+    for entry in files:
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+            paths.append(_safe_path(entry["path"]))
+    return paths
+
+
+def _has_valid_index_file(files: list[dict[str, Any]]) -> bool:
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = _safe_path(str(entry.get("path", "")))
+        content = entry.get("content")
+        if PurePosixPath(path).name == "index.html" and isinstance(content, str) and content.strip():
+            return True
+    return False
+
+
+def _unwrap_payload(parsed: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    current = parsed
+    for _ in range(4):
+        if current.get("type") == "final" and isinstance(current.get("output"), dict):
+            current = current["output"]
+            warnings.append("unwrapped_react_final_output")
+            continue
+        output = current.get("output")
+        if isinstance(output, dict) and not current.get("files") and ("files" in output or output.get("Finished") is True):
+            current = output
+            warnings.append("unwrapped_output")
+            continue
+        break
+    return current, warnings
+
+
+def _html_file_from_fields(parsed: dict[str, Any]) -> dict[str, str] | None:
+    for key in ("indexHtml", "index_html", "html", "documentHtml", "document"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            return {"path": "index.html", "content": value}
+    return None
+
+
+def _manifest_file() -> dict[str, str]:
+    return {
+        "path": "manifest.json",
+        "content": _safe_json_document(
+            "manifest.json",
+            {
+                "runtime": "iframe-srcdoc",
+                "entry": "index.html",
+                "communication": "postMessage",
+                "generatedBy": "main-agent-output-parser",
+            },
+        ),
+    }
+
+
+def _source_file(warnings: list[str]) -> dict[str, str]:
+    return {
+        "path": "source.json",
+        "content": _safe_json_document(
+            "source.json",
+            {
+                "generator": "main-agent-output-parser",
+                "normalizationWarnings": warnings,
+            },
+        ),
+    }
+
+
+def _diagnostics(
+    *,
+    original: str | dict[str, Any],
+    root: dict[str, Any] | None,
+    unwrapped: dict[str, Any] | None,
+    reason: str,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    files = unwrapped.get("files") if isinstance(unwrapped, dict) else None
+    paths = _file_paths(files)
+    return {
+        "reason": reason,
+        "rootKeys": sorted(root.keys())[:24] if isinstance(root, dict) else [],
+        "unwrappedKeys": sorted(unwrapped.keys())[:24] if isinstance(unwrapped, dict) else [],
+        "filePaths": paths[:24],
+        "hasIndexHtml": any(PurePosixPath(path).name == "index.html" for path in paths),
+        "hasValidIndexHtml": _has_valid_index_file(files) if isinstance(files, list) else False,
+        "outputTextChars": len(_output_text(original)),
+        "normalizationWarnings": warnings or [],
+    }
+
+
 def parse_main_agent_json_output(value: str | dict[str, Any]) -> dict[str, Any]:
     parsed, error = _coerce_json(value)
     if error or parsed is None:
-        return fallback_main_agent_output(error or "invalid_output")
+        fallback = fallback_main_agent_output(error or "invalid_output")
+        fallback["diagnostics"] = _diagnostics(original=value, root=None, unwrapped=None, reason=error or "invalid_output")
+        return fallback
+
+    root = parsed
+    parsed, normalization_warnings = _unwrap_payload(parsed)
 
     files = parsed.get("files")
-    if not isinstance(files, list) or not files or not all(_valid_file_entry(entry) for entry in files):
-        return fallback_main_agent_output("files_must_be_non_empty_path_content_list")
+    if not isinstance(files, list) or not files:
+        html_file = _html_file_from_fields(parsed)
+        if html_file:
+            files = [html_file]
+            parsed["files"] = files
+            normalization_warnings.append("created_files_from_html_field")
+    if not isinstance(files, list) or not files or not all(_valid_file_reference(entry) for entry in files):
+        fallback = fallback_main_agent_output("files_must_be_non_empty_path_content_list")
+        fallback["diagnostics"] = _diagnostics(
+            original=value,
+            root=root,
+            unwrapped=parsed,
+            reason="files_must_be_non_empty_path_content_list",
+            warnings=normalization_warnings,
+        )
+        return fallback
 
-    required_paths = {"index.html", "manifest.json", "source.json"}
-    paths = {entry["path"] for entry in files}
-    if not required_paths.issubset(paths):
-        return fallback_main_agent_output("missing_required_files")
+    normalized_files = [{**entry, "path": _safe_path(entry["path"])} for entry in files]
+    if not all(_valid_file_entry(entry) for entry in normalized_files):
+        fallback = fallback_main_agent_output("file_content_missing")
+        fallback["diagnostics"] = _diagnostics(
+            original=value,
+            root=root,
+            unwrapped={**parsed, "files": normalized_files},
+            reason="file_content_missing",
+            warnings=normalization_warnings,
+        )
+        return fallback
+    paths = {_safe_path(entry["path"]) for entry in normalized_files}
+    if not _has_valid_index_file(normalized_files):
+        reason = "missing_or_empty_index_html"
+        fallback = fallback_main_agent_output(reason)
+        fallback["diagnostics"] = _diagnostics(
+            original=value,
+            root=root,
+            unwrapped={**parsed, "files": normalized_files},
+            reason=reason,
+            warnings=normalization_warnings,
+        )
+        return fallback
+
+    names = {PurePosixPath(path).name for path in paths}
+    if "manifest.json" not in names:
+        normalized_files.append(_manifest_file())
+        normalization_warnings.append("synthesized_manifest_json")
+    if "source.json" not in names:
+        normalization_warnings.append("synthesized_source_json")
+        normalized_files.append(_source_file(normalization_warnings))
+    parsed["files"] = normalized_files
 
     cover = parsed.get("cover")
     if not isinstance(cover, dict):
@@ -95,4 +275,12 @@ def parse_main_agent_json_output(value: str | dict[str, Any]) -> dict[str, Any]:
     parsed.setdefault("implementationSummary", "")
     parsed.setdefault("safetyNotes", [])
     parsed["fallback"] = False
+    parsed["normalizationWarnings"] = normalization_warnings
+    parsed["diagnostics"] = _diagnostics(
+        original=value,
+        root=root,
+        unwrapped=parsed,
+        reason="accepted",
+        warnings=normalization_warnings,
+    )
     return parsed

@@ -462,6 +462,7 @@ def build_pipeline_from_main_agent_output(
             "llmMetrics": llm_metrics or {},
             "implementationSummary": parsed_output.get("implementationSummary", ""),
             "safetyNotes": parsed_output.get("safetyNotes", []),
+            "normalizationWarnings": parsed_output.get("normalizationWarnings", []),
             "files": [artifact.filename for artifact in artifacts],
         }
     )

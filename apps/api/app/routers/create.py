@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from app.schemas import (
     AIConfigRequest,
     AIConfigState,
+    AIConfigTestRequest,
     CreateJob,
     CreateJobRequest,
     CreateProject,
@@ -31,19 +32,19 @@ from app.services.create_service import (
     get_ai_config_state,
     get_generation_job,
     get_recent_game,
-    test_ai_config_payload,
+    test_saved_or_payload_ai_config,
     upsert_ai_config,
 )
 
 router = APIRouter(prefix="/create", tags=["create"])
 
 
-@router.get("/ai-config", response_model=AIConfigState)
+@router.get("/ai-config", response_model=AIConfigState, response_model_exclude_none=True)
 def ai_config_state(request: Request, user=Depends(get_optional_user)) -> AIConfigState:
     return get_ai_config_state(user, getattr(request.state, "jwt_jti", None))
 
 
-@router.put("/ai-config", response_model=AIConfigState)
+@router.put("/ai-config", response_model=AIConfigState, response_model_exclude_none=True)
 def save_ai_config(
     payload: AIConfigRequest,
     request: Request,
@@ -53,8 +54,12 @@ def save_ai_config(
 
 
 @router.post("/ai-config/test", response_model=LLMTestResult)
-def test_ai_config(payload: AIConfigRequest, user=Depends(require_user)) -> LLMTestResult:
-    return test_ai_config_payload(payload)
+def test_ai_config(
+    request: Request,
+    payload: AIConfigTestRequest | None = None,
+    user=Depends(require_user),
+) -> LLMTestResult:
+    return test_saved_or_payload_ai_config(user.id, payload, getattr(request.state, "jwt_jti", None))
 
 
 @router.get("/recent-game", response_model=RecentGame | None)

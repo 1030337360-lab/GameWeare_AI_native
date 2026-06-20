@@ -16,11 +16,12 @@ def _repo_root() -> Path:
 
 def _demo_workspace_context() -> WorkspaceContext:
     root = _repo_root()
+    stub_root = root / ".worktrees" / "tool-demo-read"
     return WorkspaceContext(
         run_id="tool-demo-run",
         project_id="tool-demo-project",
         workspace_root=str(root),
-        worktree_stub_path=str(root / ".worktrees" / "tool-demo-run"),
+        worktree_stub_path=str(stub_root),
         branch_name=None,
         base_commit=None,
         cleanup_policy="manual",
@@ -30,8 +31,33 @@ def _demo_workspace_context() -> WorkspaceContext:
     )
 
 
+def _demo_write_workspace_context() -> WorkspaceContext:
+    root = _repo_root()
+    stub_root = root / ".worktrees" / "tool-demo-run"
+    stub_root.mkdir(parents=True, exist_ok=True)
+    return WorkspaceContext(
+        run_id="tool-demo-run",
+        project_id="tool-demo-project",
+        workspace_root=str(root),
+        worktree_stub_path=str(stub_root),
+        branch_name=None,
+        base_commit=None,
+        cleanup_policy="manual",
+        isolation_mode="stub",
+        capability="read_write",
+        status="prepared",
+    )
+
+
+def _workspace_context_from_payload(payload: dict[str, Any]) -> WorkspaceContext:
+    context = payload.get("_workspaceContext")
+    if isinstance(context, WorkspaceContext):
+        return context
+    return _demo_workspace_context()
+
+
 def _file_read(payload: dict[str, Any]) -> dict[str, Any]:
-    fs = WorkspaceFS(_demo_workspace_context())
+    fs = WorkspaceFS(_workspace_context_from_payload(payload))
     content = fs.read_text(payload["path"])
     limit = payload.get("maxBytes", 20000)
     encoded = content.encode("utf-8")
@@ -51,7 +77,7 @@ def _file_read(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _file_list(payload: dict[str, Any]) -> dict[str, Any]:
-    fs = WorkspaceFS(_demo_workspace_context())
+    fs = WorkspaceFS(_workspace_context_from_payload(payload))
     files = fs.list_files(payload.get("path", "."))
     limit = payload.get("limit", 200)
     return tool_result(
@@ -61,6 +87,25 @@ def _file_list(payload: dict[str, Any]) -> dict[str, Any]:
             "files": files[:limit],
             "total": len(files),
             "truncated": len(files) > limit,
+        },
+    )
+
+
+def _file_write(payload: dict[str, Any]) -> dict[str, Any]:
+    context = _workspace_context_from_payload(payload) if "_workspaceContext" in payload else _demo_write_workspace_context()
+    Path(context.worktree_stub_path).mkdir(parents=True, exist_ok=True)
+    fs = WorkspaceFS(context)
+    path = payload["path"]
+    content = payload["content"]
+    fs.write_text(path, content)
+    encoded = content.encode("utf-8")
+    return tool_result(
+        ok=True,
+        data={
+            "path": path,
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "bytes": len(encoded),
+            "written": True,
         },
     )
 
@@ -254,7 +299,16 @@ JSON_RESULT_SCHEMA = {
 }
 
 
-def build_builtin_tool_registry() -> ToolRegistry:
+def build_builtin_tool_registry(workspace_context: WorkspaceContext | None = None) -> ToolRegistry:
+    def with_workspace(handler):
+        if workspace_context is None:
+            return handler
+
+        def wrapped(payload: dict[str, Any]) -> dict[str, Any]:
+            return handler({**payload, "_workspaceContext": workspace_context})
+
+        return wrapped
+
     registry = ToolRegistry()
     registry.register(
         ToolSpec(
@@ -278,7 +332,7 @@ def build_builtin_tool_registry() -> ToolRegistry:
                     input={"path": "app/main.py", "maxBytes": 12000},
                 )
             ],
-            handler=_file_read,
+            handler=with_workspace(_file_read),
             side_effects=[],
             requires=["workspace.read"],
         )
@@ -304,9 +358,36 @@ def build_builtin_tool_registry() -> ToolRegistry:
                     input={"path": "app/agents", "limit": 100},
                 )
             ],
-            handler=_file_list,
+            handler=with_workspace(_file_list),
             side_effects=[],
             requires=["workspace.read"],
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="workspace.file_write",
+            category="basic",
+            summary="Write a UTF-8 text file inside the active isolated workspace boundary.",
+            input_schema={
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            output_schema=JSON_RESULT_SCHEMA,
+            examples=[
+                ToolExample(
+                    name="write_game_index",
+                    description="Write the generated iframe game document to the run workspace.",
+                    input={"path": "index.html", "content": "<!doctype html><html><body><canvas id='game'></canvas></body></html>"},
+                )
+            ],
+            handler=with_workspace(_file_write),
+            side_effects=["workspace.write"],
+            requires=["workspace.write"],
         )
     )
     registry.register(

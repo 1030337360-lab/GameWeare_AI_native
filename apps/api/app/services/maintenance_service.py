@@ -9,16 +9,20 @@ from psycopg.types.json import Jsonb
 from app.config import get_settings
 from app.database import db_connection
 from app.schemas import (
+    CreateJob,
     MaintenanceAsset,
+    MaintenanceCreateRun,
     MaintenanceGame,
     MaintenanceGameUpdateRequest,
     MaintenanceJob,
     MaintenanceModerationRequest,
     MaintenanceOverview,
     MaintenanceReview,
+    MaintenanceRunStep,
     UserProfile,
 )
 from app.services.auth_service import hash_password, require_user
+from app.services.create_service import create_generation_job_start
 
 
 def _maintainer_email() -> str:
@@ -156,6 +160,133 @@ def _job_rows_to_models(rows: list[dict[str, Any]]) -> list[MaintenanceJob]:
     ]
 
 
+def _short_text(value: str | None, limit: int = 500) -> str | None:
+    if value is None:
+        return None
+    return value if len(value) <= limit else value[:limit] + "... [truncated]"
+
+
+def _step_output_tokens(metrics: dict[str, Any]) -> int | None:
+    direct = metrics.get("outputTokens")
+    if isinstance(direct, int):
+        return direct
+    token_usage = metrics.get("tokenUsage")
+    if isinstance(token_usage, dict) and isinstance(token_usage.get("outputTokens"), int):
+        return token_usage["outputTokens"]
+    return None
+
+
+def _safe_step_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "outputTokens",
+        "promptEnglishWords",
+        "promptChineseChars",
+        "prefixEnglishWords",
+        "prefixChineseChars",
+        "outputEnglishWords",
+        "outputChineseChars",
+        "toolName",
+        "files",
+        "ok",
+        "error",
+        "iteration",
+        "strategy",
+        "topology",
+        "tokenUsage",
+    }
+    return {key: value for key, value in metrics.items() if key in allowed}
+
+
+def list_failed_create_runs(limit: int = 20) -> list[MaintenanceCreateRun]:
+    limit = min(max(limit, 1), 50)
+    with db_connection() as connection:
+        run_rows = connection.execute(
+            """
+SELECT
+  r.id,
+  r.job_id,
+  r.project_id,
+  p.title AS project_title,
+  r.create_type,
+  r.agent_mode,
+  r.status,
+  gj.status AS job_status,
+  gj.error_code,
+  gj.error_message,
+  gj.prompt,
+  u.email AS creator_email,
+  g.slug AS game_slug,
+  r.started_at,
+  r.completed_at
+FROM create_runs r
+LEFT JOIN generation_jobs gj ON gj.id = r.job_id
+LEFT JOIN agent_projects p ON p.id = r.project_id
+LEFT JOIN users u ON u.id = r.user_id
+LEFT JOIN games g ON g.id = r.game_id
+WHERE r.status = 'failed' OR gj.status = 'failed'
+ORDER BY COALESCE(r.completed_at, r.started_at) DESC
+LIMIT %s
+""",
+            (limit,),
+        ).fetchall()
+        run_ids = [row["id"] for row in run_rows]
+        step_rows = []
+        if run_ids:
+            step_rows = connection.execute(
+                """
+SELECT run_id, step_no, stage, status, input_summary, output_summary, metrics, created_at
+FROM create_run_steps
+WHERE run_id = ANY(%s::uuid[])
+ORDER BY run_id, step_no ASC
+""",
+                (run_ids,),
+            ).fetchall()
+
+    steps_by_run: dict[str, list[MaintenanceRunStep]] = {}
+    token_totals: dict[str, int] = {}
+    for row in step_rows:
+        metrics = row["metrics"] if isinstance(row["metrics"], dict) else {}
+        output_tokens = _step_output_tokens(metrics)
+        run_id = str(row["run_id"])
+        if output_tokens:
+            token_totals[run_id] = token_totals.get(run_id, 0) + output_tokens
+        steps_by_run.setdefault(run_id, []).append(
+            MaintenanceRunStep(
+                stepNo=row["step_no"],
+                stage=row["stage"],
+                status=row["status"],
+                inputSummary=_short_text(row["input_summary"]),
+                outputSummary=_short_text(row["output_summary"]),
+                metrics=_safe_step_metrics(metrics),
+                outputTokens=output_tokens,
+                createdAt=row["created_at"],
+            )
+        )
+
+    return [
+        MaintenanceCreateRun(
+            runId=str(row["id"]),
+            jobId=str(row["job_id"]) if row["job_id"] else None,
+            projectId=str(row["project_id"]),
+            projectTitle=row["project_title"],
+            createType=row["create_type"],
+            agentMode=row["agent_mode"],
+            status=row["status"],
+            jobStatus=row["job_status"],
+            errorCode=row["error_code"],
+            errorMessage=row["error_message"],
+            promptSummary=(row["prompt"] or "")[:220],
+            creatorEmail=row["creator_email"],
+            gameSlug=row["game_slug"],
+            totalOutputTokens=token_totals.get(str(row["id"]), 0),
+            startedAt=row["started_at"],
+            completedAt=row["completed_at"],
+            steps=steps_by_run.get(str(row["id"]), []),
+        )
+        for row in run_rows
+    ]
+
+
 def list_jobs(status_filter: str | None = None, limit: int = 50) -> list[MaintenanceJob]:
     limit = min(max(limit, 1), 100)
     params: list[Any] = []
@@ -196,6 +327,46 @@ RETURNING id, target_type, target_id, status, reason, reviewer_id, created_at, r
         ).fetchone()
         _write_audit(connection, maintainer.id, "maintenance.job.reviewed", "job", job_id, {"reason": reason})
     return _review_from_row(review)
+
+
+def retry_failed_job(job_id: str, maintainer: UserProfile, jwt_jti: str | None = None) -> tuple[CreateJob, str]:
+    with db_connection() as connection:
+        row = connection.execute(
+            """
+SELECT id, creator_id, prompt, input_payload, status
+FROM generation_jobs
+WHERE id = %s
+LIMIT 1
+""",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if row["status"] != "failed":
+            raise HTTPException(status_code=409, detail={"code": "JOB_NOT_FAILED", "message": "Only failed jobs can be retried."})
+        payload = row["input_payload"] if isinstance(row["input_payload"], dict) else {}
+
+    creator_id = str(row["creator_id"])
+    job = create_generation_job_start(
+        creator_id=creator_id,
+        prompt=row["prompt"],
+        files=payload.get("files") if isinstance(payload.get("files"), list) else [],
+        input_assets=payload.get("inputAssets") if isinstance(payload.get("inputAssets"), list) else [],
+        agent_mode=payload.get("agentMode") or "chat",
+        create_type=payload.get("createType") or "init",
+        project_id=payload.get("projectId"),
+        jwt_jti=jwt_jti,
+    )
+    with db_connection() as connection:
+        _write_audit(
+            connection,
+            maintainer.id,
+            "maintenance.job.retry",
+            "job",
+            job_id,
+            {"newJobId": job.id, "creatorId": creator_id},
+        )
+    return job, creator_id
 
 
 def _game_from_row(row: dict[str, Any]) -> MaintenanceGame:

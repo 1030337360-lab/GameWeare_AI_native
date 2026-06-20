@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -80,9 +81,21 @@ def _from_langgraph_state(state: ReActLangGraphState | dict[str, Any]) -> ReActG
     )
 
 
+def _extract_json_text(text: str) -> str:
+    stripped = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", stripped, re.IGNORECASE | re.DOTALL)
+    if fence:
+        return fence.group(1).strip()
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        return stripped[start : end + 1]
+    return stripped
+
+
 def _parse_llm_json(text: str) -> dict[str, Any]:
     try:
-        payload = json.loads(text)
+        payload = json.loads(_extract_json_text(text))
     except json.JSONDecodeError:
         return {"type": "invalid", "error": "invalid_json", "raw": text}
     return payload if isinstance(payload, dict) else {"type": "invalid", "error": "non_object_json", "raw": payload}
@@ -229,6 +242,18 @@ def _react_step(
                     "result": tool_result,
                 }
             )
+            tool = parsed.get("tool") if isinstance(parsed.get("tool"), dict) else {}
+            if tool.get("name") == "workspace.file_write" and recorder.short_term_memory and hasattr(recorder.short_term_memory, "record_file_edit"):
+                args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+                recorder.short_term_memory.record_file_edit(
+                    {
+                        "operation": "write",
+                        "path": args.get("path"),
+                        "bytes": (tool_result.get("data") or {}).get("bytes") if isinstance(tool_result.get("data"), dict) else None,
+                        "sha256": (tool_result.get("data") or {}).get("sha256") if isinstance(tool_result.get("data"), dict) else None,
+                        "ok": tool_result.get("ok"),
+                    }
+                )
     else:
         state.finished = True
         state.finish_reason = "invalid_react_response"

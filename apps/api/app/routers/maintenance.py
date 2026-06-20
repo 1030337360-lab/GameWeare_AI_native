@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
 from app.schemas import (
     MaintenanceAsset,
+    MaintenanceCreateRun,
     MaintenanceGame,
     MaintenanceGameUpdateRequest,
     MaintenanceJob,
     MaintenanceModerationRequest,
     MaintenanceOverview,
     MaintenanceReview,
+    CreateJob,
 )
 from app.services.maintenance_service import (
     delete_asset,
     list_assets,
+    list_failed_create_runs,
     list_games,
     list_jobs,
     list_reviews,
@@ -22,7 +25,9 @@ from app.services.maintenance_service import (
     moderate_game,
     require_maintainer,
     update_game,
+    retry_failed_job,
 )
+from app.services.create_service import execute_generation_job
 
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
 
@@ -41,6 +46,14 @@ def jobs(
     return list_jobs(status_filter=status, limit=limit)
 
 
+@router.get("/create-runs/failed", response_model=list[MaintenanceCreateRun])
+def failed_create_runs(
+    limit: int = 20,
+    _maintainer=Depends(require_maintainer),
+) -> list[MaintenanceCreateRun]:
+    return list_failed_create_runs(limit=limit)
+
+
 @router.post("/jobs/{job_id}/mark-reviewed", response_model=MaintenanceReview)
 def review_job(
     job_id: str,
@@ -48,6 +61,18 @@ def review_job(
     maintainer=Depends(require_maintainer),
 ) -> MaintenanceReview:
     return mark_job_reviewed(job_id, maintainer, reason=reason)
+
+
+@router.post("/jobs/{job_id}/retry", response_model=CreateJob)
+def retry_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    maintainer=Depends(require_maintainer),
+) -> CreateJob:
+    job, creator_id = retry_failed_job(job_id, maintainer, getattr(request.state, "jwt_jti", None))
+    background_tasks.add_task(execute_generation_job, job.id, creator_id, getattr(request.state, "jwt_jti", None))
+    return job
 
 
 @router.get("/games", response_model=list[MaintenanceGame])

@@ -15,17 +15,17 @@ DEFAULT_WORKSPACE_BOUNDARY = ".worktrees/create-main"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_MAX_OUTPUT_TOKENS = 25000
 
-OUTPUT_JSON_CONTRACT = """Required final output JSON shape:
+OUTPUT_JSON_CONTRACT = """Required game package fields:
 {
   "files": [
-    {"path": "index.html", "content": "..."},
-    {"path": "manifest.json", "content": "..."},
-    {"path": "source.json", "content": "..."}
+    {"path": "index.html", "content": "..."}
   ],
   "cover": {"title": "...", "description": "...", "tags": ["..."]},
   "implementationSummary": "...",
   "safetyNotes": ["..."]
 }
+For ReAct final responses, place these game package fields inside output:
+{"type":"final","output":{"Finished":true,"files":[...],"cover":{...},"implementationSummary":"...","safetyNotes":[...]}}
 """
 
 
@@ -184,6 +184,8 @@ def render_shared_game_contract() -> str:
     return f"""{OUTPUT_JSON_CONTRACT}
 Runtime requirements:
 - index.html must be a self-contained iframe HTML5 game.
+- files must be a non-empty array of objects with string path and string content.
+- files must include index.html; include manifest.json and source.json when possible, but the backend can synthesize them.
 - Use keyboard, mouse, pointer, and touch without scrolling the parent page.
 - Do not request pointer lock.
 - Use requestAnimationFrame for the game loop.

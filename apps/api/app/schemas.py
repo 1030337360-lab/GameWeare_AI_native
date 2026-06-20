@@ -87,6 +87,13 @@ class AIConfigRequest(BaseModel):
     provider: str = "fighting"
 
 
+class AIConfigTestRequest(BaseModel):
+    baseUrl: str | None = None
+    model: str | None = None
+    apiKey: str | None = None
+    provider: str = "fighting"
+
+
 class AIConfigState(BaseModel):
     authenticated: bool = False
     configured: bool = False
@@ -202,6 +209,27 @@ class GameInteractionState(BaseModel):
     favoritedByMe: bool
 
 
+class GameVersionSummary(BaseModel):
+    versionId: str
+    versionNo: int
+    runtime: str
+    buildStatus: str
+    safetyStatus: str
+    entryFile: str
+    storagePrefix: str
+    manifestUrl: str | None = None
+    sourceJobId: str | None = None
+    createdAt: datetime
+
+
+class RemixResponse(BaseModel):
+    gameId: str
+    gameSlug: str
+    projectId: str | None = None
+    title: str
+    status: str
+
+
 class ProfilePlayRecord(BaseModel):
     eventId: str
     eventType: str
@@ -279,6 +307,37 @@ class MaintenanceOverview(BaseModel):
     assetsTotal: int = 0
     assetsBytes: int = 0
     recentFailedJobs: list[MaintenanceJob] = Field(default_factory=list)
+
+
+class MaintenanceRunStep(BaseModel):
+    stepNo: int
+    stage: str
+    status: str
+    inputSummary: str | None = None
+    outputSummary: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    outputTokens: int | None = None
+    createdAt: datetime
+
+
+class MaintenanceCreateRun(BaseModel):
+    runId: str
+    jobId: str | None = None
+    projectId: str
+    projectTitle: str | None = None
+    createType: str
+    agentMode: str
+    status: str
+    jobStatus: str | None = None
+    errorCode: str | None = None
+    errorMessage: str | None = None
+    promptSummary: str
+    creatorEmail: str | None = None
+    gameSlug: str | None = None
+    totalOutputTokens: int
+    startedAt: datetime
+    completedAt: datetime | None = None
+    steps: list[MaintenanceRunStep] = Field(default_factory=list)
 
 
 class MaintenanceGame(BaseModel):

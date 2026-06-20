@@ -5,6 +5,7 @@ import json
 import re
 import base64
 from io import BytesIO
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from app.agents.create import (
     run_create_pipeline,
 )
 from app.agents.framework import create_agent_run_context, finalize_agent_run, load_agent_run_context_for_job
+from app.agents.framework.workspace import WorkspaceFS
 from app.agents.framework.schema import ensure_agent_framework_schema
 from app.agents.graphs.llm_adapter import OpenAIResponsesGraphAdapter
 from app.agents.graphs.recording import LLMCallRecorder
@@ -39,7 +41,7 @@ from app.agents.strategies import AgentRequestSettings, select_agent_strategy
 from app.agents.tools import build_builtin_tool_registry, list_builtin_tool_metadata
 from app.config import get_settings
 from app.database import db_connection
-from app.schemas import AIConfigRequest, AIConfigState, AgentLog, CreateInputAsset, CreateJob, LLMTestResult, RecentGame, UserProfile
+from app.schemas import AIConfigRequest, AIConfigState, AIConfigTestRequest, AgentLog, CreateInputAsset, CreateJob, LLMTestResult, RecentGame, UserProfile
 from app.services.auth_service import redis_client
 from app.services.llm_service import test_llm_config
 
@@ -141,6 +143,17 @@ def _cache_ai_config(user_id: str, jwt_jti: str | None, payload: dict[str, str])
     redis_client().setex(_ai_config_cache_key(user_id, jwt_jti), ttl, json.dumps(payload))
 
 
+def _ai_config_public_state(config: dict[str, str] | None) -> AIConfigState:
+    if not config:
+        return AIConfigState(authenticated=True, configured=False, staticGeneration=get_settings().create_static_generation)
+    return AIConfigState(
+        authenticated=True,
+        configured=True,
+        provider=config.get("provider"),
+        staticGeneration=get_settings().create_static_generation,
+    )
+
+
 def get_ai_config_state(user: UserProfile | None, jwt_jti: str | None = None) -> AIConfigState:
     if not user:
         return AIConfigState(authenticated=False, configured=False, staticGeneration=get_settings().create_static_generation)
@@ -150,29 +163,16 @@ def get_ai_config_state(user: UserProfile | None, jwt_jti: str | None = None) ->
     if cached:
         try:
             payload = json.loads(cached)
-            return AIConfigState(
-                authenticated=True,
-                configured=True,
-                baseUrl=payload.get("baseUrl"),
-                model=payload.get("model"),
-                provider=payload.get("provider"),
-                staticGeneration=get_settings().create_static_generation,
-            )
+            if payload.get("baseUrl") and payload.get("model") and payload.get("apiKey"):
+                return _ai_config_public_state(payload)
         except json.JSONDecodeError:
             pass
 
     config = _load_ai_config(user.id)
     if not config:
-        return AIConfigState(authenticated=True, configured=False, staticGeneration=get_settings().create_static_generation)
+        return _ai_config_public_state(None)
     _cache_ai_config(user.id, jwt_jti, config)
-    return AIConfigState(
-        authenticated=True,
-        configured=True,
-        baseUrl=config["baseUrl"],
-        model=config["model"],
-        provider=config["provider"],
-        staticGeneration=get_settings().create_static_generation,
-    )
+    return _ai_config_public_state(config)
 
 
 def upsert_ai_config(user_id: str, payload: AIConfigRequest, jwt_jti: str | None = None) -> AIConfigState:
@@ -203,14 +203,28 @@ ON CONFLICT (user_id) DO UPDATE SET
         jwt_jti,
         {"baseUrl": base_url, "model": model, "provider": provider, "apiKey": api_key},
     )
-    return AIConfigState(authenticated=True, configured=True, baseUrl=base_url, model=model, provider=provider, staticGeneration=get_settings().create_static_generation)
+    return _ai_config_public_state({"baseUrl": base_url, "model": model, "provider": provider, "apiKey": api_key})
 
 
-def test_ai_config_payload(payload: AIConfigRequest) -> LLMTestResult:
+def test_saved_or_payload_ai_config(user_id: str, payload: AIConfigTestRequest | None = None, jwt_jti: str | None = None) -> LLMTestResult:
+    if payload and payload.baseUrl and payload.model and payload.apiKey:
+        return test_llm_config(
+            base_url=payload.baseUrl,
+            model=payload.model,
+            api_key=payload.apiKey,
+        )
+    config = _load_ai_config(user_id, jwt_jti)
+    if not config:
+        return LLMTestResult(
+            ok=False,
+            code="missing_ai_config",
+            message="AI configuration is required before testing.",
+            details={},
+        )
     return test_llm_config(
-        base_url=payload.baseUrl,
-        model=payload.model,
-        api_key=payload.apiKey,
+        base_url=config["baseUrl"],
+        model=config["model"],
+        api_key=config["apiKey"],
     )
 
 
@@ -289,6 +303,158 @@ def _put_object(object_key: str, content: bytes, content_type: str) -> str:
         content_type=content_type,
     )
     return f"{settings.minio_public_base_url}/{object_key}"
+
+
+def _read_minio_text(object_key: str, *, max_chars: int = 160_000) -> str:
+    response = _minio_client().get_object(get_settings().minio_bucket, object_key)
+    try:
+        content = response.read()
+    finally:
+        response.close()
+        response.release_conn()
+    return content.decode("utf-8", errors="replace")[:max_chars]
+
+
+def _artifact_filename_from_key(object_key: str) -> str:
+    name = PurePosixPath(object_key.replace("\\", "/")).name
+    return name or "artifact.txt"
+
+
+def _load_project_refinement_artifacts(*, user_id: str, project_id: str) -> dict[str, Any] | None:
+    with db_connection() as connection:
+        rows = connection.execute(
+            """
+SELECT
+  g.id AS game_id,
+  g.slug,
+  g.title,
+  g.description,
+  gv.id AS version_id,
+  gv.version_no,
+  gv.entry_file,
+  a.kind,
+  a.object_key,
+  a.public_url,
+  a.content_type,
+  a.size_bytes,
+  a.sha256
+FROM agent_projects p
+JOIN games g ON g.id = p.game_id
+JOIN game_versions gv ON gv.id = g.current_version_id
+LEFT JOIN assets a ON (
+  a.version_id = gv.id OR a.id = gv.manifest_asset_id
+)
+WHERE
+  p.id = %s
+  AND p.user_id = %s
+  AND p.status = 'active'
+  AND a.kind IN ('bundle', 'source', 'manifest')
+ORDER BY
+  CASE a.kind
+    WHEN 'bundle' THEN 1
+    WHEN 'source' THEN 2
+    WHEN 'manifest' THEN 3
+    ELSE 4
+  END,
+  a.created_at DESC
+""",
+            (project_id, user_id),
+        ).fetchall()
+    if not rows:
+        return None
+
+    first = rows[0]
+    files: dict[str, str] = {}
+    artifacts: list[dict[str, Any]] = []
+    for row in rows:
+        object_key = row["object_key"]
+        if not object_key:
+            continue
+        filename = _artifact_filename_from_key(object_key)
+        if row["kind"] == "bundle":
+            filename = str(first["entry_file"] or filename or "index.html")
+        elif row["kind"] == "source":
+            filename = "source.json"
+        elif row["kind"] == "manifest":
+            filename = "manifest.json"
+        if filename in files:
+            continue
+        try:
+            content = _read_minio_text(object_key)
+        except Exception:
+            continue
+        files[filename] = content
+        artifacts.append(
+            {
+                "kind": row["kind"],
+                "path": filename,
+                "objectKey": object_key,
+                "publicUrl": row["public_url"],
+                "contentType": row["content_type"],
+                "sizeBytes": int(row["size_bytes"] or 0),
+                "sha256": row["sha256"],
+                "availableInWorkspace": bool(content),
+            }
+        )
+
+    return {
+        "gameId": str(first["game_id"]),
+        "gameSlug": first["slug"],
+        "title": first["title"],
+        "description": first["description"],
+        "versionId": str(first["version_id"]),
+        "versionNo": int(first["version_no"]),
+        "entryFile": first["entry_file"],
+        "files": files,
+        "artifacts": artifacts,
+    }
+
+
+def _prepare_opt_workspace_context(*, context: Any, user_id: str) -> list[dict[str, Any]]:
+    if context.create_type != "opt":
+        return []
+
+    previous = _load_project_refinement_artifacts(user_id=user_id, project_id=context.project_id)
+    if not previous or not previous.get("files"):
+        context.run_log.append(
+            stage="refinement_context_missing",
+            status="failed",
+            input_summary="Continue optimization requested existing project artifacts.",
+            output_summary="No published game artifacts were found for this project.",
+            metrics={"projectId": context.project_id},
+        )
+        raise RuntimeError("Cannot optimize this project because no previously published game artifacts were found.")
+
+    Path(context.workspace.worktree_stub_path).mkdir(parents=True, exist_ok=True)
+    fs = WorkspaceFS(context.workspace)
+    for path, content in previous["files"].items():
+        fs.write_text(path, content)
+
+    summary = {
+        "type": "existing_project_artifacts",
+        "summary": "Previous published game artifacts are available in the workspace for optimization.",
+        "gameSlug": previous["gameSlug"],
+        "title": previous["title"],
+        "versionNo": previous["versionNo"],
+        "entryFile": previous["entryFile"],
+        "workspaceFiles": sorted(previous["files"].keys()),
+        "artifacts": previous["artifacts"],
+    }
+    context.run_log.append(
+        stage="refinement_context_loaded",
+        status="succeeded",
+        input_summary="Loaded previous project artifacts for continue optimization.",
+        output_summary=f"{len(previous['files'])} file(s) are available in the run workspace.",
+        metrics={
+            "gameSlug": previous["gameSlug"],
+            "versionNo": previous["versionNo"],
+            "workspaceFiles": sorted(previous["files"].keys()),
+        },
+    )
+    context.short_term_memory.record_file_edit(
+        {"operation": "hydrate_opt_workspace", "files": sorted(previous["files"].keys()), "gameSlug": previous["gameSlug"]}
+    )
+    return [summary]
 
 
 def _input_asset_dicts(input_assets: list[CreateInputAsset | dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -487,6 +653,108 @@ def _main_agent_output_value(graph_result: Any) -> str | dict[str, Any]:
     return unwrap(text) if isinstance(text, str) else ""
 
 
+def _append_llm_output_parse_step(context: Any, parsed_output: dict[str, Any], graph_result: Any) -> None:
+    diagnostics = parsed_output.get("diagnostics") if isinstance(parsed_output.get("diagnostics"), dict) else {}
+    warnings = parsed_output.get("normalizationWarnings") if isinstance(parsed_output.get("normalizationWarnings"), list) else []
+    if parsed_output.get("fallback"):
+        context.run_log.append(
+            stage="llm_output_contract_failed",
+            status="failed",
+            input_summary="LLM output did not match the game package contract.",
+            output_summary=str(parsed_output.get("fallbackReason") or "invalid_llm_output")[:500],
+            metrics={
+                "fallbackReason": parsed_output.get("fallbackReason"),
+                "finishReason": getattr(graph_result, "finish_reason", None),
+                "diagnostics": diagnostics,
+            },
+        )
+        return
+    if warnings:
+        context.run_log.append(
+            stage="llm_output_normalized",
+            status="succeeded",
+            input_summary="LLM output was accepted after backend normalization.",
+            output_summary=", ".join(str(item) for item in warnings)[:500],
+            metrics={
+                "normalizationWarnings": warnings,
+                "finishReason": getattr(graph_result, "finish_reason", None),
+                "diagnostics": diagnostics,
+            },
+        )
+
+
+def _hydrate_output_from_workspace(value: str | dict[str, Any], context: Any) -> str | dict[str, Any]:
+    def coerce_root(candidate: str | dict[str, Any]) -> str | dict[str, Any]:
+        if isinstance(candidate, dict):
+            return candidate
+        text = candidate.strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return candidate
+        return parsed if isinstance(parsed, dict) else candidate
+
+    def output_container(root: dict[str, Any]) -> dict[str, Any]:
+        if root.get("type") == "final" and isinstance(root.get("output"), dict):
+            return root["output"]
+        if isinstance(root.get("output"), dict) and not root.get("files"):
+            return root["output"]
+        return root
+
+    root = coerce_root(value)
+    if not isinstance(root, dict):
+        return value
+
+    container = output_container(root)
+    fs = WorkspaceFS(context.workspace)
+    files = container.get("files")
+    warnings = container.get("normalizationWarnings") if isinstance(container.get("normalizationWarnings"), list) else []
+    hydrated = False
+
+    if isinstance(files, list):
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            workspace_path = entry.get("workspacePath") or entry.get("workspace_path") or entry.get("path")
+            if not isinstance(workspace_path, str) or not workspace_path:
+                continue
+            try:
+                entry["content"] = fs.read_text(workspace_path)
+            except Exception:
+                continue
+            entry["workspacePath"] = workspace_path
+            hydrated = True
+
+    files = container.get("files")
+    has_content_index = any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("content"), str)
+        and PurePosixPath(str(entry.get("path", ""))).name == "index.html"
+        for entry in files
+    ) if isinstance(files, list) else False
+    if not has_content_index:
+        try:
+            index_html = fs.read_text("index.html")
+        except Exception:
+            index_html = ""
+        if index_html.strip():
+            if not isinstance(files, list):
+                files = []
+                container["files"] = files
+            files.append({"path": "index.html", "workspacePath": "index.html", "content": index_html})
+            warnings.append("collected_index_html_from_workspace")
+            hydrated = True
+
+    if hydrated:
+        warnings.append("hydrated_workspace_files")
+        container["normalizationWarnings"] = list(dict.fromkeys(str(item) for item in warnings))
+    return root
+
+
 def _cover_prompt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     rendered = json.dumps(payload, ensure_ascii=False, default=str)
     return {
@@ -612,6 +880,47 @@ def _publish_artifacts(
         else artifact
         for artifact in artifacts
     ]
+
+
+def _scan_publish_artifacts(artifacts: list[AgentArtifact], entry_file: str) -> dict[str, Any]:
+    issues: list[dict[str, str]] = []
+    total_bytes = sum(len(artifact.content) for artifact in artifacts)
+    max_initial_bytes = 1_500_000
+    max_total_bytes = 8_000_000
+    if total_bytes > max_total_bytes:
+        issues.append({"code": "TOTAL_SIZE_LIMIT", "message": "Generated package exceeds the MVP total size limit."})
+    for artifact in artifacts:
+        if len(artifact.content) > max_initial_bytes and artifact.filename == entry_file:
+            issues.append({"code": "ENTRY_SIZE_LIMIT", "message": "Playable entry file is too large for MVP iframe loading."})
+        if artifact.content_type.split(";", 1)[0] != "text/html" and not artifact.filename.endswith(".html"):
+            continue
+        html = artifact.content.decode("utf-8", errors="ignore").lower()
+        checks = {
+            "POINTER_LOCK_BLOCKED": "requestpointerlock",
+            "TOP_ACCESS_BLOCKED": "top.location",
+            "EVAL_BLOCKED": "eval(",
+            "FUNCTION_CONSTRUCTOR_BLOCKED": "new function",
+        }
+        for code, needle in checks.items():
+            if needle in html:
+                issues.append({"code": code, "message": f"{artifact.filename} contains blocked browser capability: {needle}"})
+        parent_without_post_message = html.replace("window.parent.postmessage", "")
+        if "window.parent" in parent_without_post_message:
+            issues.append({"code": "PARENT_ACCESS_BLOCKED", "message": f"{artifact.filename} accesses window.parent outside postMessage."})
+        if "<script" in html and "src=\"http" in html:
+            issues.append({"code": "REMOTE_SCRIPT_BLOCKED", "message": f"{artifact.filename} references a remote script."})
+        if artifact.filename == entry_file:
+            if "<html" not in html or "<script" not in html:
+                issues.append({"code": "ENTRY_HTML_INVALID", "message": "Playable entry file must be a complete HTML document with script."})
+            if "see workspace file:" in html:
+                issues.append({"code": "ENTRY_WORKSPACE_PLACEHOLDER", "message": "Playable entry file is a workspace reference placeholder, not game HTML."})
+    return {
+        "passed": not issues,
+        "issues": issues,
+        "artifactCount": len(artifacts),
+        "totalBytes": total_bytes,
+        "limits": {"maxInitialBytes": max_initial_bytes, "maxTotalBytes": max_total_bytes},
+    }
 
 
 def _generate_required_cover_artifact(
@@ -928,6 +1237,7 @@ def _execute_generation_job_loaded(
 ) -> None:
     _update_job_stage(job_id, "planning", "prompt_render")
     tool_metadata = list_builtin_tool_metadata()
+    refinement_memory = _prepare_opt_workspace_context(context=context, user_id=creator_id)
     prompt_settings = AgentRequestSettings.from_create_context(
         user_request=cleaned_prompt,
         create_type=context.create_type,
@@ -935,10 +1245,13 @@ def _execute_generation_job_loaded(
         recent_8_history=context.long_term_memory.snapshot().get("history", []),
         workspace_capability=context.workspace.capability,
         workspace_boundary=context.workspace.worktree_stub_path,
-        persistent_memory_summary=context.persistent_memory.list(
-            user_id=creator_id,
-            project_id=context.project_id,
-        ),
+        persistent_memory_summary=[
+            *refinement_memory,
+            *context.persistent_memory.list(
+                user_id=creator_id,
+                project_id=context.project_id,
+            ),
+        ],
         tool_metadata=tool_metadata,
         input_assets=_assets_for_prompt(input_assets),
     )
@@ -1035,7 +1348,7 @@ def _execute_generation_job_loaded(
             settings=prompt_settings,
             model=ai_config["model"],
             adapter=_make_graph_adapter(ai_config),
-            registry=build_builtin_tool_registry(),
+            registry=build_builtin_tool_registry(context.workspace),
             recorder=recorder,
         )
         if graph_result.messages:
@@ -1050,7 +1363,8 @@ def _execute_generation_job_loaded(
                 raise RuntimeError("The LLM provider call failed during generation.")
         last_message = graph_result.messages[-1] if graph_result.messages else {}
         llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
-        parsed_output = parse_main_agent_json_output(_main_agent_output_value(graph_result))
+        parsed_output = parse_main_agent_json_output(_hydrate_output_from_workspace(_main_agent_output_value(graph_result), context))
+        _append_llm_output_parse_step(context, parsed_output, graph_result)
         if parsed_output.get("fallback"):
             reason = str(parsed_output.get("fallbackReason") or "invalid_llm_output")
             raise RuntimeError(f"LLM output did not match the required game package contract: {reason}")
@@ -1124,6 +1438,16 @@ def _publish_pipeline_for_existing_job(
         cover_artifact=cover_artifact,
         use_static_generation=use_static_generation,
     )
+    safety_scan = _scan_publish_artifacts(publish_artifacts, pipeline.entry_file)
+    context.run_log.append(
+        stage="safety_scan",
+        status="succeeded" if safety_scan["passed"] else "failed",
+        input_summary="Generated HTML package scanned before publish.",
+        output_summary="No blocked browser capabilities found." if safety_scan["passed"] else "Blocked browser capabilities or resource limits found.",
+        metrics=safety_scan,
+    )
+    if not safety_scan["passed"]:
+        raise RuntimeError(f"Generated package failed safety scan: {safety_scan['issues']}")
     context.agent_mode = agent_mode
     context.short_term_memory.record_tool_call({"tool": "run_create_pipeline", "status": "succeeded", "agentMode": agent_mode})
     context.run_log.append(
@@ -1165,7 +1489,7 @@ def _publish_pipeline_for_existing_job(
         "entry": pipeline.entry_file,
         "documentUrl": document_url,
         "bundleUrl": document_url,
-        "sandbox": ["allow-scripts"],
+        "sandbox": ["allow-scripts", "allow-same-origin"],
         "input": ["pointer", "mouse", "keyboard", "touch"],
         "communication": "postMessage",
         "agentMode": agent_mode,
@@ -1244,7 +1568,7 @@ RETURNING id
                 pipeline.runtime,
                 pipeline.entry_file,
                 storage_prefix,
-                Jsonb({"stubbed": use_static_generation, "agentMode": agent_mode, "llmMetrics": llm_metrics}),
+                Jsonb({"stubbed": use_static_generation, "agentMode": agent_mode, "llmMetrics": llm_metrics, "safetyScan": safety_scan}),
             ),
         ).fetchone()
         manifest_asset = connection.execute(
@@ -1449,6 +1773,7 @@ def create_generation_job(
         context.run_log.object_key,
     )
     tool_metadata = list_builtin_tool_metadata()
+    refinement_memory = _prepare_opt_workspace_context(context=context, user_id=creator_id)
     prompt_settings = AgentRequestSettings.from_create_context(
         user_request=cleaned_prompt,
         create_type=context.create_type,
@@ -1456,10 +1781,13 @@ def create_generation_job(
         recent_8_history=context.long_term_memory.snapshot().get("history", []),
         workspace_capability=context.workspace.capability,
         workspace_boundary=context.workspace.worktree_stub_path,
-        persistent_memory_summary=context.persistent_memory.list(
-            user_id=creator_id,
-            project_id=context.project_id,
-        ),
+        persistent_memory_summary=[
+            *refinement_memory,
+            *context.persistent_memory.list(
+                user_id=creator_id,
+                project_id=context.project_id,
+            ),
+        ],
         tool_metadata=tool_metadata,
         input_assets=_assets_for_prompt(resolved_input_assets),
     )
@@ -1581,7 +1909,7 @@ def create_generation_job(
             settings=prompt_settings,
             model=ai_config["model"],
             adapter=_make_graph_adapter(ai_config),
-            registry=build_builtin_tool_registry(),
+            registry=build_builtin_tool_registry(context.workspace),
             recorder=recorder,
         )
         if graph_result.messages:
@@ -1610,14 +1938,30 @@ def create_generation_job(
                 )
         last_message = graph_result.messages[-1] if graph_result.messages else {}
         llm_metrics = last_message.get("metrics") if isinstance(last_message.get("metrics"), dict) else {}
-        parsed_output = parse_main_agent_json_output(_main_agent_output_value(graph_result))
+        parsed_output = parse_main_agent_json_output(_hydrate_output_from_workspace(_main_agent_output_value(graph_result), context))
+        _append_llm_output_parse_step(context, parsed_output, graph_result)
         if parsed_output.get("fallback"):
+            reason = str(parsed_output.get("fallbackReason") or "invalid_llm_output")
             context.run_log.append(
-                stage="llm_output_fallback",
-                status="succeeded",
-                input_summary="LLM output did not fully match the game package contract.",
-                output_summary="Backend fallback output parser produced a safe minimal game package.",
-                metrics={"fallbackReason": parsed_output.get("fallbackReason"), "finishReason": graph_result.finish_reason},
+                stage="llm_generation_failed",
+                status="failed",
+                input_summary="LLM output did not match the game package contract.",
+                output_summary=reason[:500],
+                metrics={"fallbackReason": reason, "finishReason": graph_result.finish_reason},
+            )
+            finalize_agent_run(
+                context=context,
+                status_value="failed",
+                summary={"error": reason, "stage": "llm_output_contract_failed"},
+                final_answer="LLM generation failed before a playable game could be produced.",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "LLM_OUTPUT_CONTRACT_FAILED",
+                    "message": "LLM output did not match the required game package contract.",
+                    "reason": reason,
+                },
             )
         draft_pipeline = build_pipeline_from_main_agent_output(
             prompt=cleaned_prompt,
@@ -1672,6 +2016,16 @@ def create_generation_job(
         },
         context.run_log.object_key,
     )
+    safety_scan = _scan_publish_artifacts(pipeline.artifacts, pipeline.entry_file)
+    context.run_log.append(
+        stage="safety_scan",
+        status="succeeded" if safety_scan["passed"] else "failed",
+        input_summary="Generated HTML package scanned before publish.",
+        output_summary="No blocked browser capabilities found." if safety_scan["passed"] else "Blocked browser capabilities or resource limits found.",
+        metrics=safety_scan,
+    )
+    if not safety_scan["passed"]:
+        raise RuntimeError(f"Generated package failed safety scan: {safety_scan['issues']}")
     storage_prefix = f"games/{game_id}/versions/1"
     api_base = f"http://localhost:{get_settings().api_port}"
     document_url = f"{api_base}/play/{game_slug}/document"
@@ -1685,7 +2039,7 @@ def create_generation_job(
         "entry": pipeline.entry_file,
         "documentUrl": document_url,
         "bundleUrl": document_url,
-        "sandbox": ["allow-scripts"],
+        "sandbox": ["allow-scripts", "allow-same-origin"],
         "input": ["pointer", "mouse", "keyboard", "touch"],
         "communication": "postMessage",
         "agentMode": agent_mode,
@@ -1808,7 +2162,7 @@ RETURNING id
                 pipeline.runtime,
                 pipeline.entry_file,
                 storage_prefix,
-                Jsonb({"stubbed": use_static_generation, "agentMode": agent_mode, "llmMetrics": llm_metrics}),
+                Jsonb({"stubbed": use_static_generation, "agentMode": agent_mode, "llmMetrics": llm_metrics, "safetyScan": safety_scan}),
             ),
         ).fetchone()
 

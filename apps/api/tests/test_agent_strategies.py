@@ -93,13 +93,33 @@ def run() -> None:
     assert parsed["fallback"] is False
     assert parsed["files"][0]["path"] == "index.html"
 
+    react_wrapped = parse_main_agent_json_output(
+        {
+            "type": "final",
+            "output": {
+                "Finished": True,
+                "files": [{"path": "index.html", "content": "<html><body>ok</body></html>"}],
+                "cover": {"title": "Wrapped", "description": "", "tags": []},
+            },
+        }
+    )
+    assert react_wrapped["fallback"] is False
+    assert "unwrapped_react_final_output" in react_wrapped["normalizationWarnings"]
+    assert {entry["path"] for entry in react_wrapped["files"]} == {"index.html", "manifest.json", "source.json"}
+
+    fenced = parse_main_agent_json_output(
+        '```json\n{"type":"final","output":{"Finished":true,"files":[{"path":"index.html","content":"<html></html>"}]}}\n```'
+    )
+    assert fenced["fallback"] is False
+    assert fenced["diagnostics"]["hasValidIndexHtml"] is True
+
     fallback = parse_main_agent_json_output("not json")
     assert fallback["fallback"] is True
     assert {entry["path"] for entry in fallback["files"]} == {"index.html", "manifest.json", "source.json"}
 
     missing_files = parse_main_agent_json_output({"files": [{"path": "index.html", "content": ""}]})
     assert missing_files["fallback"] is True
-    assert missing_files["fallbackReason"] == "missing_required_files"
+    assert missing_files["fallbackReason"] == "missing_or_empty_index_html"
 
 
 if __name__ == "__main__":

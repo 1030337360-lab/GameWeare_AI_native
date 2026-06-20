@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.agents.framework.workspace import WorkspaceContext
 from app.agents.graphs.llm_adapter import LLMGraphResult
 from app.agents.graphs.recording import LLMCallRecorder
 from app.agents.graphs.react_graph import MAX_REACT_ITERATIONS, run_react_graph
@@ -66,6 +67,15 @@ def run() -> None:
     assert immediate.iterations == 1
     assert immediate.final_output == {"Finished": True, "message": "done"}
 
+    fenced_final = run_react_graph(
+        settings=_settings(),
+        model="test-model",
+        adapter=FakeAdapter(['```json\n{"type":"final","output":{"Finished":true,"message":"fenced"}}\n```']),
+    )
+    assert fenced_final.finished is True
+    assert fenced_final.finish_reason == "finished"
+    assert fenced_final.final_output == {"Finished": True, "message": "fenced"}
+
     tool_then_final_adapter = FakeAdapter(
         [
             '{"type":"tool","tool":{"name":"memory.summary_build","args":{"entries":[]}}}',
@@ -81,6 +91,37 @@ def run() -> None:
     assert tool_then_final.tool_results[0]["data"]["count"] == 0
     assert len(tool_then_final_adapter.calls) == 2
     assert "toolResults" in tool_then_final_adapter.calls[1]["input"][-1]["content"][0]["text"]
+
+    write_root = Path(__file__).resolve().parents[1] / ".worktrees" / "react-write-test"
+    write_then_final = run_react_graph(
+        settings=_settings(),
+        model="test-model",
+        adapter=FakeAdapter(
+            [
+                '{"type":"tool","tool":{"name":"workspace.file_write","args":{"path":"index.html","content":"<html>generated</html>"}}}',
+                '{"type":"final","output":{"Finished":true,"files":[{"path":"index.html","workspacePath":"index.html"}],"cover":{"title":"Generated","description":"","tags":[]}}}',
+            ]
+        ),
+        registry=build_builtin_tool_registry(
+            WorkspaceContext(
+                run_id="react-write-test",
+                project_id="project-test",
+                workspace_root=str(Path(__file__).resolve().parents[1]),
+                worktree_stub_path=str(write_root),
+                branch_name=None,
+                base_commit=None,
+                cleanup_policy="manual",
+                isolation_mode="stub",
+                capability="read_write",
+                status="prepared",
+            )
+        ),
+    )
+    assert write_then_final.finished is True
+    assert write_then_final.finish_reason == "finished"
+    assert write_then_final.tool_results[0]["ok"] is True
+    assert (write_root / "index.html").read_text(encoding="utf-8") == "<html>generated</html>"
+    assert write_then_final.final_output["files"][0]["workspacePath"] == "index.html"
 
     metrics = {
         "promptPrefix": "Create request: hello 你好",

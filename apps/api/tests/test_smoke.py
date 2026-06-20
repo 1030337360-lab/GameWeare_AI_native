@@ -13,6 +13,8 @@ os.environ["CREATE_STATIC_GENERATION"] = "true"
 from app.main import app
 from app.config import get_settings
 from app.database import db_connection
+from app.schemas import LLMTestResult
+from app.services import create_service
 from app.services.maintenance_service import bootstrap_maintainer_account
 from app.services.play_stats_service import flush_pending_play_counts
 
@@ -25,7 +27,7 @@ def run() -> None:
 
     public_ai_config = client.get("/create/ai-config")
     assert public_ai_config.status_code == 200
-    assert public_ai_config.json() == {"authenticated": False, "configured": False, "baseUrl": None, "model": None, "provider": None, "staticGeneration": True}
+    assert public_ai_config.json() == {"authenticated": False, "configured": False, "staticGeneration": True}
 
     games = client.get("/games")
     assert games.status_code == 200
@@ -147,8 +149,38 @@ def run() -> None:
     assert ai_config.status_code == 200
     ai_config_payload = ai_config.json()
     assert ai_config_payload["configured"] is True
-    assert ai_config_payload["baseUrl"] == "https://api.example.test/v1"
+    assert "baseUrl" not in ai_config_payload
+    assert "model" not in ai_config_payload
     assert "apiKey" not in ai_config_payload
+
+    saved_config_state = client.get("/create/ai-config", headers={"Authorization": f"Bearer {token}"})
+    assert saved_config_state.status_code == 200
+    assert saved_config_state.json()["configured"] is True
+    assert "baseUrl" not in saved_config_state.json()
+    assert "model" not in saved_config_state.json()
+
+    relogin = client.post("/auth/login", json={"email": email, "password": "password123"})
+    assert relogin.status_code == 200
+    relogin_token = relogin.json()["accessToken"]
+    relogin_config_state = client.get("/create/ai-config", headers={"Authorization": f"Bearer {relogin_token}"})
+    assert relogin_config_state.status_code == 200
+    assert relogin_config_state.json()["configured"] is True
+    assert "baseUrl" not in relogin_config_state.json()
+    assert "model" not in relogin_config_state.json()
+
+    original_test_llm_config = create_service.test_llm_config
+    try:
+        create_service.test_llm_config = lambda **kwargs: LLMTestResult(  # type: ignore[assignment]
+            ok=True,
+            code="ok",
+            message="Saved configuration works.",
+            details={"model": kwargs["model"]},
+        )
+        saved_config_test = client.post("/create/ai-config/test", headers={"Authorization": f"Bearer {relogin_token}"})
+        assert saved_config_test.status_code == 200
+        assert saved_config_test.json()["ok"] is True
+    finally:
+        create_service.test_llm_config = original_test_llm_config  # type: ignore[assignment]
 
     create_job = client.post(
         "/create/jobs",
@@ -190,7 +222,19 @@ def run() -> None:
     step_stages = [step["stage"] for step in run_steps.json()]
     assert "run_created" in step_stages
     assert "prompt_rendered" in step_stages
+    assert "safety_scan" in step_stages
     assert "run_completed" in step_stages
+
+    generated_versions = client.get(f"/games/{create_payload['gameSlug']}/versions", headers={"Authorization": f"Bearer {token}"})
+    assert generated_versions.status_code == 200
+    assert generated_versions.json()[0]["versionNo"] == 1
+    assert generated_versions.json()[0]["safetyStatus"] == "passed"
+
+    remix_response = client.post(f"/games/{create_payload['gameSlug']}/remix", headers={"Authorization": f"Bearer {token}"})
+    assert remix_response.status_code == 200
+    remix_payload = remix_response.json()
+    assert remix_payload["gameSlug"].startswith("remix-")
+    assert remix_payload["status"] == "draft"
 
     event_stream = client.get(f"/create/runs/{create_payload['runId']}/events", headers={"Authorization": f"Bearer {token}"})
     assert event_stream.status_code == 200
@@ -311,6 +355,58 @@ ON CONFLICT (run_id, step_no) DO UPDATE SET
     )
     assert review_job.status_code == 200
     assert review_job.json()["targetType"] == "job"
+
+    with db_connection() as connection:
+        failed_run = connection.execute(
+            """
+INSERT INTO create_runs (
+  task_id, project_id, user_id, job_id, create_type, agent_mode, status, log_object_key, completed_at
+)
+VALUES (gen_random_uuid(), %s, %s, %s, 'opt', 'react', 'failed', %s, now())
+RETURNING id
+""",
+            (create_payload["projectId"], admin_user_id, create_payload["id"], f"agent-runs/{uuid4().hex}/run-log.jsonl"),
+        ).fetchone()
+        connection.execute(
+            "UPDATE generation_jobs SET status = 'failed', error_code = 'SMOKE_FAILED', error_message = 'Smoke failed create run' WHERE id = %s",
+            (create_payload["id"],),
+        )
+        connection.execute(
+            """
+INSERT INTO create_run_steps (run_id, step_no, stage, status, input_summary, output_summary, metrics)
+VALUES
+  (%s, 1, 'llm_call', 'succeeded', 'prompt prefix', 'model output', %s),
+  (%s, 2, 'tool_call', 'failed', 'write file', 'tool error', %s)
+""",
+            (
+                failed_run["id"],
+                Jsonb({"outputTokens": 77, "promptEnglishWords": 9, "promptChineseChars": 2}),
+                failed_run["id"],
+                Jsonb({"toolName": "write_file", "files": ["index.html"], "ok": False, "error": {"message": "failed"}}),
+            ),
+        )
+    failed_runs = client.get("/maintenance/create-runs/failed?limit=5", headers={"Authorization": f"Bearer {admin_token}"})
+    assert failed_runs.status_code == 200
+    failed_payload = failed_runs.json()
+    target_failed_run = next(run for run in failed_payload if run["runId"] == str(failed_run["id"]))
+    assert target_failed_run["createType"] == "opt"
+    assert target_failed_run["agentMode"] == "react"
+    assert target_failed_run["totalOutputTokens"] == 77
+    assert len(target_failed_run["steps"]) == 2
+    assert target_failed_run["steps"][0]["outputTokens"] == 77
+    retry_failed = client.post(f"/maintenance/jobs/{create_payload['id']}/retry", headers={"Authorization": f"Bearer {admin_token}"})
+    assert retry_failed.status_code == 200
+    retry_payload = retry_failed.json()
+    assert retry_payload["status"] == "planning"
+    assert retry_payload["createType"] == "init"
+    assert retry_payload["agentMode"] == "opt"
+    retry_final = client.get(f"/create/jobs/{retry_payload['id']}", headers={"Authorization": f"Bearer {token}"})
+    assert retry_final.status_code == 200
+    with db_connection() as connection:
+        connection.execute(
+            "UPDATE generation_jobs SET status = 'completed', error_code = NULL, error_message = NULL WHERE id = %s",
+            (create_payload["id"],),
+        )
 
     maintenance_games = client.get("/maintenance/games?q=astro-ludo", headers={"Authorization": f"Bearer {admin_token}"})
     assert maintenance_games.status_code == 200

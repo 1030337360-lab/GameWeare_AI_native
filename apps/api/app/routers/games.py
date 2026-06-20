@@ -1,8 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 
-from app.schemas import Game, GameInteractionState
+from app.schemas import Game, GameInteractionState, GameVersionSummary, RemixResponse
 from app.services.auth_service import get_optional_user, require_user
-from app.services.catalog import ensure_catalog_runtime_schema, get_game, list_games, list_tags, set_game_favorite, set_game_like
+from app.services.catalog import (
+    ensure_catalog_runtime_schema,
+    get_game,
+    get_game_cover,
+    list_game_versions,
+    list_games,
+    list_tags,
+    remix_game,
+    set_game_favorite,
+    set_game_like,
+)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -30,6 +41,40 @@ def game_detail(game_id: str, user=Depends(get_optional_user)) -> Game:
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
     return game
+
+
+@router.get("/{game_id}/cover", include_in_schema=False)
+def game_cover(game_id: str) -> Response:
+    ensure_catalog_runtime_schema()
+    cover = get_game_cover(game_id)
+    if not cover:
+        raise HTTPException(status_code=404, detail="Game cover not found")
+    content, content_type = cover
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@router.get("/{game_id}/versions", response_model=list[GameVersionSummary])
+def game_versions(game_id: str) -> list[GameVersionSummary]:
+    ensure_catalog_runtime_schema()
+    versions = list_game_versions(game_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail="Game versions not found")
+    return versions
+
+
+@router.post("/{game_id}/remix", response_model=RemixResponse)
+def remix(game_id: str, user=Depends(require_user)) -> RemixResponse:
+    ensure_catalog_runtime_schema()
+    result = remix_game(game_id, user_id=user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return result
 
 
 @router.put("/{game_id}/like", response_model=GameInteractionState)
