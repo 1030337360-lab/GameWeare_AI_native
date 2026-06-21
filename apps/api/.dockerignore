@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.venv
+__pycache__
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.worktrees
+tests
+*.log
+.integration-test.lock

@@ -1,4 +1,70 @@
 services:
+  api:
+    build:
+      context: ./apps/api
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+    image: yahaha-api:local
+    container_name: yahaha-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://yahaha:yahaha@postgres:5432/yahaha
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: yahaha-games
+      MINIO_PUBLIC_BASE_URL: http://localhost:9000/yahaha-games
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-change-me
+      JWT_TTL_SECONDS: 604800
+      WEB_BASE_URL: http://localhost:1314
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: http://localhost:8080/auth/google/callback
+      API_PORT: 8080
+      AI_CONFIG_ENCRYPTION_SECRET: ${AI_CONFIG_ENCRYPTION_SECRET:-dev-change-me-32bytes}
+      CREATE_STATIC_GENERATION: ${CREATE_STATIC_GENERATION:-false}
+      CREATE_VALIDATE_LLM_CONFIG: ${CREATE_VALIDATE_LLM_CONFIG:-true}
+      CREATE_RECENT_GAME_TTL_SECONDS: 604800
+      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-120}
+      PLAY_STATS_FLUSH_INTERVAL_SECONDS: 10
+      CREATE_WORKTREE_ENABLED: ${CREATE_WORKTREE_ENABLED:-false}
+      CREATE_WORKTREE_BASE_REF: HEAD
+      CREATE_WORKTREE_CLEANUP_POLICY: auto_on_success
+      MAINTAINER_EMAIL: ${MAINTAINER_EMAIL:-}
+      MAINTAINER_PASSWORD: ${MAINTAINER_PASSWORD:-}
+      MAINTAINER_DISPLAY_NAME: ${MAINTAINER_DISPLAY_NAME:-Platform Maintainer}
+    ports:
+      - "8080:8080"
+    volumes:
+      - api_worktrees:/workspace/.worktrees
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.27-alpine}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+    image: yahaha-web:local
+    container_name: yahaha-web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "1314:1314"
+
   postgres:
     image: postgres:16
     container_name: yahaha-postgres
@@ -27,7 +93,7 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - D:/yahaha:/data
+      - minio_data:/data
     command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
@@ -48,3 +114,5 @@ services:
 
 volumes:
   postgres_data:
+  minio_data:
+  api_worktrees:

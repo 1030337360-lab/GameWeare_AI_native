@@ -6,23 +6,101 @@ This build follows the technical route in `Yahaha-MVP-技术路线报告.md`:
 
 - Frontend: React + Vite + TypeScript on port `1314`
 - Backend: Python + FastAPI on port `8080`
-- Local dependencies: PostgreSQL, MinIO, and Redis via Docker Compose
-- Auth cache: Redis via Docker Compose
-- MinIO local storage path: `D:\yahaha`
+- Docker startup: Web, API, PostgreSQL, MinIO, and Redis via Docker Compose
+- Local development startup: PostgreSQL, MinIO, and Redis via Docker Compose; Web/API run on the host
+- MinIO storage: Docker named volume `minio_data` in the full Docker stack; local development can override MinIO storage through Compose volumes
 - Create generation: real LLM generation by default; static test generation is available only when `CREATE_STATIC_GENERATION=true`
 
 ## Requirements
 
-- Docker Desktop `28.3.3`
+For Docker startup:
+
+- Docker Desktop `28.3.3` or newer
 - Docker Compose integrated with Docker
-- WSL enabled
+- WSL enabled on Windows
+
+For local development startup:
+
+- Docker Desktop and Docker Compose for PostgreSQL, MinIO, and Redis
 - Node.js 24+
 - Python 3.12+
+- Git, if you want real Create worktree isolation with `CREATE_WORKTREE_ENABLED=true`
 
-## Start dependencies
+## Startup Option A: Full Docker Stack
+
+Use this path when another person wants to run the whole project without installing Python or Node locally.
 
 ```powershell
-docker compose up -d
+git clone https://github.com/1030337360-lab/yahaha-mvp.git
+cd yahaha-mvp
+docker compose up -d --build
+```
+
+This starts:
+
+| Service | Port | Purpose |
+| ------- | ---- | ------- |
+| `web` | `1314` | React production build served by Nginx |
+| `api` | `8080` | FastAPI backend |
+| `postgres` | `5432` | PostgreSQL database; runs `apps/api/db/init/*.sql` on first volume creation |
+| `minio` | `9000`, `9001` | Object storage API and Console |
+| `redis` | `6379` | Auth/session cache, Create state, SSE pubsub, play stat buffers |
+
+Open:
+
+```text
+Web: http://localhost:1314
+API health: http://localhost:8080/health
+MinIO Console: http://localhost:9001
+```
+
+Default local MinIO credentials are `minioadmin` / `minioadmin`.
+
+The Docker stack uses Docker named volumes:
+
+| Volume | Purpose |
+| ------ | ------- |
+| `postgres_data` | PostgreSQL data |
+| `minio_data` | MinIO object storage |
+| `api_worktrees` | Create isolated workspace/stub files |
+
+Docker-specific notes:
+
+- The web image is built with `VITE_API_BASE_URL=http://localhost:8080`, because the browser reaches the API through the host port.
+- The API container reaches dependencies by service names: `postgres`, `minio`, and `redis`.
+- `CREATE_WORKTREE_ENABLED` defaults to `false` in Docker Compose. This keeps container startup independent of a mounted Git checkout. Create still writes only inside `/workspace/.worktrees` through the isolated stub workspace. Local development can enable real git worktrees.
+- `MINIO_PUBLIC_BASE_URL` defaults to `http://localhost:9000/yahaha-games`, so URLs returned to the browser use the host port.
+- Do not put real secrets in committed files. Override sensitive values through shell environment variables or a local untracked `.env` file next to `docker-compose.yml`.
+
+Useful Docker commands:
+
+```powershell
+docker compose logs -f api
+docker compose logs -f web
+docker compose ps
+docker compose down
+docker compose down -v  # also removes database/object-storage volumes
+```
+
+If Docker fails before building project code with an error like `429 Too Many Requests` while loading `python`, `node`, or `nginx` image metadata, the blocker is the configured Docker registry mirror rather than this repository. Remove or change the Docker Desktop registry mirror, then run `docker compose up -d --build` again. The base images can also be overridden without editing project files:
+
+```powershell
+$env:PYTHON_IMAGE='python:3.12-slim'
+$env:NODE_IMAGE='node:24-alpine'
+$env:NGINX_IMAGE='nginx:1.27-alpine'
+docker compose build api web
+```
+
+If you already have old Docker volumes and need to re-run database init SQL, remove volumes with `docker compose down -v` before starting again, or initialize manually.
+
+## Startup Option B: Local Development
+
+Use this path when you want hot reload, local debugging, or real git worktree isolation.
+
+### Start dependencies only
+
+```powershell
+docker compose up -d postgres minio redis
 ```
 
 PostgreSQL listens on `localhost:5432`.
@@ -37,7 +115,7 @@ Get-Content apps\api\db\init\001_schema.sql -Raw | docker exec -i yahaha-postgre
 Get-Content apps\api\db\init\002_seed.sql -Raw | docker exec -i yahaha-postgres psql -U yahaha -d yahaha
 ```
 
-## Start backend
+### Start backend locally
 
 ```powershell
 cd apps/api
@@ -75,7 +153,7 @@ To verify real git worktree isolation, run the workspace test with the opt-in fl
 $env:RUN_GIT_WORKTREE_TEST='1'; .venv\Scripts\python tests\test_workspace_isolation.py
 ```
 
-## Start frontend
+### Start frontend locally
 
 ```powershell
 cd apps/web
@@ -85,6 +163,27 @@ npm run dev
 ```
 
 Open `http://localhost:1314`.
+
+## Distribution
+
+The recommended MVP distribution path is source plus Docker Compose:
+
+1. Push source code to GitHub.
+2. Share the repository URL.
+3. The recipient runs `git clone`, then `docker compose up -d --build`.
+
+If you want recipients to run without building source, publish images to a registry such as GitHub Container Registry or Docker Hub, then replace the `build:` sections in Compose with image references, for example:
+
+```yaml
+api:
+  image: ghcr.io/1030337360-lab/yahaha-api:latest
+web:
+  image: ghcr.io/1030337360-lab/yahaha-web:latest
+```
+
+For this repository, source-plus-Compose is the simpler and more transparent handoff. Registry images are better after the API and Web release cadence stabilizes.
+
+Docker packaging files use project-relative paths: `docker-compose.yml`, `.dockerignore`, `apps/api/Dockerfile`, `apps/api/.dockerignore`, `apps/web/Dockerfile`, `apps/web/nginx.conf`, and `apps/web/.dockerignore`.
 
 ## Implemented API surface
 

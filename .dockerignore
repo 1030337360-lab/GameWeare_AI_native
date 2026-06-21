@@ -1,0 +1,17 @@
+.git
+.agents
+.codex
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/node_modules
+**/dist
+**/.worktrees
+**/.env
+**/.env.*
+!**/.env.example
+apps/api/.integration-test.lock
+*.log
+Dockerfile
+docker-compose.override.yml
