@@ -16,6 +16,9 @@ from app.config import get_settings
 from app.database import db_connection
 from app.schemas import AuthResponse, UserProfile
 
+from app.cache.sensitive import get_with_sensitive_cache
+
+
 HASH_ITERATIONS = 260000
 TOKEN_ALGORITHM = "HS256"
 TOKEN_KEY_PREFIX = "auth:jwt:"

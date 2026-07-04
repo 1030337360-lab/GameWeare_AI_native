@@ -9,7 +9,33 @@ from app.routers import auth, create, games, maintenance, play, profile, uploads
 from app.services.maintenance_service import bootstrap_maintainer_account
 from app.services.play_stats_service import flush_pending_play_counts, start_play_stats_flush_thread, stop_play_stats_flush_thread
 
-app = FastAPI(title="Yahaha MVP API", version="0.1.0")
+from contextlib import asynccontextmanager
+from app.config import get_settings
+from app.database import init_pool
+
+import html
+
+async def lifespan(app: FastAPI):
+  # 启动时初始化连接池
+  settings = get_settings()
+  init_pool(
+      settings.database_url,
+      min_size=settings.db_pool_min_size,
+      max_size=settings.db_pool_max_size,
+      max_idle=settings.db_pool_max_idle_lifetime,
+      max_lifetime=settings.db_pool_max_lifetime,
+      timeout=settings.db_pool_timeout,
+  )
+  bootstrap_maintainer_account()
+  start_play_stats_flush_thread()
+  yield
+  # 关闭时清理
+  flush_pending_play_counts()
+  stop_play_stats_flush_thread()
+  from app.database import close_pool
+  close_pool()
+  
+app = FastAPI(title="Yahaha MVP API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,18 +54,6 @@ app.include_router(uploads.router)
 app.include_router(maintenance.router)
 
 
-@app.on_event("startup")
-def start_background_workers() -> None:
-    bootstrap_maintainer_account()
-    start_play_stats_flush_thread()
-
-
-@app.on_event("shutdown")
-def stop_background_workers() -> None:
-    flush_pending_play_counts()
-    stop_play_stats_flush_thread()
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -48,6 +62,7 @@ def health() -> dict[str, str]:
 @app.get("/bundles/games/{game_id}/index.html", response_class=HTMLResponse, include_in_schema=False)
 def generated_game(game_id: str) -> str:
     title = game_id.replace("-", " ").title()
+    safetitle = html.escape(title)
     return f"""
 <!doctype html>
 <html>
@@ -83,7 +98,7 @@ def generated_game(game_id: str) -> str:
   <body>
     <main class="game">
       <p>Remote manifest demo</p>
-      <h1>{title}</h1>
+      <h1>{safetitle}</h1>
       <p>This HTML is served through the backend as a stand-in for a MinIO-hosted game bundle.</p>
       <button onclick="document.querySelector('h1').textContent='Playing {title}'">Play</button>
     </main>

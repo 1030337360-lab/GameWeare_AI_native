@@ -9,6 +9,7 @@ API_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 class Settings(BaseSettings):
+    environment: str = "dev" # dev | staging | prod
     database_url: str = "postgresql+psycopg://yahaha:yahaha@localhost:5432/yahaha"
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
@@ -35,10 +36,40 @@ class Settings(BaseSettings):
     maintainer_email: str = ""
     maintainer_password: str = ""
     maintainer_display_name: str = "Platform Maintainer"
+    db_pool_min_size: int = 5
+    db_pool_max_size: int = 10
+    db_pool_max_idle_lifetime: float = 300.0
+    db_pool_max_lifetime: float = 3600.0
+    db_pool_timeout: float = 30.0
 
     model_config = SettingsConfigDict(env_file=(ROOT_ENV_FILE, API_ENV_FILE), extra="ignore")
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if settings.environment != "dev":
+     # JWT_SECRET 校验
+        if settings.jwt_secret == "dev-change-me":
+            raise ValueError(
+                "JWT_SECRET is using default value 'dev-change-me'. "
+                "Please set a strong secret via environment variable."
+            )
+        if len(settings.jwt_secret) < 32:
+            raise ValueError(
+                f"JWT_SECRET must be at least 32 characters, got {len(settings.jwt_secret)}. "
+                "Please set a strong secret via environment variable."
+            )
+
+        # AI_CONFIG_ENCRYPTION_SECRET 校验
+        if settings.ai_config_encryption_secret == "dev-change-me-32bytes":
+            raise ValueError(
+                "AI_CONFIG_ENCRYPTION_SECRET is using default value. "
+                "Please set a strong 32-byte secret via environment variable."
+            )
+        if len(settings.ai_config_encryption_secret) < 32:
+            raise ValueError(
+                f"AI_CONFIG_ENCRYPTION_SECRET must be at least 32 characters, got {len(settings.ai_config_encryption_secret)}. "
+                "Please set a strong secret via environment variable."
+            )
+    return settings

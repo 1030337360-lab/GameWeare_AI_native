@@ -14,6 +14,16 @@ services:
       redis:
         condition: service_healthy
     environment:
+      # ============================================
+      # ⚠️  安全提醒：部署前必须修改以下密钥！
+      #
+      # 生产环境 (ENVIRONMENT=prod/staging) 时，
+      # JWT_SECRET 和 AI_CONFIG_ENCRYPTION_SECRET
+      # 不能使用默认值，否则服务启动失败。
+      #
+      # 生成强密钥命令：
+      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+      # ============================================
       DATABASE_URL: postgresql+psycopg://yahaha:yahaha@postgres:5432/yahaha
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin

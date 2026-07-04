@@ -22,6 +22,7 @@ from app.schemas import (
     PlanDecisionRequest,
     PlanPreviewResponse,
     RecentGame,
+    UserProfile,
 )
 from app.agents.framework import (
     get_agent_state_for_job,
@@ -263,7 +264,7 @@ def create_job(payload: CreateJobRequest, background_tasks: BackgroundTasks, req
 
 
 @router.get("/jobs/{job_id}", response_model=CreateJob)
-def get_job(job_id: str) -> CreateJob:
+def get_job(job_id: str, user: UserProfile = Depends(require_user)) -> CreateJob:
     job = get_generation_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
