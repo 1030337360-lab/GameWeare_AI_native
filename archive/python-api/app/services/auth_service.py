@@ -194,6 +194,6 @@ def revoke_token(
 def demo_user_id() -> str:
     with db_connection() as connection:
         row = connection.execute(
-            "SELECT id FROM users WHERE email = 'system@yahaha.local' LIMIT 1"
+            "SELECT id FROM users WHERE email = 'system@gameweare.local' LIMIT 1"
         ).fetchone()
     return str(row["id"])

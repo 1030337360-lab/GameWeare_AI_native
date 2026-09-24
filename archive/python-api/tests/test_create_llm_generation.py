@@ -26,7 +26,7 @@ from app.services import create_service
 class FakeLLMAdapter:
     def invoke(self, payload: dict) -> LLMGraphResult:
         payload_text = json.dumps(payload, ensure_ascii=False)
-        if "Yahaha Cover Agent" in payload_text:
+        if "Gameweare Cover Agent" in payload_text:
             output = {
                 "svg": "<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'><rect width='1200' height='900' fill='#101827'/><text x='80' y='180' fill='#ffffff' font-size='88'>LLM Arcade</text></svg>",
                 "mimeType": "image/svg+xml",
@@ -35,14 +35,14 @@ class FakeLLMAdapter:
             text = json.dumps(output, ensure_ascii=False)
             raw = {"output_text": text, "usage": {"input_tokens": 8, "output_tokens": 13, "total_tokens": 21}}
             return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
-        if "Yahaha ReAct Create Agent" in payload_text and "toolResults" not in payload_text:
+        if "Gameweare ReAct Create Agent" in payload_text and "toolResults" not in payload_text:
             output = {
                 "type": "tool",
                 "tool": {
                     "name": "workspace.file_write",
                     "args": {
                         "path": "index.html",
-                        "content": """<!doctype html><html><body><canvas id='game'></canvas><script>window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'x'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                        "content": """<!doctype html><html><body><canvas id='game'></canvas><script>window.parent.postMessage({source:'gameweare-game',type:'game_ready',gameId:'x'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
                     },
                 },
             }
@@ -51,10 +51,10 @@ class FakeLLMAdapter:
             return LLMGraphResult(text=text, raw=raw, metrics=build_llm_call_metrics(payload, response_text=text, response_raw=raw))
         file_entry = (
             {"path": "index.html", "workspacePath": "index.html"}
-            if "Yahaha ReAct Create Agent" in payload_text
+            if "Gameweare ReAct Create Agent" in payload_text
             else {
                 "path": "index.html",
-                "content": """<!doctype html><html><body><canvas id='game'></canvas><script>window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'x'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                "content": """<!doctype html><html><body><canvas id='game'></canvas><script>window.parent.postMessage({source:'gameweare-game',type:'game_ready',gameId:'x'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
             }
         )
         output = {
@@ -75,7 +75,7 @@ class FakeLLMAdapter:
 class OptReactLLMAdapter:
     def invoke(self, payload: dict) -> LLMGraphResult:
         payload_text = json.dumps(payload, ensure_ascii=False)
-        if "Yahaha Cover Agent" in payload_text:
+        if "Gameweare Cover Agent" in payload_text:
             return FakeLLMAdapter().invoke(payload)
         if "toolResults" not in payload_text:
             output = {"type": "tool", "tool": {"name": "workspace.file_read", "args": {"path": "index.html", "maxBytes": 80000}}}
@@ -90,7 +90,7 @@ class OptReactLLMAdapter:
                     "name": "workspace.file_write",
                     "args": {
                         "path": "index.html",
-                        "content": """<!doctype html><html><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                        "content": """<!doctype html><html><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'gameweare-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
                     },
                 },
             }
@@ -123,9 +123,9 @@ class OptReactLLMAdapter:
 class RefineHTMLAdapter:
     def invoke(self, payload: dict) -> LLMGraphResult:
         payload_text = json.dumps(payload, ensure_ascii=False)
-        if "Yahaha Cover Agent" in payload_text:
+        if "Gameweare Cover Agent" in payload_text:
             return FakeLLMAdapter().invoke(payload)
-        assert "Yahaha Refine Create Agent" in payload_text
+        assert "Gameweare Refine Create Agent" in payload_text
         assert "requestAnimationFrame" in payload_text
         assert "Previous draft or published game artifacts" in payload_text
         output = {
@@ -135,7 +135,7 @@ class RefineHTMLAdapter:
                 "files": [
                     {
                         "path": "index.html",
-                        "content": """<!doctype html><html><head><meta charset='utf-8'><title>Optimized LLM Arcade</title></head><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'yahaha-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                        "content": """<!doctype html><html><head><meta charset='utf-8'><title>Optimized LLM Arcade</title></head><body><canvas id='game'></canvas><script>const optimized=true; window.parent.postMessage({source:'gameweare-game',type:'game_ready',gameId:'opt'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
                     }
                 ],
                 "cover": {"title": "Optimized LLM Arcade", "description": "Optimized through refine JSON.", "tags": ["refined"]},
@@ -157,7 +157,7 @@ class BadLLMAdapter:
 class BadCoverLLMAdapter:
     def invoke(self, payload: dict) -> LLMGraphResult:
         payload_text = json.dumps(payload, ensure_ascii=False)
-        if "Yahaha Cover Agent" in payload_text:
+        if "Gameweare Cover Agent" in payload_text:
             raw = {"output_text": "{\"summary\":\"no image\"}", "usage": {"output_tokens": 3}}
             return LLMGraphResult(text=raw["output_text"], raw=raw, metrics=build_llm_call_metrics(payload, response_text=raw["output_text"], response_raw=raw))
         return FakeLLMAdapter().invoke(payload)
@@ -206,7 +206,7 @@ def run() -> None:
         [
             AgentArtifact(
                 "index.html",
-                b"""<!doctype html><html><body><script>window . parent . postMessage({source:'yahaha-game',type:'game_ready',payload:{}}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+                b"""<!doctype html><html><body><script>window . parent . postMessage({source:'gameweare-game',type:'game_ready',payload:{}}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
                 "text/html",
                 "bundle",
                 "runtime",
@@ -216,14 +216,14 @@ def run() -> None:
     )
     assert allowed_parent_message_scan["passed"] is True
     for blocked_parent_html in (
-        b"""<!doctype html><html><body><script>parent.postMessage({source:'yahaha-game',type:'game_ready'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>parent.postMessage({source:'gameweare-game',type:'game_ready'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
         b"""<!doctype html><html><body><script>const p = window.parent; requestAnimationFrame(()=>{});</script></body></html>""",
         b"""<!doctype html><html><body><script>window.parent.location.href = '/x'; requestAnimationFrame(()=>{});</script></body></html>""",
-        b"""<!doctype html><html><body><script>window["parent"].postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
-        b"""<!doctype html><html><body><script>parent["postMessage"]({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
-        b"""<!doctype html><html><body><script>window?.parent.postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
-        b"""<!doctype html><html><body><script>self.parent.postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
-        b"""<!doctype html><html><body><script>globalThis.parent.postMessage({source:'yahaha-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>window["parent"].postMessage({source:'gameweare-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>parent["postMessage"]({source:'gameweare-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>window?.parent.postMessage({source:'gameweare-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>self.parent.postMessage({source:'gameweare-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
+        b"""<!doctype html><html><body><script>globalThis.parent.postMessage({source:'gameweare-game'}, '*'); requestAnimationFrame(()=>{});</script></body></html>""",
     ):
         parent_scan = create_service._scan_publish_artifacts(
             [AgentArtifact("index.html", blocked_parent_html, "text/html", "bundle", "runtime")],
@@ -314,7 +314,7 @@ def run() -> None:
     create_service._make_graph_adapter = lambda ai_config: FakeLLMAdapter()  # type: ignore[assignment]
 
     client = TestClient(app)
-    email = f"llm-{uuid4().hex[:10]}@yahaha.local"
+    email = f"llm-{uuid4().hex[:10]}@gameweare.local"
     auth_register = client.post(
         "/auth/register",
         json={"email": email, "password": "password123", "displayName": "LLM User"},

@@ -44,7 +44,7 @@ INSERT INTO users (id, email, display_name)
 VALUES (%s, %s, 'Multi Agent Test User')
 RETURNING id
 """,
-                (self.user_id, f"multi-agent-{uuid4().hex}@yahaha.local"),
+                (self.user_id, f"multi-agent-{uuid4().hex}@gameweare.local"),
             ).fetchone()
             project = connection.execute(
                 """

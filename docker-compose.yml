@@ -1,7 +1,9 @@
+name: gameweare-mvp
+
 services:
   api:
     build: ./apps/api-java
-    image: yahaha-java-api:local
+    image: gameweare-java-api:local
     depends_on:
       mysql: {condition: service_healthy}
       rabbitmq: {condition: service_healthy}
@@ -9,18 +11,18 @@ services:
       minio: {condition: service_healthy}
     environment:
       API_PORT: 8080
-      MYSQL_URL: jdbc:mysql://mysql:3306/yahaha?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
-      MYSQL_USER: yahaha
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-yahaha}
+      MYSQL_URL: jdbc:mysql://mysql:3306/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gameweare}
       RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USER: yahaha
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-yahaha}
+      RABBITMQ_USER: gameweare
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-gameweare}
       REDIS_HOST: redis
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET: yahaha-games
-      MINIO_PUBLIC_BASE_URL: http://localhost:9000/yahaha-games
+      MINIO_BUCKET: gameweare-games
+      MINIO_PUBLIC_BASE_URL: http://localhost:9000/gameweare-games
       WEB_ORIGIN: http://localhost:1314
       AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:-local-dev-key-change-before-public-use-32}
       LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}
@@ -58,14 +60,14 @@ services:
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_DATABASE: yahaha
-      MYSQL_USER: yahaha
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-yahaha}
+      MYSQL_DATABASE: gameweare
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gameweare}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-root-change-me}
     ports: ["127.0.0.1:${MYSQL_HOST_PORT:-3307}:3306"]
     volumes: ["mysql_data:/var/lib/mysql"]
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u yahaha -p$$MYSQL_PASSWORD --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u gameweare -p$$MYSQL_PASSWORD --silent"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -73,8 +75,8 @@ services:
   rabbitmq:
     image: rabbitmq:4-management
     environment:
-      RABBITMQ_DEFAULT_USER: yahaha
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-yahaha}
+      RABBITMQ_DEFAULT_USER: gameweare
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-gameweare}
     ports: ["127.0.0.1:${RABBITMQ_HOST_PORT:-5673}:5672", "127.0.0.1:${RABBITMQ_CONSOLE_PORT:-15673}:15672"]
     volumes: ["rabbitmq_data:/var/lib/rabbitmq"]
     healthcheck:

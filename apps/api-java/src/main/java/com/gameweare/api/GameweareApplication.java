@@ -6,8 +6,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
-public class YahahaApplication {
+public class GameweareApplication {
     public static void main(String[] args) {
-        SpringApplication.run(YahahaApplication.class, args);
+        SpringApplication.run(GameweareApplication.class, args);
     }
 }

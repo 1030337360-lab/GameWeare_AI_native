@@ -1,4 +1,4 @@
-# Yahaha Java backend rebuild
+# Gameweare Java backend rebuild
 
 ## Scope
 

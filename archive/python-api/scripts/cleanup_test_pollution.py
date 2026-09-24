@@ -18,13 +18,13 @@ from app.database import db_connection
 
 
 TEST_EMAIL_LIKE_PATTERNS = (
-    "smoke-%@yahaha.local",
-    "llm-%@yahaha.local",
-    "decentralized-%@yahaha.local",
-    "workspace-%@yahaha.local",
-    "multi-agent-%@yahaha.local",
-    "dbg-%@yahaha.local",
-    "maintainer-test%@yahaha.local",
+    "smoke-%@gameweare.local",
+    "llm-%@gameweare.local",
+    "decentralized-%@gameweare.local",
+    "workspace-%@gameweare.local",
+    "multi-agent-%@gameweare.local",
+    "dbg-%@gameweare.local",
+    "maintainer-test%@gameweare.local",
 )
 
 TEST_OBJECT_LIKE_PATTERNS = (
@@ -586,7 +586,7 @@ def cleanup_test_pollution(*, apply: bool = False, quiet: bool = False) -> dict[
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Clean only test-owned Yahaha SQL, MinIO, and Redis pollution.")
+    parser = argparse.ArgumentParser(description="Clean only test-owned Gameweare SQL, MinIO, and Redis pollution.")
     parser.add_argument("--apply", action="store_true", help="Actually delete the dry-run targets.")
     args = parser.parse_args()
     cleanup_test_pollution(apply=args.apply)

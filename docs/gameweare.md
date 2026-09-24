@@ -1,4 +1,4 @@
-# Yahaha MVP 交付说明
+# Gameweare MVP 交付说明
 
 ## 1. 源码仓库
 
@@ -183,9 +183,9 @@ curl http://localhost:8080/health
 
 ```yaml
 api:
-  image: ghcr.io/1030337360-lab/yahaha-api:latest
+  image: ghcr.io/1030337360-lab/gameweare-api:latest
 web:
-  image: ghcr.io/1030337360-lab/yahaha-web:latest
+  image: ghcr.io/1030337360-lab/gameweare-web:latest
 ```
 
 对当前 MVP 来说，源码加 Compose 更透明，也更适合老师或测试者查看实现细节。
@@ -262,7 +262,7 @@ web:
 
 ### 6.1 Architecture Overview
 
-Yahaha MVP 是一个 AI 原生互动游戏平台，核心目标是让用户通过 Prompt 和可选图片输入创建、优化、发布可玩的 HTML5 小游戏。
+Gameweare MVP 是一个 AI 原生互动游戏平台，核心目标是让用户通过 Prompt 和可选图片输入创建、优化、发布可玩的 HTML5 小游戏。
 
 系统采用前后端分离架构：
 
@@ -459,7 +459,7 @@ AI 生成的游戏产物通过 PostgreSQL 元数据和 MinIO 对象存储共同�
 
 ## 8. 测试脚本与验证结果
 
-本轮验证时间：2026-06-21。后端写入类测试通过 `apps/api/tests/support/integration.py` 自动使用隔离资源：`DATABASE_URL=postgresql+psycopg://yahaha:yahaha@localhost:5432/yahaha_test`、`MINIO_BUCKET=yahaha-games-test`、`REDIS_URL=redis://localhost:6379/15`。运行前后会调用测试污染清理逻辑，避免写入默认开发库、默认 MinIO bucket 或 Redis DB 0。
+本轮验证时间：2026-06-21。后端写入类测试通过 `apps/api/tests/support/integration.py` 自动使用隔离资源：`DATABASE_URL=postgresql+psycopg://gameweare:gameweare@localhost:5432/gameweare_test`、`MINIO_BUCKET=gameweare-games-test`、`REDIS_URL=redis://localhost:6379/15`。运行前后会调用测试污染清理逻辑，避免写入默认开发库、默认 MinIO bucket 或 Redis DB 0。
 
 验证前启动了本地依赖服务：
 

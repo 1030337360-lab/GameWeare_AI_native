@@ -14,7 +14,7 @@ export default function Header() {
   return (
     <header className="header">
       <div className="logo" onClick={() => navigate("/")}>
-        Yahaha
+        Gameweare
       </div>
       <nav>
         <a href="/" className={location.pathname === "/" ? "active" : ""}>

@@ -239,7 +239,7 @@ def _build_recovery_payload(state: ReActGraphState, provider_error: dict[str, An
                     {
                         "type": "input_text",
                         "text": (
-                            "You are the Yahaha ReAct Recovery Agent. A prior ReAct continuation call failed at the provider layer. "
+                            "You are the Gameweare ReAct Recovery Agent. A prior ReAct continuation call failed at the provider layer. "
                             "Use only the compact observations supplied here. Return exactly one JSON object: either "
                             "{\"type\":\"tool\",\"tool\":{\"name\":\"tool_name\",\"args\":{...}}} or "
                             "{\"type\":\"final\",\"output\":{\"Finished\":true,\"files\":[...],\"cover\":{...},"

@@ -90,7 +90,7 @@ def run() -> None:
     unauthenticated_job = client.post("/create/jobs", json={"prompt": "test", "files": []})
     assert unauthenticated_job.status_code == 401
 
-    email = f"smoke-{uuid4().hex[:10]}@yahaha.local"
+    email = f"smoke-{uuid4().hex[:10]}@gameweare.local"
     auth_register = client.post(
         "/auth/register",
         json={
@@ -250,7 +250,7 @@ def run() -> None:
     assert run_detail.status_code == 200
     assert run_detail.json()["status"] == "completed"
     assert run_detail.json()["logObjectKey"].endswith("/run-log.jsonl")
-    assert run_detail.json()["summary"]["promptTemplate"]["name"] == "yahaha-create-game"
+    assert run_detail.json()["summary"]["promptTemplate"]["name"] == "gameweare-create-game"
 
     run_steps = client.get(f"/create/runs/{create_payload['runId']}/steps", headers={"Authorization": f"Bearer {token}"})
     assert run_steps.status_code == 200
@@ -574,14 +574,14 @@ RETURNING id
     generated_document = client.get(f"/play/{opt_payload['gameSlug']}/document")
     assert generated_document.status_code == 200
     assert "requestAnimationFrame" in generated_document.text
-    assert "yahaha-game" in generated_document.text
+    assert "gameweare-game" in generated_document.text
     assert "AGENT_MODE" in generated_document.text
     assert "requestPointerLock" not in generated_document.text
     assert "preventDefault" in generated_document.text
 
     other_register = client.post(
         "/auth/register",
-        json={"email": f"other-{uuid4().hex[:8]}@yahaha.local", "password": "password123", "displayName": "Other User"},
+        json={"email": f"other-{uuid4().hex[:8]}@gameweare.local", "password": "password123", "displayName": "Other User"},
     )
     assert other_register.status_code == 200
     other_token = other_register.json()["accessToken"]

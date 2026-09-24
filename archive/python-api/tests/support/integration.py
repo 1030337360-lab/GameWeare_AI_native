@@ -13,21 +13,21 @@ API_ROOT = Path(__file__).resolve().parents[2]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
-DEFAULT_TEST_DATABASE_URL = "postgresql+psycopg://yahaha:yahaha@localhost:5432/yahaha_test"
+DEFAULT_TEST_DATABASE_URL = "postgresql+psycopg://gameweare:gameweare@localhost:5432/gameweare_test"
 DEFAULT_TEST_REDIS_URL = "redis://localhost:6379/15"
-DEFAULT_TEST_MINIO_BUCKET = "yahaha-games-test"
+DEFAULT_TEST_MINIO_BUCKET = "gameweare-games-test"
 LOCK_FILE = API_ROOT / ".integration-test.lock"
 LOCK_STALE_SECONDS = 30 * 60
 
 
 def configure_test_environment() -> None:
     os.environ.setdefault("APP_ENV", "test")
-    os.environ.setdefault("YAHAHA_TESTING", "1")
+    os.environ.setdefault("GAMEWEARE_TESTING", "1")
     os.environ.setdefault("DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     os.environ.setdefault("REDIS_URL", DEFAULT_TEST_REDIS_URL)
     os.environ.setdefault("MINIO_BUCKET", DEFAULT_TEST_MINIO_BUCKET)
     os.environ.setdefault("MINIO_PUBLIC_BASE_URL", f"http://localhost:9000/{DEFAULT_TEST_MINIO_BUCKET}")
-    os.environ.setdefault("MAINTAINER_EMAIL", "maintainer-test@yahaha.local")
+    os.environ.setdefault("MAINTAINER_EMAIL", "maintainer-test@gameweare.local")
     os.environ.setdefault("MAINTAINER_PASSWORD", "password123")
     os.environ.setdefault("CREATE_VALIDATE_LLM_CONFIG", "false")
 
@@ -48,7 +48,7 @@ def assert_safe_test_environment() -> None:
     errors = []
     if "test" not in db_name.lower():
         errors.append(f"DATABASE_URL must point to a test database, got database '{db_name}'.")
-    if settings.minio_bucket == "yahaha-games" or "test" not in settings.minio_bucket.lower():
+    if settings.minio_bucket == "gameweare-games" or "test" not in settings.minio_bucket.lower():
         errors.append(f"MINIO_BUCKET must be a test bucket, got '{settings.minio_bucket}'.")
     if redis_db == "0":
         errors.append("REDIS_URL must not use Redis DB 0 for mutating integration tests.")

@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
   from app.database import close_pool
   close_pool()
   
-app = FastAPI(title="Yahaha MVP API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Gameweare MVP API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,5 +1,5 @@
 
-const TOKEN_STORAGE_KEY = "yahaha_access_token";
+const TOKEN_STORAGE_KEY = "gameweare_access_token";
 export const INIT_AGENT_MODES = ["chat", "react", "plan", "decentralized"] as const;
 export const OPT_AGENT_MODES = ["chat", "react", "plan", "decentralized", "refine"] as const;
 export const AGENT_MODES = [...INIT_AGENT_MODES, ...OPT_AGENT_MODES] as const;

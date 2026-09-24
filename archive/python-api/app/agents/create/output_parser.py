@@ -12,7 +12,7 @@ FALLBACK_INDEX_HTML = """<!doctype html>
   <body>
     <canvas id="game"></canvas>
     <script>
-      window.parent.postMessage({ source: "yahaha-game", type: "game_ready" }, "*");
+      window.parent.postMessage({ source: "gameweare-game", type: "game_ready" }, "*");
     </script>
   </body>
 </html>

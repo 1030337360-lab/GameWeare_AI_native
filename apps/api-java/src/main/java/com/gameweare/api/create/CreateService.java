@@ -41,7 +41,7 @@ import io.minio.MinioClient;
 public class CreateService {
     static final long RESERVED_TOKENS = 32768;
     private static final ObjectMapper JSON = new ObjectMapper();
-    /** Production requires HTTPS providers on public addresses; local stacks may opt in via yahaha.llm.allow-private-endpoints. */
+    /** Production requires HTTPS providers on public addresses; local stacks may opt in via gameweare.llm.allow-private-endpoints. */
     static volatile boolean privateLlmEndpointsAllowed = false;
     private static final ThreadPoolExecutor SSE_POOL = new ThreadPoolExecutor(8, 64, 60, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(128), task -> {
@@ -56,7 +56,7 @@ public class CreateService {
 
     public CreateService(JdbcTemplate db, TokenBillingService billing, MinioClient minio,
                          @Value("${AI_CONFIG_SECRET:}") String secret,
-                         @Value("${yahaha.minio.bucket}") String bucket) {
+                         @Value("${gameweare.minio.bucket}") String bucket) {
         this.db = db;
         this.billing = billing;
         this.encryptionSecret = secret;
@@ -64,7 +64,7 @@ public class CreateService {
         this.bucket = bucket;
     }
 
-    @Value("${yahaha.llm.allow-private-endpoints:false}")
+    @Value("${gameweare.llm.allow-private-endpoints:false}")
     void configurePrivateLlmEndpoints(boolean allowed) { privateLlmEndpointsAllowed = allowed; }
 
     @Transactional

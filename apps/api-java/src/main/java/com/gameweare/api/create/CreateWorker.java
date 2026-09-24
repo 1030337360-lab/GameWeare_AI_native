@@ -35,7 +35,7 @@ public class CreateWorker {
     private final Map<String, String> activeLeases = new ConcurrentHashMap<>();
 
     public CreateWorker(JdbcTemplate db, TransactionTemplate tx, CreateService service, TokenBillingService billing,
-                        MinioClient minio, @Value("${yahaha.minio.bucket}") String bucket) {
+                        MinioClient minio, @Value("${gameweare.minio.bucket}") String bucket) {
         this.db = db; this.tx = tx; this.service = service; this.billing = billing; this.minio = minio; this.bucket = bucket;
     }
 

@@ -2,9 +2,9 @@ server:
   port: ${API_PORT:8080}
 spring:
   datasource:
-    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/yahaha?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
-    username: ${MYSQL_USER:yahaha}
-    password: ${MYSQL_PASSWORD:yahaha}
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
+    username: ${MYSQL_USER:gameweare}
+    password: ${MYSQL_PASSWORD:gameweare}
     hikari:
       maximum-pool-size: ${DB_POOL_MAX:20}
       minimum-idle: 5
@@ -17,8 +17,8 @@ spring:
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USER:yahaha}
-    password: ${RABBITMQ_PASSWORD:yahaha}
+    username: ${RABBITMQ_USER:gameweare}
+    password: ${RABBITMQ_PASSWORD:gameweare}
     publisher-confirm-type: correlated
     publisher-returns: true
     template:
@@ -40,14 +40,14 @@ management:
     web:
       exposure:
         include: health,info,prometheus
-yahaha:
+gameweare:
   web-origin: ${WEB_ORIGIN:http://localhost:1314}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     access-key: ${MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${MINIO_SECRET_KEY:minioadmin}
-    bucket: ${MINIO_BUCKET:yahaha-games}
-    public-base-url: ${MINIO_PUBLIC_BASE_URL:http://localhost:9000/yahaha-games}
+    bucket: ${MINIO_BUCKET:gameweare-games}
+    public-base-url: ${MINIO_PUBLIC_BASE_URL:http://localhost:9000/gameweare-games}
   outbox:
     interval-ms: 1000
   llm:

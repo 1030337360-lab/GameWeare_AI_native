@@ -64,7 +64,7 @@ The current implementation favors safe interfaces first. Tools that could modify
 
 ## Project Tool Catalog
 
-These are the tool families the Yahaha Create agent is expected to use as the project grows.
+These are the tool families the Gameweare Create agent is expected to use as the project grows.
 
 | Family | Current status | Purpose | Side effects |
 | --- | --- | --- | --- |
@@ -203,7 +203,7 @@ The live Create page also receives these summaries through `GET /create/runs/{ru
 6. Run:
 
 ```powershell
-cd C:\Users\梁淇峰\Documents\yahaha-mvp\apps\api
+cd C:\Users\梁淇峰\Documents\gameweare-mvp\apps\api
 .venv\Scripts\python tests\test_agent_tools.py
 ```
 
@@ -212,7 +212,7 @@ cd C:\Users\梁淇峰\Documents\yahaha-mvp\apps\api
 The current metadata examples are executable and covered by:
 
 ```powershell
-cd C:\Users\梁淇峰\Documents\yahaha-mvp\apps\api
+cd C:\Users\梁淇峰\Documents\gameweare-mvp\apps\api
 .venv\Scripts\python tests\test_agent_tools.py
 ```
 

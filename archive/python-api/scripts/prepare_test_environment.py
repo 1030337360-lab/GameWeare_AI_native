@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import get_settings
 
 
-TEST_DATABASE_NAME = "yahaha_test"
-TEST_MINIO_BUCKET = "yahaha-games-test"
+TEST_DATABASE_NAME = "gameweare_test"
+TEST_MINIO_BUCKET = "gameweare-games-test"
 TEST_REDIS_URL = "redis://localhost:6379/15"
 INIT_SQL_DIR = Path(__file__).resolve().parents[1] / "db" / "init"
 
@@ -80,7 +80,7 @@ def main() -> int:
     create_test_bucket(reset=args.reset)
     clear_test_redis()
     print("Prepared test resources:")
-    print(f"- DATABASE_URL=postgresql+psycopg://yahaha:yahaha@localhost:5432/{TEST_DATABASE_NAME}")
+    print(f"- DATABASE_URL=postgresql+psycopg://gameweare:gameweare@localhost:5432/{TEST_DATABASE_NAME}")
     print(f"- MINIO_BUCKET={TEST_MINIO_BUCKET}")
     print(f"- REDIS_URL={TEST_REDIS_URL}")
     return 0

@@ -45,8 +45,8 @@ public class GoogleOAuthService {
     public GoogleOAuthService(@Value("${GOOGLE_CLIENT_ID:}") String clientId,
                               @Value("${GOOGLE_CLIENT_SECRET:}") String clientSecret,
                               @Value("${GOOGLE_REDIRECT_URI:http://localhost:8080/auth/google/callback}") String redirectUri,
-                              @Value("${yahaha.web-origin:http://localhost:1314}") String webOrigin,
-                              @Value("${yahaha.billing.starter-tokens:100000}") long starterTokens,
+                              @Value("${gameweare.web-origin:http://localhost:1314}") String webOrigin,
+                              @Value("${gameweare.billing.starter-tokens:100000}") long starterTokens,
                               StringRedisTemplate redis, JdbcTemplate jdbc, TransactionTemplate transaction,
                               AuthService auth, ObjectMapper json) {
         this.clientId = clientId; this.clientSecret = clientSecret; this.redirectUri = redirectUri;

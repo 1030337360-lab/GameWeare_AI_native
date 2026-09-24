@@ -8,9 +8,9 @@
     <relativePath/>
   </parent>
   <groupId>com.gameweare</groupId>
-  <artifactId>yahaha-api</artifactId>
+  <artifactId>gameweare-api</artifactId>
   <version>0.1.0-SNAPSHOT</version>
-  <name>Yahaha Java API</name>
+  <name>Gameweare Java API</name>
   <properties><java.version>17</java.version></properties>
   <dependencies>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>

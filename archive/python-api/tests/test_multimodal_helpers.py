@@ -61,7 +61,7 @@ def run() -> None:
         ],
     )
 
-    assert fake_minio.removed == [("yahaha-games", "uploads/user/create-input/asset/sketch.png")]
+    assert fake_minio.removed == [("gameweare-games", "uploads/user/create-input/asset/sketch.png")]
     assert fake_redis.deleted == ["create:input-assets:00000000-0000-0000-0000-000000000001"]
     executed_sql = "\n".join(sql for sql, _params in fake_connection.calls)
     assert "DELETE FROM assets" in executed_sql

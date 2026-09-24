@@ -65,7 +65,7 @@ class UploadService {
     private final MinioClient minio;
     private final String bucket;
 
-    UploadService(JdbcTemplate jdbc, MinioClient minio, @Value("${yahaha.minio.bucket:yahaha}") String bucket) {
+    UploadService(JdbcTemplate jdbc, MinioClient minio, @Value("${gameweare.minio.bucket:gameweare}") String bucket) {
         this.jdbc = jdbc; this.minio = minio; this.bucket = bucket;
     }
 

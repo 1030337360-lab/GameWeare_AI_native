@@ -95,7 +95,7 @@ MULTI_AGENT_CONTRACTS: tuple[AgentStageContract, ...] = (
         role="Safety Agent",
         input_contract={
             "artifactList": "Build Agent output.",
-            "policy": "Yahaha iframe and storage safety policy.",
+            "policy": "Gameweare iframe and storage safety policy.",
         },
         output_contract={
             "passed": "Boolean safety decision.",

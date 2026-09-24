@@ -51,7 +51,7 @@ def build_cover_responses_payload(
     max_output_tokens: int = 4000,
 ) -> dict[str, Any]:
     tags = [tag for tag in (style_tags or []) if isinstance(tag, str) and tag.strip()]
-    system_prompt = f"""You are the Yahaha Cover Agent.
+    system_prompt = f"""You are the Gameweare Cover Agent.
 
 Create one cover image for an iframe HTML5 game. The cover must be a durable game catalog asset, not placeholder art.
 

@@ -16,10 +16,10 @@ import javax.sql.DataSource;
 
 @Configuration
 public class InfrastructureConfig {
-    public static final String CREATE_EXCHANGE = "yahaha.create";
-    public static final String CREATE_QUEUE = "yahaha.create.jobs";
-    public static final String CREATE_DEAD_EXCHANGE = "yahaha.create.dead";
-    public static final String CREATE_DEAD_QUEUE = "yahaha.create.dead.jobs";
+    public static final String CREATE_EXCHANGE = "gameweare.create";
+    public static final String CREATE_QUEUE = "gameweare.create.jobs";
+    public static final String CREATE_DEAD_EXCHANGE = "gameweare.create.dead";
+    public static final String CREATE_DEAD_QUEUE = "gameweare.create.dead.jobs";
 
     @Bean
     Flyway flyway(DataSource dataSource) {
@@ -29,14 +29,14 @@ public class InfrastructureConfig {
     }
 
     @Bean
-    MinioClient minioClient(@Value("${yahaha.minio.endpoint}") String endpoint,
-                            @Value("${yahaha.minio.access-key}") String accessKey,
-                            @Value("${yahaha.minio.secret-key}") String secretKey) {
+    MinioClient minioClient(@Value("${gameweare.minio.endpoint}") String endpoint,
+                            @Value("${gameweare.minio.access-key}") String accessKey,
+                            @Value("${gameweare.minio.secret-key}") String secretKey) {
         return MinioClient.builder().endpoint(endpoint).credentials(accessKey, secretKey).build();
     }
 
     @Bean
-    CommandLineRunner ensureGameBucket(MinioClient minio, @Value("${yahaha.minio.bucket}") String bucket) {
+    CommandLineRunner ensureGameBucket(MinioClient minio, @Value("${gameweare.minio.bucket}") String bucket) {
         return args -> {
             if (!minio.bucketExists(BucketExistsArgs.builder().bucket(bucket).build())) {
                 minio.makeBucket(MakeBucketArgs.builder().bucket(bucket).build());

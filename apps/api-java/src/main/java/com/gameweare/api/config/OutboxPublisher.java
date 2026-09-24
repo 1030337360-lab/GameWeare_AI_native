@@ -20,7 +20,7 @@ public class OutboxPublisher {
         this.rabbit = rabbit;
     }
 
-    @Scheduled(fixedDelayString = "${yahaha.outbox.interval-ms:1000}")
+    @Scheduled(fixedDelayString = "${gameweare.outbox.interval-ms:1000}")
     public void publishPending() {
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT id, aggregate_id FROM outbox_events

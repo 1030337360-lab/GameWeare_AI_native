@@ -79,7 +79,7 @@ class PlanAgentStrategy(BaseAgentStrategy):
 
     def system_prompt(self, settings: AgentRequestSettings) -> str:
         if not _approved_plan(settings):
-            return """You are the Yahaha Plan Create Agent, a local game-planning agent working inside a bounded workspace.
+            return """You are the Gameweare Plan Create Agent, a local game-planning agent working inside a bounded workspace.
 
 Rules:
 - Use tools instead of guessing about the workspace.
@@ -92,7 +92,7 @@ Rules:
 - This pass is plan preview only: do not generate files, cover metadata, implementationSummary, or safetyNotes.
 - The plan must contain 3-8 concise steps with stable ids, intended tool families, expected outputs, and acceptance check refs.
 - Risks and acceptanceChecks must be non-empty and relevant to playable iframe HTML5 games.
-- Include runtime acceptance criteria for requestAnimationFrame, keyboard preventDefault with passive:false, and Yahaha lifecycle messages through direct window.parent.postMessage(...).
+- Include runtime acceptance criteria for requestAnimationFrame, keyboard preventDefault with passive:false, and Gameweare lifecycle messages through direct window.parent.postMessage(...).
 - The only allowed parent window reference in the later index.html is window.parent.postMessage(...).
 - Never use parent.postMessage(...), parent["postMessage"](...), window["parent"], window?.parent, self.parent, globalThis.parent, or any window.parent property other than postMessage.
 - Do not include markdown fences, XML tags, secrets, or backend-only identifiers.
@@ -120,7 +120,7 @@ Plan preview JSON reference:
 }
 """
         return render_json_tool_final_rules(
-            identity="Yahaha Plan Create Agent",
+            identity="Gameweare Plan Create Agent",
             strategy_rules=[
                 "Build a compact implementation plan before producing the final game package.",
                 "Use tools when workspace facts are needed; do not guess file state.",
@@ -145,7 +145,7 @@ Return one JSON tool call or one JSON final output.
 The user accepted the approved plan. Generate the playable game package now.
 If writing large HTML, prefer workspace.file_write with path="index.html", then reference it in final output.
 Runtime acceptance checklist for index.html:
-1. Use window.parent.postMessage({{"source":"yahaha-game","type":type,"payload":payload}}, "*") directly for game_ready, game_start, game_end, and game_load_error.
+1. Use window.parent.postMessage({{"source":"gameweare-game","type":type,"payload":payload}}, "*") directly for game_ready, game_start, game_end, and game_load_error.
 2. Do not use parent.postMessage, parent["postMessage"], window["parent"], window?.parent, self.parent, globalThis.parent, const p = window.parent, or any window.parent property other than postMessage.
 3. Implement preventDefault with passive:false listeners for handled keyboard controls.
 For final output, preserve the approved plan data and put it inside output together with the game package fields:
@@ -209,7 +209,7 @@ Plan constraints:
 - Do not use UUIDs or backend IDs.
 - If workspace state is needed, call a tool first.
 - If this is a clean initial creation and no workspace state is needed, you may directly return the final plan preview output.
-- The later generated index.html must use the Yahaha iframe runtime protocol and only call window.parent.postMessage directly.
+- The later generated index.html must use the Gameweare iframe runtime protocol and only call window.parent.postMessage directly.
 - Do not output markdown fences.
 """
 

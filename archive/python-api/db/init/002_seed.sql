@@ -1,9 +1,9 @@
 INSERT INTO users (id, email, display_name, avatar_url, role, status)
 VALUES
-  ('00000000-0000-0000-0000-000000000001', 'system@yahaha.local', 'Yahaha System', NULL, 'admin', 'active'),
-  ('00000000-0000-0000-0000-000000000002', 'demo@yahaha.local', 'xiaoling', NULL, 'user', 'active'),
-  ('00000000-0000-0000-0000-000000000003', 'creator@yahaha.local', 'emanfatima', NULL, 'user', 'active'),
-  ('00000000-0000-0000-0000-000000000004', 'builder@yahaha.local', 'Majisok', NULL, 'user', 'active')
+  ('00000000-0000-0000-0000-000000000001', 'system@gameweare.local', 'Gameweare System', NULL, 'admin', 'active'),
+  ('00000000-0000-0000-0000-000000000002', 'demo@gameweare.local', 'xiaoling', NULL, 'user', 'active'),
+  ('00000000-0000-0000-0000-000000000003', 'creator@gameweare.local', 'emanfatima', NULL, 'user', 'active'),
+  ('00000000-0000-0000-0000-000000000004', 'builder@gameweare.local', 'Majisok', NULL, 'user', 'active')
 ON CONFLICT (id) DO UPDATE SET
   email = EXCLUDED.email,
   display_name = EXCLUDED.display_name,
@@ -226,9 +226,9 @@ VALUES
     '30000000-0000-0000-0000-000000000001',
     NULL,
     'manifest',
-    'yahaha-games',
+    'gameweare-games',
     'games/astro-ludo/versions/1/manifest.json',
-    'http://localhost:9000/yahaha-games/games/astro-ludo/versions/1/manifest.json',
+    'http://localhost:9000/gameweare-games/games/astro-ludo/versions/1/manifest.json',
     'application/json',
     0
   ),
@@ -239,9 +239,9 @@ VALUES
     '30000000-0000-0000-0000-000000000002',
     '20000000-0000-0000-0000-000000000001',
     'manifest',
-    'yahaha-games',
+    'gameweare-games',
     'games/color-bloom/versions/1/manifest.json',
-    'http://localhost:9000/yahaha-games/games/color-bloom/versions/1/manifest.json',
+    'http://localhost:9000/gameweare-games/games/color-bloom/versions/1/manifest.json',
     'application/json',
     0
   ),
@@ -252,9 +252,9 @@ VALUES
     '30000000-0000-0000-0000-000000000003',
     NULL,
     'manifest',
-    'yahaha-games',
+    'gameweare-games',
     'games/rail-in-air/versions/1/manifest.json',
-    'http://localhost:9000/yahaha-games/games/rail-in-air/versions/1/manifest.json',
+    'http://localhost:9000/gameweare-games/games/rail-in-air/versions/1/manifest.json',
     'application/json',
     0
   ),
@@ -265,7 +265,7 @@ VALUES
     '30000000-0000-0000-0000-000000000001',
     NULL,
     'bundle',
-    'yahaha-games',
+    'gameweare-games',
     'games/astro-ludo/versions/1/index.html',
     'http://localhost:8080/bundles/games/astro-ludo/index.html',
     'text/html',
@@ -278,7 +278,7 @@ VALUES
     '30000000-0000-0000-0000-000000000002',
     '20000000-0000-0000-0000-000000000001',
     'bundle',
-    'yahaha-games',
+    'gameweare-games',
     'games/color-bloom/versions/1/index.html',
     'http://localhost:8080/bundles/games/color-bloom/index.html',
     'text/html',
@@ -291,7 +291,7 @@ VALUES
     '30000000-0000-0000-0000-000000000003',
     NULL,
     'bundle',
-    'yahaha-games',
+    'gameweare-games',
     'games/rail-in-air/versions/1/index.html',
     'http://localhost:8080/bundles/games/rail-in-air/index.html',
     'text/html',

@@ -33,7 +33,7 @@ class ChatAgentStrategy(BaseAgentStrategy):
 
     def system_prompt(self, settings: AgentRequestSettings) -> str:
         return render_json_tool_final_rules(
-            identity="Yahaha Chat Create Agent",
+            identity="Gameweare Chat Create Agent",
             strategy_rules=[
                 "Keep a direct creator-chat flow focused on quickly producing a playable game package.",
                 "Use tools only when workspace or previous-version facts are needed.",
@@ -54,7 +54,7 @@ Chat task:
 - Final output must be one JSON object with {{"type": "final", "output": {{...}}}}.
 - Put {{"Finished": true}}, files, cover, implementationSummary, and safetyNotes inside output.
 - Runtime acceptance checklist for index.html:
-  1. Define a helper like send(type, payload={{}}) {{ window.parent.postMessage({{source:"yahaha-game", type, payload}}, "*"); }}.
+  1. Define a helper like send(type, payload={{}}) {{ window.parent.postMessage({{source:"gameweare-game", type, payload}}, "*"); }}.
   2. Send game_ready after initialization, game_start when gameplay begins, game_end on win/loss/end, and game_load_error from a top-level startup try/catch.
   3. Implement Arrow keys and WASD for movement when keyboard movement is requested, plus Space for the primary action when requested.
   4. Use keydown/keyup listeners with {{passive:false}} and preventDefault for every handled game key.

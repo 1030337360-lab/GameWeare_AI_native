@@ -22,7 +22,7 @@ from app.services import create_service
 class DecentralizedFakeAdapter:
     def invoke(self, payload: dict) -> LLMGraphResult:
         payload_text = json.dumps(payload, ensure_ascii=False)
-        if "Yahaha Decentralized Expert Factory" in payload_text:
+        if "Gameweare Decentralized Expert Factory" in payload_text:
             output = {
                 "experts": [
                     {
@@ -53,7 +53,7 @@ class DecentralizedFakeAdapter:
                 "styleTags": ["static", "preview"],
                 "staticHtml": "<!doctype html><html><body><main style='height:100vh;background:#111;color:white;display:grid;place-items:center'><h1>Static Direction</h1></main></body></html>",
             }
-        elif "Yahaha Decentralized Final Game Agent" in payload_text:
+        elif "Gameweare Decentralized Final Game Agent" in payload_text:
             output = {
                 "type": "final",
                 "output": {
@@ -61,7 +61,7 @@ class DecentralizedFakeAdapter:
                     "files": [
                         {
                             "path": "index.html",
-                            "content": "<!doctype html><html><body><canvas id='game'></canvas><script>window.parent.postMessage({source:'yahaha-game',type:'game_ready'}, '*'); window.addEventListener('keydown', e => e.preventDefault()); requestAnimationFrame(()=>{});</script></body></html>",
+                            "content": "<!doctype html><html><body><canvas id='game'></canvas><script>window.parent.postMessage({source:'gameweare-game',type:'game_ready'}, '*'); window.addEventListener('keydown', e => e.preventDefault()); requestAnimationFrame(()=>{});</script></body></html>",
                         }
                     ],
                     "cover": {"title": "Decentralized Arcade", "description": "A selected direction became playable.", "tags": ["decentralized"]},
@@ -69,7 +69,7 @@ class DecentralizedFakeAdapter:
                     "safetyNotes": ["No privileged APIs."],
                 },
             }
-        elif "Yahaha Decentralized Cover Agent" in payload_text:
+        elif "Gameweare Decentralized Cover Agent" in payload_text:
             output = {
                 "svg": "<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'><rect width='1200' height='900' fill='#111827'/><text x='80' y='180' fill='white' font-size='90'>Decentralized Arcade</text></svg>",
                 "mimeType": "image/svg+xml",
@@ -85,7 +85,7 @@ class DecentralizedFakeAdapter:
 class DecentralizedBadCoverAdapter(DecentralizedFakeAdapter):
     def invoke(self, payload: dict) -> LLMGraphResult:
         payload_text = json.dumps(payload, ensure_ascii=False)
-        if "Yahaha Decentralized Cover Agent" in payload_text:
+        if "Gameweare Decentralized Cover Agent" in payload_text:
             output = {"summary": "cover concept only without durable image asset"}
             text = json.dumps(output, ensure_ascii=False)
             raw = {"output_text": text, "usage": {"input_tokens": 10, "output_tokens": 8, "total_tokens": 18}}
@@ -150,7 +150,7 @@ def run() -> None:
 
     create_service._make_graph_adapter = lambda ai_config: DecentralizedFakeAdapter()  # type: ignore[assignment]
     client = TestClient(app)
-    email = f"decentralized-{uuid4().hex[:10]}@yahaha.local"
+    email = f"decentralized-{uuid4().hex[:10]}@gameweare.local"
     register = client.post("/auth/register", json={"email": email, "password": "password123", "displayName": "Decentralized User"})
     assert register.status_code == 200
     token = register.json()["accessToken"]

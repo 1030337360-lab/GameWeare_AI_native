@@ -41,7 +41,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    CorsConfigurationSource corsConfigurationSource(@Value("${yahaha.web-origin:http://localhost:1314}") String origin) {
+    CorsConfigurationSource corsConfigurationSource(@Value("${gameweare.web-origin:http://localhost:1314}") String origin) {
         var config = new CorsConfiguration();
         config.setAllowedOrigins(List.of(origin));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));

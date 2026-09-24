@@ -16,7 +16,7 @@ public class TokenReconciliation {
 
     public TokenReconciliation(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-    @Scheduled(initialDelay = 30000, fixedDelayString = "${yahaha.billing.reconcile-interval-ms:3600000}")
+    @Scheduled(initialDelay = 30000, fixedDelayString = "${gameweare.billing.reconcile-interval-ms:3600000}")
     public void auditAccounts() {
         List<Map<String, Object>> mismatches = jdbc.queryForList("""
                 SELECT a.user_id, a.balance, a.reserved,

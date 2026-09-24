@@ -10,12 +10,12 @@ API_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 class Settings(BaseSettings):
     environment: str = "dev" # dev | staging | prod
-    database_url: str = "postgresql+psycopg://yahaha:yahaha@localhost:5432/yahaha"
+    database_url: str = "postgresql+psycopg://gameweare:gameweare@localhost:5432/gameweare"
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
-    minio_bucket: str = "yahaha-games"
-    minio_public_base_url: str = "http://localhost:9000/yahaha-games"
+    minio_bucket: str = "gameweare-games"
+    minio_public_base_url: str = "http://localhost:9000/gameweare-games"
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "dev-change-me"
     jwt_ttl_seconds: int = 604800

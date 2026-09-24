@@ -6,7 +6,7 @@
 - FastAPI backend runs on `http://localhost:8080`.
 - PostgreSQL, MinIO, and Redis are started by `docker compose up -d`.
 - Redis stores active JWT records plus Create memory and cache data.
-- MinIO stores local object data under `D:\yahaha`.
+- MinIO stores local object data under `D:\gameweare`.
 - Create agent filesystem work uses `.worktrees/create-{runId}`. With `CREATE_WORKTREE_ENABLED=true`, this is a real git worktree and branch; otherwise it is still an isolated stub directory, never the main repository root.
 
 ## Current MVP Flow

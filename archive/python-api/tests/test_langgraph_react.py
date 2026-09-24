@@ -54,7 +54,7 @@ class ToolThenProviderErrorThenRecoveryAdapter:
         if index == 2:
             raw = {"ok": False, "statusCode": 502, "error": {"code": "llm_http_error", "message": "Bad Gateway"}}
             return LLMGraphResult(text="", raw=raw, metrics={"promptPrefix": "continuation", "tokenUsage": {"outputTokens": None}})
-        assert "Yahaha ReAct Recovery Agent" in payload_text
+        assert "Gameweare ReAct Recovery Agent" in payload_text
         if self.recovery_fails:
             raw = {"ok": False, "statusCode": 503, "error": {"code": "llm_http_error", "message": "Recovery unavailable"}}
             return LLMGraphResult(text="", raw=raw, metrics={"promptPrefix": "recovery", "tokenUsage": {"outputTokens": None}})
@@ -233,7 +233,7 @@ def run() -> None:
     assert "toolResults" in normal_continuation
     assert "raw" not in normal_continuation
     recovery_payload_text = str(recovery_adapter.calls[2])
-    assert "Yahaha ReAct Recovery Agent" in recovery_payload_text
+    assert "Gameweare ReAct Recovery Agent" in recovery_payload_text
     assert "providerErrorSummary" in recovery_payload_text
     assert "recentToolCalls" in recovery_payload_text
     assert "toolResults" in recovery_payload_text

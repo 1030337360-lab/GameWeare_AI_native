@@ -39,18 +39,18 @@ public class AuthController {
     @GetMapping("/google/callback")
     public ResponseEntity<Void> googleCallback(@org.springframework.web.bind.annotation.RequestParam String code,
                                                @org.springframework.web.bind.annotation.RequestParam String state,
-                                               @org.springframework.web.bind.annotation.CookieValue(value = "yahaha_google_state", required = false) String cookie) {
+                                               @org.springframework.web.bind.annotation.CookieValue(value = "gameweare_google_state", required = false) String cookie) {
         if (cookie == null || !MessageDigest.isEqual(state.getBytes(StandardCharsets.UTF_8), cookie.getBytes(StandardCharsets.UTF_8)))
             throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Invalid OAuth browser state");
         return ResponseEntity.status(302).location(google.callback(code, state))
-                .header(HttpHeaders.SET_COOKIE, ResponseCookie.from("yahaha_google_state", "")
+                .header(HttpHeaders.SET_COOKIE, ResponseCookie.from("gameweare_google_state", "")
                         .httpOnly(true).path("/auth/google").maxAge(0).build().toString()).build();
     }
 
     private ResponseCookie stateCookie(URI destination) {
         String state = java.util.Arrays.stream(destination.getRawQuery().split("&"))
                 .filter(item -> item.startsWith("state=")).findFirst().orElseThrow().substring(6);
-        return ResponseCookie.from("yahaha_google_state", state).httpOnly(true)
+        return ResponseCookie.from("gameweare_google_state", state).httpOnly(true)
                 .secure(destination.toString().contains("redirect_uri=https%3A"))
                 .sameSite("Lax").path("/auth/google").maxAge(600).build();
     }

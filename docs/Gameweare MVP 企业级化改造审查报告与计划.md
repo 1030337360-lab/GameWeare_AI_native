@@ -1,4 +1,4 @@
-# Yahaha MVP 企业级化改造审查报告与计划
+# Gameweare MVP 企业级化改造审查报告与计划
 
 > 范围说明：本次为只读审查，未修改任何文件。以下结论基于对 `apps/api`、`apps/web`、`docker-compose.yml`、Dockerfile、测试目录与 `docs/` 的通读。
 

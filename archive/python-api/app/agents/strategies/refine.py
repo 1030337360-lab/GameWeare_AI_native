@@ -33,7 +33,7 @@ class RefineAgentStrategy(BaseAgentStrategy):
 
     def system_prompt(self, settings: AgentRequestSettings) -> str:
         return render_json_tool_final_rules(
-            identity="Yahaha Refine Create Agent",
+            identity="Gameweare Refine Create Agent",
             strategy_rules=[
                 "Optimize one existing iframe HTML5 game version from the creator's new request.",
                 "Inspect or rely on injected previous-version context before changing behavior.",
@@ -57,7 +57,7 @@ Final output must be one JSON object with {{"type": "final", "output": {{...}}}}
 Put {{"Finished": true}}, files, cover, implementationSummary, and safetyNotes inside output.
 - Runtime acceptance checklist for index.html:
   1. Preserve working behavior unless the creator requested a change.
-  2. Send game_ready, game_start, game_end, and game_load_error via direct window.parent.postMessage({{source:"yahaha-game", type, payload}}, "*").
+  2. Send game_ready, game_start, game_end, and game_load_error via direct window.parent.postMessage({{source:"gameweare-game", type, payload}}, "*").
   3. Do not use parent.postMessage, parent["postMessage"], window["parent"], window?.parent, self.parent, globalThis.parent, const p = window.parent, or any window.parent property other than postMessage.
   4. Keep handled keyboard controls from scrolling the parent page with preventDefault and passive:false listeners.
 

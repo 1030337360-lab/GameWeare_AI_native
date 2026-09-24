@@ -36,7 +36,7 @@ public class AuthService {
     private final SecureRandom random = new SecureRandom();
 
     public AuthService(JdbcTemplate jdbc, StringRedisTemplate redis,
-                       @Value("${yahaha.billing.starter-tokens:100000}") long starterTokens) {
+                       @Value("${gameweare.billing.starter-tokens:100000}") long starterTokens) {
         this.jdbc = jdbc;
         this.redis = redis;
         this.starterTokens = starterTokens;

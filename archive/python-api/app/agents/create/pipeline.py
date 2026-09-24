@@ -147,7 +147,7 @@ def build_static_game_html(title: str, game_slug: str, game_id: str, version_id:
 
       function send(type, payload = {{}}) {{
         window.parent.postMessage({{
-          source: "yahaha-game",
+          source: "gameweare-game",
           type,
           gameId: GAME_ID,
           dbGameId: DB_GAME_ID,
@@ -341,7 +341,7 @@ def build_cover_svg(title: str) -> bytes:
   <circle cx="270" cy="230" r="145" fill="#22d3ee" opacity=".34" filter="url(#glow)"/>
   <circle cx="860" cy="590" r="210" fill="#a3e635" opacity=".24" filter="url(#glow)"/>
   <path d="M90 690 C260 520 420 780 610 610 S920 420 1110 560" fill="none" stroke="#f8fafc" stroke-width="18" opacity=".78"/>
-  <text x="86" y="140" fill="#ecfeff" font-family="Inter,Arial,sans-serif" font-size="58" font-weight="800">Yahaha Create</text>
+  <text x="86" y="140" fill="#ecfeff" font-family="Inter,Arial,sans-serif" font-size="58" font-weight="800">Gameweare Create</text>
   <text x="86" y="784" fill="#ffffff" font-family="Inter,Arial,sans-serif" font-size="76" font-weight="900">{safe_title}</text>
 </svg>
 """

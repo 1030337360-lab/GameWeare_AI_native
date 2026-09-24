@@ -1,10 +1,10 @@
-# Yahaha MVP 附录：系统设计补充说明
+# Gameweare MVP 附录：系统设计补充说明
 
-本文档作为 `yahaha.md` 的附录，单独展开系统设计中的总体架构、数据模型、Agent 编排、远端产物协议、安全隔离、失败恢复和可观测性说明。
+本文档作为 `gameweare.md` 的附录，单独展开系统设计中的总体架构、数据模型、Agent 编排、远端产物协议、安全隔离、失败恢复和可观测性说明。
 
 ## 1 总体架构
 
-Yahaha MVP 采用前后端分离架构，并通过异步 Create 任务把用户创作请求、Agent 生成、对象存储发布和前端实时展示串联起来。
+Gameweare MVP 采用前后端分离架构，并通过异步 Create 任务把用户创作请求、Agent 生成、对象存储发布和前端实时展示串联起来。
 
 整体协作关系如下：
 
@@ -33,7 +33,7 @@ Create 主链路：
 
 ## 2 数据模型
 
-Yahaha 的核心数据模型围绕用户、游戏、版本、素材、生成任务、Agent 日志和发布状态展开。
+Gameweare 的核心数据模型围绕用户、游戏、版本、素材、生成任务、Agent 日志和发布状态展开。
 
 | 数据表 / 实体 | 建模说明 |
 | ------------- | -------- |
@@ -87,7 +87,7 @@ Yahaha 的核心数据模型围绕用户、游戏、版本、素材、生成任�
 
 Agent 记忆系统参考 Hermes 的分层记忆设计，重点不是让模型无限保留上下文，而是把记忆拆成可压缩、可检索、可审计的多层结构：
 
-| 记忆层 | Yahaha 中的对应实现 |
+| 记忆层 | Gameweare 中的对应实现 |
 | ------ | ------------------- |
 | 短期记忆 | Redis 中保存最近 Create 状态、recent history、SSE event、AI config 热缓存 |
 | 长期记忆 | `agent_memory_index` 记录持久记忆索引，MinIO 保存 memory 对象和 run log |
@@ -209,6 +209,6 @@ Create 流程把失败拆成可记录、可展示、可重试的阶段，而不�
 | 前端实时证据 | SSE 推送 step、llm_call、tool_call、done、error、heartbeat，Create 页面实时展示 |
 | Profile 复盘 | 创作者 Profile 项目详情展示脱敏 run timeline、LLM 摘要、tool 摘要、错误和 token 指标 |
 | Maintenance 复盘 | 管理员查看失败任务、失败 run、后台异常、重试和审核记录 |
-| 测试证据 | `yahaha.md` 第 8 节记录后端脚本、前端 build、Docker build、Compose 校验等验证结果 |
+| 测试证据 | `gameweare.md` 第 8 节记录后端脚本、前端 build、Docker build、Compose 校验等验证结果 |
 
 当前可观测性已经能支持 MVP 演示和失败复盘；下一阶段需要增强自动异常分类、错误聚合、趋势统计、成本报表和 CI/CD 测试证据归档。

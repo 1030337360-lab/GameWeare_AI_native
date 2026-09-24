@@ -16,7 +16,7 @@ import { Bookmark, Eye, EyeOff, Gamepad2, Heart, Home as HomeIcon, LogOut, Play,
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
-const TOKEN_STORAGE_KEY = "yahaha_access_token";
+const TOKEN_STORAGE_KEY = "gameweare_access_token";
 const INIT_AGENT_MODES = ["chat", "react", "plan", "decentralized"] as const;
 const OPT_AGENT_MODES = ["chat", "react", "plan", "decentralized", "refine"] as const;
 const AGENT_MODES = [...INIT_AGENT_MODES, ...OPT_AGENT_MODES] as const;
@@ -499,13 +499,13 @@ function preparePlayableDocument(html: string) {
       clear() { data.clear(); }
     };
   };
-  window.__yahahaMemoryLocalStorage = window.__yahahaMemoryLocalStorage || createMemoryStorage();
-  window.__yahahaMemorySessionStorage = window.__yahahaMemorySessionStorage || createMemoryStorage();
+  window.__gameweareMemoryLocalStorage = window.__gameweareMemoryLocalStorage || createMemoryStorage();
+  window.__gameweareMemorySessionStorage = window.__gameweareMemorySessionStorage || createMemoryStorage();
   const install = (name) => {
     try { void window[name]; return; } catch {}
     try {
       Object.defineProperty(window, name, {
-        value: name === "localStorage" ? window.__yahahaMemoryLocalStorage : window.__yahahaMemorySessionStorage,
+        value: name === "localStorage" ? window.__gameweareMemoryLocalStorage : window.__gameweareMemorySessionStorage,
         configurable: true
       });
     } catch {}
@@ -518,17 +518,17 @@ function preparePlayableDocument(html: string) {
     .replace(/cursor\s*:\s*[^;}"']+;?/gi, "")
     .replace(/if\s*\([^)]*requestPointerLock[^)]*\)\s*[^;{}]*requestPointerLock\([^)]*\);?/gi, "")
     .replace(/[^;\n{}]*requestPointerLock\([^)]*\);?/gi, "")
-    .replace(/\b(?:window|globalThis|self)\s*\.\s*localStorage\b/g, "window.__yahahaMemoryLocalStorage")
-    .replace(/\b(?:window|globalThis|self)\s*\.\s*sessionStorage\b/g, "window.__yahahaMemorySessionStorage")
-    .replace(/(^|[^.\w$])localStorage\b/g, "$1window.__yahahaMemoryLocalStorage")
-    .replace(/(^|[^.\w$])sessionStorage\b/g, "$1window.__yahahaMemorySessionStorage");
+    .replace(/\b(?:window|globalThis|self)\s*\.\s*localStorage\b/g, "window.__gameweareMemoryLocalStorage")
+    .replace(/\b(?:window|globalThis|self)\s*\.\s*sessionStorage\b/g, "window.__gameweareMemorySessionStorage")
+    .replace(/(^|[^.\w$])localStorage\b/g, "$1window.__gameweareMemoryLocalStorage")
+    .replace(/(^|[^.\w$])sessionStorage\b/g, "$1window.__gameweareMemorySessionStorage");
   if (/<head[^>]*>/i.test(sanitized)) {
     return sanitized.replace(/<head([^>]*)>/i, `<head$1>${storageShim}`);
   }
   return storageShim + sanitized;
 }
 
-const ANONYMOUS_ID_STORAGE_KEY = "yahaha_anonymous_id";
+const ANONYMOUS_ID_STORAGE_KEY = "gameweare_anonymous_id";
 
 function getAnonymousId() {
   const existing = localStorage.getItem(ANONYMOUS_ID_STORAGE_KEY);
@@ -818,7 +818,7 @@ function Header() {
     <header className="topbar">
       <Link to="/" className="brand">
         <Gamepad2 size={24} />
-        <span>Yahaha</span>
+        <span>Gameweare</span>
       </Link>
       <nav>
         <NavLink to="/">Home</NavLink>
@@ -1181,7 +1181,7 @@ function PlayGame({ games, onGameUpdated }: { games: Game[]; onGameUpdated: (gam
     function handleMessage(event: MessageEvent) {
       const data = event.data as { source?: string; type?: string; gameId?: string; payload?: Record<string, unknown> };
       if (!gameId || event.source !== frameRef.current?.contentWindow) return;
-      if (data?.source !== "yahaha-game") return;
+      if (data?.source !== "gameweare-game") return;
       if (!["game_start", "game_end", "game_load_error"].includes(data.type ?? "")) return;
       reportPlayEvent(data.type as "game_start" | "game_end" | "game_load_error", data.payload ?? {});
     }

@@ -1,6 +1,6 @@
-# Yahaha / GameWeare AI Native
+# Gameweare / GameWeare AI Native
 
-本仓库是 [1030337360-lab/GameWeare_AI_native](https://github.com/1030337360-lab/GameWeare_AI_native) 的本地项目，不是同名参考仓库 `charlie11sun-netizen/yahaha`。
+本仓库是 [1030337360-lab/GameWeare_AI_native](https://github.com/1030337360-lab/GameWeare_AI_native) 的本地项目，不是同名参考仓库 `charlie11sun-netizen/gameweare`。
 
 ## 目录与架构
 
@@ -25,9 +25,9 @@ docker compose up -d mysql rabbitmq redis minio
 在 PowerShell 中配置本地后端环境并运行：
 
 ```powershell
-$env:MYSQL_URL='jdbc:mysql://localhost:3307/yahaha?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC'
-$env:MYSQL_USER='yahaha'
-$env:MYSQL_PASSWORD='yahaha'
+$env:MYSQL_URL='jdbc:mysql://localhost:3307/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC'
+$env:MYSQL_USER='gameweare'
+$env:MYSQL_PASSWORD='gameweare'
 $env:RABBITMQ_HOST='localhost'
 $env:RABBITMQ_PORT='5673'
 $env:REDIS_PORT='6380'

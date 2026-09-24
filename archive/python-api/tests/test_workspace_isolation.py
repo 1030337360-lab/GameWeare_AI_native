@@ -87,7 +87,7 @@ INSERT INTO users (email, display_name)
 VALUES (%s, 'Workspace Test User')
 RETURNING id
 """,
-                (f"workspace-{uuid4().hex}@yahaha.local",),
+                (f"workspace-{uuid4().hex}@gameweare.local",),
             ).fetchone()
             project = connection.execute(
                 """

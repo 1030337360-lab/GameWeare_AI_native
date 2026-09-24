@@ -5,13 +5,13 @@ import re
 from typing import Any
 
 
-EXPERT_TEMPLATE_NAME = "yahaha-decentralized-expert-factory"
+EXPERT_TEMPLATE_NAME = "gameweare-decentralized-expert-factory"
 EXPERT_TEMPLATE_VERSION = "2026-06-20.1"
-PREVIEW_TEMPLATE_NAME = "yahaha-decentralized-static-preview"
+PREVIEW_TEMPLATE_NAME = "gameweare-decentralized-static-preview"
 PREVIEW_TEMPLATE_VERSION = "2026-06-20.1"
-FINAL_TEMPLATE_NAME = "yahaha-decentralized-final-game"
+FINAL_TEMPLATE_NAME = "gameweare-decentralized-final-game"
 FINAL_TEMPLATE_VERSION = "2026-06-20.1"
-COVER_TEMPLATE_NAME = "yahaha-decentralized-cover"
+COVER_TEMPLATE_NAME = "gameweare-decentralized-cover"
 COVER_TEMPLATE_VERSION = "2026-06-20.1"
 
 
@@ -104,7 +104,7 @@ def _intent_rules(previous_project_context: list[dict[str, Any]] | None) -> list
     return [
         "This is an initial creation for a new creator project.",
         "Generate directions from the creator request and multimodal inputs.",
-        "The final output contract is the standard Yahaha playable game package.",
+        "The final output contract is the standard Gameweare playable game package.",
     ]
 
 
@@ -115,7 +115,7 @@ def build_expert_payload(
     input_assets: list[dict[str, Any]],
     previous_project_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    system = """You are the Yahaha Decentralized Expert Factory.
+    system = """You are the Gameweare Decentralized Expert Factory.
 Return exactly one JSON object and no markdown.
 Generate three highly different creative professional experts related to the creator request and multimodal inputs.
 Each expert must be a real-world creative or professional role, not a generic game designer.
@@ -155,7 +155,7 @@ def build_preview_payload(
     candidate_index: int,
     previous_project_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    system = f"""You are two cooperating agents inside Yahaha Create.
+    system = f"""You are two cooperating agents inside Gameweare Create.
 
 Creative expert system injection:
 Role: {expert.get("role", "Creative Expert")}
@@ -199,13 +199,13 @@ def build_final_game_payload(
     workspace_boundary: str,
     previous_project_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    system = """You are the Yahaha Decentralized Final Game Agent.
+    system = """You are the Gameweare Decentralized Final Game Agent.
 Return exactly one JSON object and no markdown.
 Use the selected static preview as creative direction, but now produce a fully playable iframe HTML5 game.
 The final output must be:
 {"type":"final","output":{"Finished":true,"files":[{"path":"index.html","content":"..."}],"cover":{"title":"...","description":"...","tags":["..."]},"implementationSummary":"...","safetyNotes":["..."]}}
-The game must be self-contained in index.html, use Canvas or DOM safely, run continuously with requestAnimationFrame when appropriate, prevent keyboard scrolling, keep cursor visible, and post Yahaha lifecycle messages game_ready, game_start, game_end, and game_load_error.
-Use direct window.parent.postMessage({source:"yahaha-game",type,payload}, "*") for lifecycle events.
+The game must be self-contained in index.html, use Canvas or DOM safely, run continuously with requestAnimationFrame when appropriate, prevent keyboard scrolling, keep cursor visible, and post Gameweare lifecycle messages game_ready, game_start, game_end, and game_load_error.
+Use direct window.parent.postMessage({source:"gameweare-game",type,payload}, "*") for lifecycle events.
 The only allowed parent window reference in index.html is the exact member chain window.parent.postMessage(...).
 Never use parent.postMessage, parent["postMessage"], window["parent"], window?.parent, self.parent, globalThis.parent, const p = window.parent, or any window.parent property other than postMessage.
 Keyboard games must support Arrow keys and WASD when movement is requested, Space for the primary action when requested, and preventDefault with passive:false listeners for handled keys.
@@ -267,7 +267,7 @@ def _final_game_summary_for_cover(game_output: dict[str, Any]) -> dict[str, Any]
 
 
 def build_cover_payload(*, model: str, user_request: str, candidate: dict[str, Any], game_output: dict[str, Any]) -> dict[str, Any]:
-    system = """You are the Yahaha Decentralized Cover Agent.
+    system = """You are the Gameweare Decentralized Cover Agent.
 Create one durable 1200x900 game catalog cover for the selected direction and final game.
 Return exactly one JSON object and no markdown.
 The response must include exactly one durable asset field: imageBase64 or svg.

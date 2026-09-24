@@ -1,4 +1,4 @@
-# End-to-end verification of the Yahaha stack: create -> publish -> play, plus
+# End-to-end verification of the Gameweare stack: create -> publish -> play, plus
 # plan/decentralized approval flows and token ledger consistency.
 # Prereq: LLM_ALLOW_PRIVATE_ENDPOINTS=true docker compose --profile test up -d
 param(
@@ -158,15 +158,15 @@ $root = Split-Path -Parent $PSScriptRoot
 $ledgerRaw = $null
 $accountRaw = $null
 try {
-    $mysqlPassword = if ($env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD } else { "yahaha" }
+    $mysqlPassword = if ($env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD } else { "gameweare" }
     Push-Location $root
     # mysql prints a harmless password warning on stderr; under $ErrorActionPreference=Stop
     # PowerShell 5.1 turns any native stderr line into a terminating error, so muffle it.
     $ErrorActionPreference = "SilentlyContinue"
-    $ledgerRaw = docker compose exec -T mysql mysql "-uyahaha" "-p$mysqlPassword" yahaha -N -B -e `
+    $ledgerRaw = docker compose exec -T mysql mysql "-ugameweare" "-p$mysqlPassword" gameweare -N -B -e `
         "SELECT entry_type, COUNT(*) FROM token_ledger WHERE user_id='$userId' GROUP BY entry_type"
     if ($LASTEXITCODE -ne 0 -or -not $ledgerRaw) { throw "mysql query failed (exit $LASTEXITCODE)" }
-    $accountRaw = docker compose exec -T mysql mysql "-uyahaha" "-p$mysqlPassword" yahaha -N -B -e `
+    $accountRaw = docker compose exec -T mysql mysql "-ugameweare" "-p$mysqlPassword" gameweare -N -B -e `
         "SELECT balance, reserved FROM token_accounts WHERE user_id='$userId'"
     if ($LASTEXITCODE -ne 0 -or -not $accountRaw) { throw "mysql query failed (exit $LASTEXITCODE)" }
 } catch {

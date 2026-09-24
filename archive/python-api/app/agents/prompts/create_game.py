@@ -4,9 +4,9 @@ from typing import Any
 
 from app.agents.strategies import AgentRequestSettings, select_agent_strategy
 
-CREATE_GAME_TEMPLATE_NAME = "yahaha-create-game"
+CREATE_GAME_TEMPLATE_NAME = "gameweare-create-game"
 CREATE_GAME_TEMPLATE_VERSION = "2026-06-19.1"
-CONNECTION_TEST_TEMPLATE_NAME = "yahaha-connection-test"
+CONNECTION_TEST_TEMPLATE_NAME = "gameweare-connection-test"
 CONNECTION_TEST_TEMPLATE_VERSION = "2026-06-19.1"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_PERSONALITY = "pragmatic"
