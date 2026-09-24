@@ -24,26 +24,12 @@ export default function Home({ games, availableTags, search, selectedTag }: Home
     navigate(`/?${query.toString()}`, { replace: true });
   }
 
-  const featuredGame = games[0] ?? {
-    id: "astro-ludo",
-    title: "Astro Ludo",
-    slug: "astro-ludo",
-    thumbnailUrl: "https://images.unsplash.com/photo-1614728894747-a83421e2b9c9?auto=format&fit=crop&w=900&q=80",
-    plays: 1200000,
-    likes: 42000,
-    tags: ["Board", "Arcade"],
-    creatorId: "system",
-    creatorName: "Yahaha",
-    creatorAvatar: null,
-    createdAt: "2026-06-18T10:00:00Z",
-    updatedAt: "2026-06-18T10:00:00Z",
-    versions: [],
-  };
+  const featuredGame = games[0];
 
   return (
     <main className="home">
       {/* Featured Section */}
-      <section className="featured">
+      {featuredGame && <section className="featured">
         <div className="featured-content">
           <img src={featuredGame.thumbnailUrl ?? ""} alt={featuredGame.title} />
           <div className="featured-info">
@@ -58,7 +44,7 @@ export default function Home({ games, availableTags, search, selectedTag }: Home
             </button>
           </div>
         </div>
-      </section>
+      </section>}
 
       {/* Filter Bar */}
       <section className="filters">
@@ -82,6 +68,7 @@ export default function Home({ games, availableTags, search, selectedTag }: Home
       </section>
 
       {/* Game Sections */}
+      {games.length === 0 && <section className="results"><h2>No published games yet</h2><p>Create and publish a game to see it here.</p></section>}
       {isFiltering ? (
         <section className="results">
           <h2>Search Results</h2>

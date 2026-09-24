@@ -1,6 +1,7 @@
 import React from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { API_BASE_URL } from "../utils/constants";
 
 export default function LoginPage() {
   const auth = useAuth();
@@ -29,6 +30,7 @@ export default function LoginPage() {
         <input type="password" name="password" placeholder="Password" required />
         <button type="submit">Login</button>
       </form>
+      <p><a href={`${API_BASE_URL}/auth/google/start`}>Continue with Google</a></p>
       <p>
         Don't have an account? <a href="/auth/register">Register</a>
       </p>

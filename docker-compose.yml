@@ -1,62 +1,33 @@
 services:
   api:
-    build:
-      context: ./apps/api
-      args:
-        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
-    image: yahaha-api:local
-    container_name: yahaha-api
+    build: ./apps/api-java
+    image: yahaha-java-api:local
     depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      mysql: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
     environment:
-      # ============================================
-      # ⚠️  安全提醒：部署前必须修改以下密钥！
-      #
-      # 生产环境 (ENVIRONMENT=prod/staging) 时，
-      # JWT_SECRET 和 AI_CONFIG_ENCRYPTION_SECRET
-      # 不能使用默认值，否则服务启动失败。
-      #
-      # 生成强密钥命令：
-      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
-      # ============================================
-      DATABASE_URL: postgresql+psycopg://yahaha:yahaha@postgres:5432/yahaha
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      API_PORT: 8080
+      MYSQL_URL: jdbc:mysql://mysql:3306/yahaha?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      MYSQL_USER: yahaha
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-yahaha}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: yahaha
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-yahaha}
+      REDIS_HOST: redis
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: yahaha-games
       MINIO_PUBLIC_BASE_URL: http://localhost:9000/yahaha-games
-      REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: dev-change-me
-      JWT_TTL_SECONDS: 604800
-      WEB_BASE_URL: http://localhost:1314
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_REDIRECT_URI: http://localhost:8080/auth/google/callback
-      API_PORT: 8080
-      AI_CONFIG_ENCRYPTION_SECRET: ${AI_CONFIG_ENCRYPTION_SECRET:-dev-change-me-32bytes}
-      CREATE_STATIC_GENERATION: ${CREATE_STATIC_GENERATION:-false}
-      CREATE_VALIDATE_LLM_CONFIG: ${CREATE_VALIDATE_LLM_CONFIG:-true}
-      CREATE_RECENT_GAME_TTL_SECONDS: 604800
-      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-120}
-      PLAY_STATS_FLUSH_INTERVAL_SECONDS: 10
-      CREATE_WORKTREE_ENABLED: ${CREATE_WORKTREE_ENABLED:-false}
-      CREATE_WORKTREE_BASE_REF: HEAD
-      CREATE_WORKTREE_CLEANUP_POLICY: auto_on_success
-      MAINTAINER_EMAIL: ${MAINTAINER_EMAIL:-}
-      MAINTAINER_PASSWORD: ${MAINTAINER_PASSWORD:-}
-      MAINTAINER_DISPLAY_NAME: ${MAINTAINER_DISPLAY_NAME:-Platform Maintainer}
-    ports:
-      - "8080:8080"
-    volumes:
-      - api_worktrees:/workspace/.worktrees
+      WEB_ORIGIN: http://localhost:1314
+      AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:-local-dev-key-change-before-public-use-32}
+      LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}
+    ports: ["8080:8080"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
-      interval: 10s
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
       timeout: 5s
       retries: 10
 
@@ -64,65 +35,78 @@ services:
     build:
       context: ./apps/web
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
-        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.27-alpine}
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
-    image: yahaha-web:local
-    container_name: yahaha-web
     depends_on:
-      api:
-        condition: service_healthy
-    ports:
-      - "1314:1314"
+      api: {condition: service_healthy}
+    ports: ["1314:1314"]
 
-  postgres:
-    image: postgres:16
-    container_name: yahaha-postgres
-    environment:
-      POSTGRES_DB: yahaha
-      POSTGRES_USER: yahaha
-      POSTGRES_PASSWORD: yahaha
-    ports:
-      - "5432:5432"
+  # Local stand-in for a real AI provider; started only with `--profile test`
+  # and requires LLM_ALLOW_PRIVATE_ENDPOINTS=true for the API to accept it.
+  mock-llm:
+    image: python:3.12-alpine
+    profiles: ["test"]
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./apps/api/db/init:/docker-entrypoint-initdb.d:ro
+      - ./scripts/mock_llm.py:/mock_llm.py:ro
+    command: ["python", "/mock_llm.py"]
+    ports: ["127.0.0.1:${MOCK_LLM_HOST_PORT:-8090}:8080"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U yahaha -d yahaha"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health')"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 6
 
-  minio:
-    image: minio/minio
-    container_name: yahaha-minio
+  mysql:
+    image: mysql:8.4
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
+      MYSQL_DATABASE: yahaha
+      MYSQL_USER: yahaha
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-yahaha}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-root-change-me}
+    ports: ["127.0.0.1:${MYSQL_HOST_PORT:-3307}:3306"]
+    volumes: ["mysql_data:/var/lib/mysql"]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u yahaha -p$$MYSQL_PASSWORD --silent"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: yahaha
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-yahaha}
+    ports: ["127.0.0.1:${RABBITMQ_HOST_PORT:-5673}:5672", "127.0.0.1:${RABBITMQ_CONSOLE_PORT:-15673}:15672"]
+    volumes: ["rabbitmq_data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   redis:
     image: redis:7-alpine
-    container_name: yahaha-redis
-    ports:
-      - "6379:6379"
+    ports: ["127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio_data:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 volumes:
-  postgres_data:
+  mysql_data:
+  rabbitmq_data:
   minio_data:
-  api_worktrees:

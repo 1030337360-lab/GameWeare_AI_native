@@ -1,0 +1,14 @@
+{
+  "features": [
+    {"id": 1, "domain": "backend", "name": "Archive Python API", "passes": true},
+    {"id": 2, "domain": "backend", "name": "Spring Boot application", "passes": true},
+    {"id": 3, "domain": "backend", "name": "MySQL Flyway schema", "passes": true},
+    {"id": 4, "domain": "backend", "name": "Authentication and sessions", "passes": true},
+    {"id": 5, "domain": "backend", "name": "Token billing", "passes": true},
+    {"id": 6, "domain": "backend", "name": "Catalog, uploads and play", "passes": true},
+    {"id": 7, "domain": "backend", "name": "Create jobs and worker", "passes": true},
+    {"id": 8, "domain": "backend", "name": "Maintenance and advanced agents", "passes": true},
+    {"id": 9, "domain": "backend", "name": "Compose and end-to-end verification", "passes": true},
+    {"id": 10, "domain": "frontend", "name": "Frontend compatibility", "passes": true}
+  ]
+}

@@ -35,7 +35,7 @@ function Create() {
   const [message, setMessage] = React.useState("");
   const [status, setStatus] = React.useState("Checking Create configuration...");
   const [aiConfig, setAiConfig] = React.useState<AIConfigState | null>(null);
-  const [baseUrl, setBaseUrl] = React.useState("http://43.106.115.130:8080/v1");
+  const [baseUrl, setBaseUrl] = React.useState("https://api.openai.com/v1");
   const [model, setModel] = React.useState("gpt-5.5");
   const [apiKey, setApiKey] = React.useState("");
   const [editingConfig, setEditingConfig] = React.useState(false);
@@ -86,6 +86,8 @@ function Create() {
     if (configResponse.ok) {
       const payload = (await configResponse.json()) as AIConfigState;
       setAiConfig(payload);
+      if (payload.baseUrl) setBaseUrl(payload.baseUrl);
+      if (payload.model) setModel(payload.model);
       setStatus(payload.configured ? "Saved AI configuration is ready. Create generation is enabled." : "Add your AI configuration before creating.");
       setEditingConfig(!payload.configured);
     }
@@ -101,11 +103,8 @@ function Create() {
   }, [loadCreateState]);
 
   React.useEffect(() => {
-    if (createType === "init" && !INIT_AGENT_MODES.includes(agentMode as (typeof INIT_AGENT_MODES)[number])) {
-      setAgentMode("chat");
-    }
-    if (createType === "opt" && !OPT_AGENT_MODES.includes(agentMode as (typeof OPT_AGENT_MODES)[number])) setAgentMode("refine");
-  }, [agentMode, createType]);
+    if (agentMode !== "chat") setAgentMode("chat");
+  }, [agentMode]);
 
   async function loadProjectPreview(nextProjectId = projectId) {
     if (!nextProjectId) {
@@ -263,12 +262,19 @@ function Create() {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
+        const chunks = buffer.split(/\r?\n\r?\n/);
         buffer = chunks.pop() ?? "";
         for (const chunk of chunks) {
-          const dataLine = chunk.split("\n").find((line) => line.startsWith("data: "));
+          const lines = chunk.split("\n").map((line) => line.replace(/\r$/, ""));
+          const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim() ?? "step";
+          const dataLine = lines.find((line) => line.startsWith("data:"));
           if (!dataLine) continue;
-          const event = JSON.parse(dataLine.slice(6)) as CreateRunEvent;
+          const step = JSON.parse(dataLine.slice(5).trim()) as CreateRunStep;
+          const event: CreateRunEvent = {
+            type: eventName === "done" ? "done" : eventName === "error" ? "error" : "step",
+            runId, stepNo: step.stepNo, stage: step.stage, status: step.status,
+            outputSummary: step.outputSummary ?? null, createdAt: step.createdAt,
+          };
           mergeRunEvent(event);
           if (event.type === "done") {
             await loadFinalJob(jobId);
@@ -280,6 +286,7 @@ function Create() {
           }
         }
       }
+      await loadFinalJob(jobId);
     } catch (error) {
       if (!controller.signal.aborted) {
         setStatus(error instanceof Error ? error.message : "Run event stream interrupted.");
@@ -359,22 +366,12 @@ function Create() {
       setBusy(false);
       return;
     }
-    const requestAgentMode: AgentMode = agentMode;
-    let inputAssets: CreateInputAsset[] = [];
-    try {
-      if (pendingImagesRef.current.length > 0) {
-        setStatus("Uploading image inputs...");
-        inputAssets = await uploadPendingImages();
-      }
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Image upload failed.");
-      setBusy(false);
-      return;
-    }
+    const requestAgentMode: AgentMode = "chat";
+    const inputAssets: CreateInputAsset[] = [];
     setStatus("Starting Create run...");
     const response = await apiFetch("/create/jobs", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify({
         prompt: message,
         files: [],
@@ -387,11 +384,7 @@ function Create() {
     if (!response.ok) {
       const error = await readApiError(response);
       await cleanupUploadedImages(inputAssets);
-      if (response.status === 409) {
-        setStatus("AI configuration is required before creating.");
-        setAiConfig({ authenticated: true, configured: false, provider: "fighting", staticGeneration: false });
-        setEditingConfig(true);
-      } else if (error.detail && typeof error.detail === "object" && (error.detail as Record<string, unknown>).code === "LLM_CONFIG_INVALID" && (error.detail as Record<string, unknown>).llm) {
+      if (error.detail && typeof error.detail === "object" && (error.detail as Record<string, unknown>).code === "LLM_CONFIG_INVALID" && (error.detail as Record<string, unknown>).llm) {
         setLlmTest((error.detail as Record<string, unknown>).llm as LLMTestResult);
         setEditingConfig(true);
         setStatus(error.message);
@@ -457,7 +450,7 @@ function Create() {
     const nextProjectId = job?.projectId ?? projectId;
     if (!nextProjectId) return;
     setCreateType("opt");
-    setAgentMode("refine");
+    setAgentMode("chat");
     setProjectId(nextProjectId);
     setMessage("");
     setJob(null);
@@ -681,7 +674,7 @@ function Create() {
             className={createType === "opt" ? "selected" : undefined}
             onClick={() => {
               setCreateType("opt");
-              setAgentMode("refine");
+               setAgentMode("chat");
               if (projectId) void loadProjectPreview(projectId);
             }}
             disabled={projects.length === 0}
@@ -734,28 +727,7 @@ function Create() {
             <small>This is a playable creator preview, including unpublished drafts. Click inside the frame before using keyboard controls.</small>
           </section>
         )}
-        <div className="mode-picker">
-          <button type="button" className="mode-toggle" onClick={() => setModeOpen((value) => !value)}>
-            Mode: {agentMode}
-          </button>
-          {modeOpen && (
-            <div className="mode-options">
-              {(createType === "init" ? INIT_AGENT_MODES : OPT_AGENT_MODES).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={agentMode === mode ? "selected" : undefined}
-                  onClick={() => {
-                    setAgentMode(mode);
-                    setModeOpen(false);
-                  }}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <div className="mode-picker">Mode: chat</div>
         <div className="multimodal-composer">
           {pendingImages.length > 0 && (
             <div className="image-preview-list">
@@ -777,19 +749,6 @@ function Create() {
             disabled={!aiConfig?.configured || editingConfig || busy}
           />
           <div className="composer-actions">
-            <label className="image-upload-button">
-              Add image
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                multiple
-                disabled={!aiConfig?.configured || editingConfig || busy || streaming}
-                onChange={(event) => {
-                  addImages(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
             <button type="submit" disabled={!aiConfig?.configured || editingConfig || busy || streaming}>
               {streaming ? "Creating..." : "Create game"}
             </button>

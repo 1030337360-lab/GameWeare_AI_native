@@ -31,6 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     fetchSession(token)
       .then((session) => {
+        if (!session.authenticated || !session.user) throw new Error("Session expired");
         setUser(session.user);
         setAuthenticated(true);
       })
@@ -45,8 +46,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = React.useCallback(
     async (email: string, password: string) => {
       const response = await authLogin(email, password);
-      localStorage.setItem(TOKEN_STORAGE_KEY, response.token);
-      setToken(response.token);
+      const accessToken = response.accessToken ?? response.token;
+      localStorage.setItem(TOKEN_STORAGE_KEY, accessToken);
+      setToken(accessToken);
       setUser(response.user);
       setAuthenticated(true);
     },
@@ -56,8 +58,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = React.useCallback(
     async (email: string, password: string, displayName: string) => {
       const response = await authRegister(email, password, displayName);
-      localStorage.setItem(TOKEN_STORAGE_KEY, response.token);
-      setToken(response.token);
+      const accessToken = response.accessToken ?? response.token;
+      localStorage.setItem(TOKEN_STORAGE_KEY, accessToken);
+      setToken(accessToken);
       setUser(response.user);
       setAuthenticated(true);
     },
@@ -75,6 +78,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     navigate("/");
   }, [token, navigate]);
 
+  const setTokenAndRefresh = React.useCallback(async (nextToken: string) => {
+    const session = await fetchSession(nextToken);
+    if (!session.authenticated || !session.user) throw new Error("Google login session is invalid");
+    localStorage.setItem(TOKEN_STORAGE_KEY, nextToken);
+    setToken(nextToken);
+    setUser(session.user);
+    setAuthenticated(true);
+  }, []);
+
   const expiresIn = 3600; // TODO: 从登录响应中获取
 
   const value = React.useMemo(
@@ -87,8 +99,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       logout,
       register,
+      setTokenAndRefresh,
     }),
-    [user, token, authenticated, expiresIn, apiFetch, login, logout, register]
+    [user, token, authenticated, expiresIn, apiFetch, login, logout, register, setTokenAndRefresh]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

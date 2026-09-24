@@ -26,7 +26,7 @@ export default function GameDetail({ games }: GameDetailProps) {
     }
     try {
       const response = await auth.apiFetch(`/games/${game!.id}/${kind}`, {
-        method: enabled ? "POST" : "DELETE",
+        method: enabled ? "PUT" : "DELETE",
       });
       if (response.ok) {
         // Refresh game data
@@ -45,7 +45,7 @@ export default function GameDetail({ games }: GameDetailProps) {
       const response = await auth.apiFetch(`/games/${game!.id}/remix`, { method: "POST" });
       if (response.ok) {
         const remix = await response.json();
-        navigate(`/games/${remix.gameId}`);
+        navigate(`/create`);
       }
     } catch (error) {
       console.error("Failed to remix game:", error);

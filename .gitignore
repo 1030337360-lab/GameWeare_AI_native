@@ -6,6 +6,7 @@ vendor/
 # Build output
 dist/
 build/
+target/
 out/
 coverage/
 .worktrees/

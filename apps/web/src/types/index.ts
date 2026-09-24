@@ -432,6 +432,7 @@ export interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   register: (email: string, password: string, displayName: string) => Promise<void>;
+  setTokenAndRefresh: (token: string) => Promise<void>;
 }
 
 

@@ -1,252 +1,65 @@
-# Yahaha MVP
+# Yahaha / GameWeare AI Native
 
-Minimal runnable scaffold for an AI-native interactive game platform.
+本仓库是 [1030337360-lab/GameWeare_AI_native](https://github.com/1030337360-lab/GameWeare_AI_native) 的本地项目，不是同名参考仓库 `charlie11sun-netizen/yahaha`。
 
-This build follows the technical route in `Yahaha-MVP-技术路线报告.md`:
+## 目录与架构
 
-- Frontend: React + Vite + TypeScript on port `1314`
-- Backend: Python + FastAPI on port `8080`
-- Docker startup: Web, API, PostgreSQL, MinIO, and Redis via Docker Compose
-- Local development startup: PostgreSQL, MinIO, and Redis via Docker Compose; Web/API run on the host
-- MinIO storage: Docker named volume `minio_data` in the full Docker stack; local development can override MinIO storage through Compose volumes
-- Create generation: real LLM generation by default; static test generation is available only when `CREATE_STATIC_GENERATION=true`
+- `apps/web`：React + Vite 前端。
+- `apps/api-java`：Java 17 + Spring Boot 4 后端。按 `auth`、`billing`、`catalog`、`play`、`storage`、`create`、`maintenance`、`profile` 业务模块组织。
+- `archive/python-api`：原 FastAPI 后端完整归档，仅供对照与迁移，不参与当前启动。
+- `apps/api-java/src/main/resources/db/migration`：MySQL Flyway 版本化表结构。
+- `docker-compose.yml`：MySQL、Redis、RabbitMQ、MinIO 与应用服务。
 
-## Requirements
+MySQL 是用户、游戏、任务、Token 余额与账本的事务数据源；MinIO 保存封面和游戏 HTML 对象，并非关系型数据库。Redis 用于登录限流与短期会话缓存。RabbitMQ 处理异步生成任务。任务和 Outbox 在同一 MySQL 事务中创建，投递使用 publisher confirm 与 mandatory return；Worker 使用租约和幂等状态更新。Token 通过账户行锁、预留、结算与退回维护余额和账本一致性。
 
-For Docker startup:
+## 本地运行
 
-- Docker Desktop `28.3.3` or newer
-- Docker Compose integrated with Docker
-- WSL enabled on Windows
-
-For local development startup:
-
-- Docker Desktop and Docker Compose for PostgreSQL, MinIO, and Redis
-- Node.js 24+
-- Python 3.12+
-- Git, if you want real Create worktree isolation with `CREATE_WORKTREE_ENABLED=true`
-
-## Startup Option A: Full Docker Stack
-
-Use this path when another person wants to run the whole project without installing Python or Node locally.
+需要 JDK 17+、Maven、Node.js、Docker Desktop。先启动依赖：
 
 ```powershell
-git clone https://github.com/1030337360-lab/yahaha-mvp.git
-cd yahaha-mvp
-docker compose up -d --build
+docker compose up -d mysql rabbitmq redis minio
 ```
 
-This starts:
+默认宿主机端口是 MySQL `3307`、RabbitMQ `5673`（管理台 `15673`）、Redis `6380`、MinIO `9000/9001`；容器内部仍使用标准端口。若端口冲突，可通过 `MYSQL_HOST_PORT`、`RABBITMQ_HOST_PORT`、`RABBITMQ_CONSOLE_PORT`、`REDIS_HOST_PORT` 环境变量覆盖。
 
-| Service | Port | Purpose |
-| ------- | ---- | ------- |
-| `web` | `1314` | React production build served by Nginx |
-| `api` | `8080` | FastAPI backend |
-| `postgres` | `5432` | PostgreSQL database; runs `apps/api/db/init/*.sql` on first volume creation |
-| `minio` | `9000`, `9001` | Object storage API and Console |
-| `redis` | `6379` | Auth/session cache, Create state, SSE pubsub, play stat buffers |
-
-Open:
-
-```text
-Web: http://localhost:1314
-API health: http://localhost:8080/health
-MinIO Console: http://localhost:9001
-```
-
-Default local MinIO credentials are `minioadmin` / `minioadmin`.
-
-The Docker stack uses Docker named volumes:
-
-| Volume | Purpose |
-| ------ | ------- |
-| `postgres_data` | PostgreSQL data |
-| `minio_data` | MinIO object storage |
-| `api_worktrees` | Create isolated workspace/stub files |
-
-Docker-specific notes:
-
-- The web image is built with `VITE_API_BASE_URL=http://localhost:8080`, because the browser reaches the API through the host port.
-- The API container reaches dependencies by service names: `postgres`, `minio`, and `redis`.
-- `CREATE_WORKTREE_ENABLED` defaults to `false` in Docker Compose. This keeps container startup independent of a mounted Git checkout. Create still writes only inside `/workspace/.worktrees` through the isolated stub workspace. Local development can enable real git worktrees.
-- `MINIO_PUBLIC_BASE_URL` defaults to `http://localhost:9000/yahaha-games`, so URLs returned to the browser use the host port.
-- Do not put real secrets in committed files. Override sensitive values through shell environment variables or a local untracked `.env` file next to `docker-compose.yml`.
-
-Useful Docker commands:
+在 PowerShell 中配置本地后端环境并运行：
 
 ```powershell
-docker compose logs -f api
-docker compose logs -f web
-docker compose ps
-docker compose down
-docker compose down -v  # also removes database/object-storage volumes
+$env:MYSQL_URL='jdbc:mysql://localhost:3307/yahaha?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC'
+$env:MYSQL_USER='yahaha'
+$env:MYSQL_PASSWORD='yahaha'
+$env:RABBITMQ_HOST='localhost'
+$env:RABBITMQ_PORT='5673'
+$env:REDIS_PORT='6380'
+$env:AI_CONFIG_SECRET='replace-with-a-random-secret-at-least-32-chars'
+cd apps/api-java
+mvn test
+mvn spring-boot:run
 ```
 
-If Docker fails before building project code with an error like `429 Too Many Requests` while loading `python`, `node`, or `nginx` image metadata, the blocker is the configured Docker registry mirror rather than this repository. Remove or change the Docker Desktop registry mirror, then run `docker compose up -d --build` again. The base images can also be overridden without editing project files:
-
-```powershell
-$env:PYTHON_IMAGE='python:3.12-slim'
-$env:NODE_IMAGE='node:24-alpine'
-$env:NGINX_IMAGE='nginx:1.27-alpine'
-docker compose build api web
-```
-
-If you already have old Docker volumes and need to re-run database init SQL, remove volumes with `docker compose down -v` before starting again, or initialize manually.
-
-## Startup Option B: Local Development
-
-Use this path when you want hot reload, local debugging, or real git worktree isolation.
-
-### Start dependencies only
-
-```powershell
-docker compose up -d postgres minio redis
-```
-
-PostgreSQL listens on `localhost:5432`.
-MinIO API listens on `localhost:9000`.
-MinIO Console listens on `http://localhost:9001`.
-Redis listens on `localhost:6379`.
-
-On a brand-new PostgreSQL volume, the SQL files in `apps/api/db/init` run automatically. If your Docker named volume already existed before these files were added, initialize the schema manually:
-
-```powershell
-Get-Content apps\api\db\init\001_schema.sql -Raw | docker exec -i yahaha-postgres psql -U yahaha -d yahaha
-Get-Content apps\api\db\init\002_seed.sql -Raw | docker exec -i yahaha-postgres psql -U yahaha -d yahaha
-```
-
-### Start backend locally
-
-```powershell
-cd apps/api
-Copy-Item .env.example .env
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
-```
-
-On this Windows environment, do not use `--reload` for now. The reloader starts a watcher subprocess and can fail with `PermissionError: [WinError 5]` while creating a named pipe.
-
-Health check:
-
-```powershell
-curl http://localhost:8080/health
-```
-
-Run backend smoke checks:
-
-```powershell
-.venv\Scripts\python tests\test_smoke.py
-.venv\Scripts\python tests\test_create_llm_generation.py
-.venv\Scripts\python tests\test_langgraph_react.py
-.venv\Scripts\python tests\test_llm_service.py
-.venv\Scripts\python tests\test_prompt_templates.py
-.venv\Scripts\python tests\test_agent_tools.py
-.venv\Scripts\python tests\test_agent_strategies.py
-.venv\Scripts\python tests\test_multi_agent_orchestration.py
-.venv\Scripts\python tests\test_workspace_isolation.py
-```
-
-To verify real git worktree isolation, run the workspace test with the opt-in flag:
-
-```powershell
-$env:RUN_GIT_WORKTREE_TEST='1'; .venv\Scripts\python tests\test_workspace_isolation.py
-```
-
-### Start frontend locally
+新终端运行前端：
 
 ```powershell
 cd apps/web
-Copy-Item .env.example .env
-npm install
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:1314`.
+前端地址为 `http://localhost:1314`，后端健康检查为 `http://localhost:8080/actuator/health`。首次启动会执行 Flyway 迁移。生成游戏前，在创建页配置支持 OpenAI Responses API 的 HTTPS 提供商与密钥。开发环境的 Docker Compose 默认密码只适用于本机；公开部署前通过环境变量更换数据库、消息队列、MinIO 凭证和 `AI_CONFIG_SECRET`。
 
-## Distribution
+完整容器启动命令是 `docker compose up -d --build`。Java 和前端构建镜像默认使用可访问的 Public ECR，Java 运行镜像使用 Microsoft Container Registry；本机已完成完整容器构建和启动验证。
 
-The recommended MVP distribution path is source plus Docker Compose:
+## 验证
 
-1. Push source code to GitHub.
-2. Share the repository URL.
-3. The recipient runs `git clone`, then `docker compose up -d --build`.
-
-If you want recipients to run without building source, publish images to a registry such as GitHub Container Registry or Docker Hub, then replace the `build:` sections in Compose with image references, for example:
-
-```yaml
-api:
-  image: ghcr.io/1030337360-lab/yahaha-api:latest
-web:
-  image: ghcr.io/1030337360-lab/yahaha-web:latest
+```powershell
+cd apps/api-java
+mvn test
+cd ../web
+npm run build
 ```
 
-For this repository, source-plus-Compose is the simpler and more transparent handoff. Registry images are better after the API and Web release cadence stabilizes.
+已在 MySQL 8.4、RabbitMQ 4、Redis 7、MinIO 本地容器上验证注册、登录会话、退出、游戏列表，以及创建任务失败后的 Token 退回和幂等键复用。当前创建 Worker 需要真实 AI 服务才能验证成功生成；请使用自己的测试密钥并核对使用量。
 
-Docker packaging files use project-relative paths: `docker-compose.yml`, `.dockerignore`, `apps/api/Dockerfile`, `apps/api/.dockerignore`, `apps/web/Dockerfile`, `apps/web/nginx.conf`, and `apps/web/.dockerignore`.
+## 当前范围
 
-## Implemented API surface
-
-- `GET /health`
-- `GET /games`
-- `GET /games/{game_id}`
-- `GET /play/{game_id}/manifest`
-- `POST /events/play`
-- `GET /auth/session`
-- `POST /auth/register`
-- `POST /auth/login`
-- `POST /auth/logout`
-- `GET /auth/google/start`
-- `GET /auth/google/callback`
-- `GET /create/ai-config`
-- `PUT /create/ai-config`
-- `POST /create/ai-config/test`
-- `GET /create/recent-game`
-- `GET /create/projects`
-- `GET /create/projects/{project_id}`
-- `GET /create/runs/{run_id}`
-- `GET /create/runs/{run_id}/steps`
-- `GET /create/runs/{run_id}/events`
-- `POST /create/jobs`
-- `GET /create/jobs/{job_id}`
-- `POST /create/jobs/{job_id}/publish`
-- `GET /create/jobs/{job_id}/agent-state`
-- `POST /uploads`
-- `GET /games/{game_id}/versions`
-- `POST /games/{game_id}/remix`
-- `GET /maintenance/overview`
-- `GET /maintenance/create-runs/failed`
-- `GET /maintenance/jobs`
-- `POST /maintenance/jobs/{job_id}/mark-reviewed`
-- `POST /maintenance/jobs/{job_id}/retry`
-- `GET /maintenance/games`
-- `PATCH /maintenance/games/{game_id}`
-- `POST /maintenance/games/{game_id}/moderate`
-- `GET /maintenance/assets`
-- `DELETE /maintenance/assets/{asset_id}`
-
-## Create and LLM generation
-
-Create jobs require login and a saved AI configuration. The AI config contains `baseUrl`, `model`, `provider`, and an encrypted `apiKey`; API responses and logs never return the key.
-
-By default, `apps/api/.env.example` sets `CREATE_STATIC_GENERATION=false`. Create jobs run the selected LangGraph strategy through the OpenAI-compatible Responses adapter. Static generation is still available for local testing when `CREATE_STATIC_GENERATION=true`; in that mode the Create page shows a warning so it is not confused with real LLM generation.
-
-`POST /create/jobs` now returns `202 Accepted` after creating the job/run/task records. Generation continues in a FastAPI background task. The web app opens `GET /create/runs/{run_id}/events` with a fetch stream and receives replayed plus live SSE events for `step`, `llm_call`, `tool_call`, `done`, `error`, and `heartbeat`.
-
-The first experimental LLM path is ReAct: it can call registered JSON tools, stops only when the LLM returns `Finished=true`, and caps execution at 4 iterations. Parsed LLM output is normalized into the same artifact pipeline used by static generation, so publishing still goes through PostgreSQL plus MinIO. If real LLM output does not include the required game package contract, the run fails instead of silently publishing a fallback static game.
-
-LLM requests use `LLM_REQUEST_TIMEOUT_SECONDS`, defaulting to `120` seconds. Keep this above typical model latency when using a local or proxy Responses API provider; a timeout only means the provider did not answer before this backend deadline.
-
-The current strategy modules are `react`, `plan`, `refine`, and `decentralized`. `decentralized` registers the minimum production multi-agent stages for Planner, Asset, GameCode, Build, Safety, and Publisher. These stages write run steps, contracts, handoff rules, and retry policy metadata; the full independent sub-agent execution loop is still a later production hardening item.
-
-Create workspaces use filesystem isolation by default. `CREATE_WORKTREE_ENABLED=true` creates a git worktree at `.worktrees/create-{runId}` with an isolated branch. `CREATE_WORKTREE_CLEANUP_POLICY=auto_on_success` removes successful run worktrees while preserving failed run worktrees for inspection. If git worktrees are disabled, the backend still uses an isolated stub directory rather than writing into the main repository.
-
-Each LLM call records a `llm_call` run step with prompt prefix counts, English word counts, Chinese character counts, output counts, and provider token usage when the response includes it. The recorder writes summaries into SQL run steps, full JSONL run logs in MinIO, Redis short-term memory, and Redis long-term session history.
-
-## Game artifact contract
-
-AI-generated games should follow `docs/ai-game-generation-guide.md`. The target play model is an Astrocade-like platform shell that runs a self-contained generated HTML game document inside a sandboxed iframe and resolves the playable object through PostgreSQL metadata plus MinIO object storage.
-
-## Current scope
-
-The app is a minimum runnable project. It includes a game gallery, game detail pages, sandbox Play iframe, Docker dependencies, PostgreSQL schema/seed data, database-backed game catalog, JWT auth backed by Redis, play events with Redis-to-PostgreSQL flushing, MinIO-backed uploads, Create project/run tracking, isolated Create workspaces, an experimental LangGraph LLM generation path, live Create progress streaming, MVP safety scanning, Profile run details, maintainer retry/review tooling, and multi-agent production stage contracts. Full independent sub-agent execution, deeper recovery policy, and queue-grade background execution remain later-phase work.
+Java 后端已覆盖核心注册登录、Token 计费、游戏目录与交互、上传、游玩、异步创建和项目管理。旧版 Python 的图片输入及 `react`、`plan`、`decentralized` 专用 Agent 编排还未迁移；Java API 会明确拒绝不支持的模式，前端只展示已接通的 chat 创建流程。归档中的 Python 代码仍可用于逐项迁移对照。

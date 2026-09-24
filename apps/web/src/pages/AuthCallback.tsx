@@ -13,10 +13,13 @@ export default function AuthCallback() {
       navigate("/auth/login");
       return;
     }
-    // TODO: Implement setTokenAndRefresh in useAuth
-    // auth.setTokenAndRefresh(token).then(() => navigate("/profile"));
-    navigate("/profile");
-  }, [auth, navigate]);
+    void auth.setTokenAndRefresh(token)
+      .then(() => {
+        window.history.replaceState(null, "", "/auth/callback");
+        navigate("/profile", { replace: true });
+      })
+      .catch(() => navigate("/auth/login?oauth_error=invalid_session", { replace: true }));
+  }, [auth.setTokenAndRefresh, navigate]);
 
   return (
     <main className="empty-state">

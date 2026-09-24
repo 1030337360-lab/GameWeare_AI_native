@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "code-security-review": {
+      "source": "Greenplumwine/alibaba-java-manual",
+      "sourceType": "github",
+      "skillPath": "skills/code-security-review/SKILL.md",
+      "computedHash": "08427bc20f84822c0dbfe8e7ee6bb8ff85ee6a8d6b212e0b49bb926b1bbba3a0"
+    },
+    "fullstack-team": {
+      "source": "HarryJLS/ai_messy",
+      "sourceType": "github",
+      "skillPath": "skills/fullstack-team/SKILL.md",
+      "computedHash": "01923c7256a40a82a83b10bb8ba4a2a0da02b8a82ece4e6382700960f3534b8a"
+    }
+  }
+}
