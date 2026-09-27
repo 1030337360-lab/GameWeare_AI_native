@@ -26,6 +26,11 @@ services:
       WEB_ORIGIN: http://localhost:1314
       AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:-local-dev-key-change-before-public-use-32}
       LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}
+      AGENT_ENGINE: ${AGENT_ENGINE:-legacy}
+      AGENT_FILESYSTEM: ${AGENT_FILESYSTEM:-kubernetes}
+      OFFICIAL_LLM_BASE_URL: ${OFFICIAL_LLM_BASE_URL:-}
+      OFFICIAL_LLM_MODEL: ${OFFICIAL_LLM_MODEL:-}
+      OFFICIAL_LLM_API_KEY: ${OFFICIAL_LLM_API_KEY:-}
     ports: ["8080:8080"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
@@ -45,7 +50,7 @@ services:
   # Local stand-in for a real AI provider; started only with `--profile test`
   # and requires LLM_ALLOW_PRIVATE_ENDPOINTS=true for the API to accept it.
   mock-llm:
-    image: python:3.12-alpine
+    image: public.ecr.aws/docker/library/python:3.12-alpine
     profiles: ["test"]
     volumes:
       - ./scripts/mock_llm.py:/mock_llm.py:ro
@@ -58,14 +63,16 @@ services:
       retries: 6
 
   mysql:
-    image: mysql:8.4
+    image: public.ecr.aws/docker/library/mysql:8.4
     environment:
       MYSQL_DATABASE: gameweare
       MYSQL_USER: gameweare
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gameweare}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-root-change-me}
     ports: ["127.0.0.1:${MYSQL_HOST_PORT:-3307}:3306"]
-    volumes: ["mysql_data:/var/lib/mysql"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./infra/mysql/01-agentscope.sql:/docker-entrypoint-initdb.d/01-agentscope.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -u gameweare -p$$MYSQL_PASSWORD --silent"]
       interval: 10s
@@ -87,7 +94,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
     ports: ["127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"]
+    volumes: ["redis_data:/data"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -95,7 +104,7 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
@@ -111,4 +120,5 @@ services:
 volumes:
   mysql_data:
   rabbitmq_data:
+  redis_data:
   minio_data:

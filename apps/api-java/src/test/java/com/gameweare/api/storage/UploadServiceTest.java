@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /** Uploads are validated (magic bytes) before they reach object storage. */
@@ -89,5 +90,19 @@ class UploadServiceTest {
 
         verify(minio).putObject(any(PutObjectArgs.class));
         verify(minio).removeObject(any(RemoveObjectArgs.class));
+    }
+
+    @Test
+    void refusesToDeleteAnUploadUsedByAJob() {
+        when(jdbc.queryForList(contains("FROM assets"), eq("asset-1"), eq("u1")))
+                .thenReturn(java.util.List.of(Map.of("bucket", "bucket", "object_key", "uploads/u1/image.png")));
+        when(jdbc.queryForObject(contains("create_job_inputs"), eq(Integer.class), eq("asset-1")))
+                .thenReturn(1);
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.delete("asset-1", "u1"));
+
+        assertEquals(HttpStatus.CONFLICT, error.getStatusCode());
+        verifyNoInteractions(minio);
     }
 }

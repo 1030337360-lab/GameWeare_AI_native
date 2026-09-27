@@ -21,7 +21,13 @@ public class CreateController {
 
     public record InputAsset(String assetId, String objectKey, String publicUrl, String contentType, String filename, long size) {}
     public record JobRequest(@NotBlank String prompt, List<String> files, List<InputAsset> inputAssets,
-                             String agentMode, String createType, String projectId) {}
+                             String agentMode, String createType, String projectId,
+                             String fundingMode, String voucherId) {
+        public JobRequest(String prompt, List<String> files, List<InputAsset> inputAssets,
+                          String agentMode, String createType, String projectId) {
+            this(prompt, files, inputAssets, agentMode, createType, projectId, null, null);
+        }
+    }
     public record ConfigRequest(@NotBlank String baseUrl, @NotBlank String model,
                                 @NotBlank String apiKey, String provider) {}
     public record ConfigTestRequest(String baseUrl, String model, String apiKey, String provider) {}
@@ -43,6 +49,11 @@ public class CreateController {
     @GetMapping("/jobs/{id}")
     public Map<String, Object> job(@RequestAttribute("userId") String userId, @PathVariable String id) {
         return service.job(userId, id);
+    }
+
+    @GetMapping("/jobs")
+    public List<Map<String, Object>> jobs(@RequestAttribute("userId") String userId) {
+        return service.jobs(userId);
     }
 
     @PostMapping("/jobs/{id}/publish")

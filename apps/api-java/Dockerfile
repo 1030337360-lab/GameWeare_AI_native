@@ -4,7 +4,7 @@ FROM ${MAVEN_IMAGE} AS build
 WORKDIR /app
 COPY pom.xml .
 COPY src ./src
-RUN mvn -B -DskipTests package
+RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests package
 
 FROM ${RUNTIME_IMAGE}
 WORKDIR /app

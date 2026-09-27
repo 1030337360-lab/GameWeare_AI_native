@@ -1,180 +1,66 @@
-# API Notes
+# GameWeare Java API 速览
 
-Backend base URL: `http://localhost:8080`
+基础地址：`http://localhost:8080`。实现位于 `apps/api-java/src/main/java/com/gameweare/api`。个人与修改类接口使用 `Authorization: Bearer <accessToken>`；`/maintenance/**` 还要求 `admin` 或 `maintainer` 角色。Token 是随机不透明字符串，MySQL 仅保存摘要，不是 JWT。
 
-The current implementation is intentionally small and runnable. PostgreSQL is the source of truth for published games, users, Create jobs, Create projects/runs, play events, and asset metadata. Redis stores active JWT records plus Create memory/cache data. MinIO stores uploaded assets, generated game artifacts, persistent memory objects, and full run logs.
+## 认证
 
-AI-generated game artifacts must follow `docs/ai-game-generation-guide.md`.
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/auth/register`、`/auth/login` | 邮箱密码注册/登录，返回 `accessToken` |
+| POST | `/auth/logout` | 撤销当前 Token |
+| GET | `/auth/session` | 当前登录态 |
+| GET | `/auth/google/start`、`/auth/google/callback` | Google OAuth 登录；需要配置 Google 凭证 |
+| GET | `/auth/google/link/start` | 登录用户关联 Google 账号 |
 
-## Game APIs
+## 游戏、上传与试玩
 
-- `GET /games`
-- `GET /games/{game_id}`
-- `GET /play/{game_id}/manifest`
-- `POST /events/play`
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/games`、`/games/tags`、`/games/{slug}` | 已发布目录、标签、详情 |
+| GET | `/games/{slug}/versions`、`/games/{slug}/cover` | 版本与封面 |
+| POST | `/games/{slug}/versions/switch`、`/games/{slug}/remix` | 作者切换版本、复刻 |
+| PUT/DELETE | `/games/{slug}/like`、`/games/{slug}/favorite` | 点赞/收藏状态 |
+| DELETE | `/games/{slug}` | 作者软删除 |
+| POST | `/uploads` | 上传图片到 MinIO，返回资产引用 |
+| GET/DELETE | `/uploads/{assetId}/content`、`/uploads/{assetId}` | 读取/删除本人上传 |
+| GET | `/play/{slug}/manifest`、`/play/{slug}/document` | 试玩清单与 sandbox HTML |
+| POST | `/events/play` | 记录试玩事件（`/play/events` 为兼容路径） |
 
-Game list/detail and Play manifest are read from PostgreSQL. `POST /events/play` writes to `play_events`.
+## 创建与生成
 
-## Auth APIs
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/PUT | `/create/ai-config` | 查看非敏感配置/加密保存 AI 密钥 |
+| POST | `/create/ai-config/test` | 测试 Responses API 连接 |
+| POST | `/create/jobs` | 创建异步任务，建议传 `X-Idempotency-Key` |
+| POST | `/create/artifacts/validate` | 接收 `{ "html": "..." }`，返回 `{ ok, format, diagnostics }`，供外部 Agent 修复编译错误 |
+| POST | `/create/artifacts` | 接收 `{ "prompt", "html", "projectId?" }`，保存通过校验的单文件 HTML 草稿，返回 `jobId/projectId/gameId/versionId` |
+| GET | `/create/jobs/{id}`、`/create/runs/{id}`、`/create/runs/{id}/steps` | 任务与运行步骤 |
+| GET | `/create/runs/{id}/events` | SSE 进度流 |
+| POST | `/create/jobs/{id}/publish` | 发布生成的游戏 |
+| GET | `/create/projects`、`/create/projects/{id}`、`/create/projects/{id}/preview`、`/create/recent-game` | 项目与预览 |
+| DELETE | `/create/projects/{id}` | 删除项目 |
+| GET/POST | `/create/runs/{id}/plan-preview`、`/create/runs/{id}/plan-decision` | 规划预览与批准 |
+| GET/POST | `/create/runs/{id}/decentralized-previews`、`/create/runs/{id}/decentralized-selection`、`/create/runs/{id}/decentralized-confirm` | 三候选方向选择 |
 
-- `GET /auth/session`
-- `POST /auth/register`
-- `POST /auth/login`
-- `POST /auth/logout`
-- `GET /auth/google/start`
-- `GET /auth/google/callback`
+`POST /create/jobs` 的 JSON 包含 `prompt`、`agentMode`（chat、react、plan、decentralized，续作还支持 refine）、`createType`（init 或 opt）、可选 `projectId` 和至多三个已上传的 `inputAssets`。`files` 旧字段仅为兼容读取，非空会被拒绝；请先调用 `/uploads`。AgentScope 的 react 使用工具循环；plan 和 decentralized 会先返回待审方案或候选方向，用户确认后才继续生成。完成的任务返回版本号及仅所有者可读取的封面预览。续作生成新版本草稿；`POST /create/jobs/{id}/publish` 才切换公开版本和封面。`GET /games/{slug}/cover` 会为旧游戏提供安全 SVG 封面。
 
-Auth routes support email registration/login, Bearer JWT session lookup, logout, and Google OAuth route shape. The database also has `auth_accounts` so Google/GitHub OAuth can be added without changing `users`.
+新建生成任务不设置项目内 Token 上限，也不检查本地虚拟余额。模型服务商 API 自行判断其账户额度；服务端持久化响应中的逐调用用量与任务总用量。旧任务的本地预留/退款账本仍保留以便审计。
 
-`POST /auth/register` and `POST /auth/login` return `accessToken`, `tokenType`, `expiresIn`, and `user`. Protected requests use `Authorization: Bearer <token>`.
+外部 Agent 的接收路径需要用户 Bearer Token。先调用 `/create/artifacts/validate`；语法错误仍返回 HTTP 200 与 `ok=false`，`diagnostics` 含 `code/message/scriptIndex/line`。提交到 `/create/artifacts` 时建议使用 `X-Idempotency-Key`，相同用户和请求重复提交返回同一草稿，不同内容复用该键返回 409。提交未通过校验返回 422。该路径不会调用模型或扣费，`actual_tokens=0`。校验仅做 HTML 包装、自包含资源规则和 JavaScript 语法解析，不执行脚本；版本的 `safety_status` 为 `pending`，外部产物须完成独立安全审核后才能发布，已有已发布版本不会因新的待审核修订而下线。
 
-## Create APIs
+传给 Agent 的校验调用示例：
 
-- `GET /create/ai-config`
-- `PUT /create/ai-config`
-- `POST /create/ai-config/test`
-- `GET /create/recent-game`
-- `GET /create/projects`
-- `GET /create/projects/{project_id}`
-- `GET /create/runs/{run_id}`
-- `GET /create/runs/{run_id}/steps`
-- `GET /create/runs/{run_id}/events`
-- `POST /create/jobs`
-- `GET /create/jobs/{job_id}`
-- `POST /create/jobs/{job_id}/publish`
-- `GET /create/jobs/{job_id}/agent-state`
+```text
+POST /create/artifacts/validate
+{"html":"<!doctype html><html><head><title>Game</title></head><body><canvas></canvas><script>const score = ;</script></body></html>"}
 
-`GET /create/ai-config` has optional auth. Anonymous callers receive:
-
-```json
-{
-  "authenticated": false,
-  "configured": false,
-  "staticGeneration": false
-}
+{"ok":false,"format":"single-html","diagnostics":[{"code":"JS_SYNTAX","message":"...","scriptIndex":1,"line":1}]}
 ```
 
-Logged-in callers receive only non-secret config state:
+## 个人与维护
 
-```json
-{
-  "authenticated": true,
-  "configured": true,
-  "baseUrl": "http://localhost:8081/v1",
-  "model": "gpt-5.5",
-  "provider": "fighting",
-  "staticGeneration": false
-}
-```
+- `GET /profile/activity`、`GET /profile/projects/{id}`：仅本人可查看。
+- `/maintenance/overview`、`/maintenance/jobs`、`/maintenance/create-runs/failed`、`/maintenance/games`、`/maintenance/assets`、`/maintenance/reviews` 及相应审核、重试、修改、删除操作：仅维护员或管理员。
 
-`PUT /create/ai-config` requires auth:
-
-```json
-{
-  "baseUrl": "http://43.106.115.130:8080/v1",
-  "model": "gpt-5.5",
-  "apiKey": "secret value",
-  "provider": "fighting"
-}
-```
-
-The backend encrypts `apiKey` before writing it to PostgreSQL and caches the current session config in Redis. Responses never include the key.
-
-`POST /create/ai-config/test` sends a small OpenAI Responses API request to `{baseUrl}/responses` and returns a structured test result:
-
-```json
-{
-  "ok": true,
-  "code": "OK",
-  "message": "LLM configuration is reachable.",
-  "details": {}
-}
-```
-
-`POST /create/jobs` requires auth:
-
-```json
-{
-  "prompt": "Make a pointer-controlled arcade game.",
-  "files": [],
-  "agentMode": "react",
-  "createType": "init",
-  "projectId": null
-}
-```
-
-Allowed `createType` values are `init` and `opt`. `init` creates a new project and returns its `projectId`. `opt` continues an existing project and requires a user-owned `projectId`.
-
-Allowed `agentMode` values are `chat`, `react`, `plan`, `refine`, `decentralized`, `init`, and `opt`. For `createType=init`, the supported creation modes are `chat`, `react`, `plan`, and `decentralized`. For `createType=opt`, the supported continuation modes are `chat`, `react`, `plan`, `decentralized`, and `refine`; only the legacy alias `agentMode=opt` maps to `refine`.
-
-`POST /create/jobs` returns `202 Accepted` after the job/run/task records are created. Generation continues in a background task. The initial response includes the run indexes but does not yet include the generated game:
-
-```json
-{
-  "id": "job uuid",
-  "status": "planning",
-  "prompt": "Make a pointer-controlled arcade game.",
-  "createdAt": "2026-06-19T00:00:00Z",
-  "logs": [],
-  "gameId": null,
-  "gameSlug": null,
-  "playUrl": null,
-  "manifestUrl": null,
-  "agentMode": "react",
-  "createType": "init",
-  "projectId": "project uuid",
-  "runId": "run uuid",
-  "taskId": "task uuid",
-  "resumeStatus": "fresh"
-}
-```
-
-Generation modes:
-
-- `CREATE_STATIC_GENERATION=false`: default. Call the selected LangGraph strategy through the OpenAI-compatible Responses adapter, parse the final output, and publish the generated artifacts through the same MinIO/PostgreSQL path.
-- `CREATE_STATIC_GENERATION=true`: explicit local test mode. Generate deterministic local test artifacts without calling an LLM provider; the web UI shows a static-mode warning.
-
-LLM mode expects the final model output to be JSON containing game `files`, `cover`, `implementationSummary`, and `safetyNotes`. ReAct can also return JSON tool calls. The loop stops on `Finished=true` and caps at 4 iterations. Invalid LLM output fails the run and does not publish fallback static content.
-
-Common Create errors:
-
-- `409 AI_CONFIG_REQUIRED`: the user has not saved AI config.
-- `400 LLM_CONFIG_INVALID`: AI config test failed before generation.
-- `400 PROMPT_RENDER_FAILED`: strategy prompt/payload rendering failed.
-- `400 LLM_GENERATION_FAILED`: provider call, graph execution, or output parsing failed.
-- `409 PROJECT_ID_REQUIRED`: `createType=opt` was used without `projectId`.
-- `404 Project not found`: `projectId` does not exist or does not belong to the current user.
-
-`GET /create/runs/{run_id}/events` returns `text/event-stream`. It replays existing steps, then streams new Redis-backed events. The frontend uses `fetch` streaming so it can include `Authorization: Bearer <token>`.
-
-SSE event types:
-
-- `step`: normal Create stage.
-- `llm_call`: LLM response summary and token metrics.
-- `tool_call`: tool request/response summary.
-- `done`: terminal success event with run summary.
-- `error`: terminal failure event.
-- `heartbeat`: keepalive.
-
-`GET /create/runs/{run_id}/steps` returns ordered structured steps for refresh/recovery. LLM calls use `stage="llm_call"` and metrics such as:
-
-```json
-{
-  "iteration": 1,
-  "strategy": "react",
-  "topology": "single-agent",
-  "promptEnglishWords": 1000,
-  "promptChineseChars": 20,
-  "prefixEnglishWords": 120,
-  "prefixChineseChars": 8,
-  "outputEnglishWords": 600,
-  "outputChineseChars": 0,
-  "outputTokens": 900
-}
-```
-
-## Upload APIs
-
-- `POST /uploads`
-
-Uploads write the file to MinIO and record an `assets` row with bucket, object key, public URL, content type, and size.
+健康检查：`GET /health` 与 `GET /actuator/health`。`/health` 仅表示进程响应；部署 readiness 仍需补充依赖检查。端到端验证脚本见 `scripts/e2e-verify.ps1`，当前覆盖的是 Mock LLM 环境。

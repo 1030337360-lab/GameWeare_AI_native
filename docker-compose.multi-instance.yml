@@ -1,0 +1,40 @@
+services:
+  api:
+    environment:
+      LLM_ALLOW_PRIVATE_ENDPOINTS: "true"
+      AGENT_FILESYSTEM: local
+
+  api-replica:
+    image: gameweare-java-api:local
+    depends_on:
+      mysql: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    environment:
+      API_PORT: 8080
+      MYSQL_URL: jdbc:mysql://mysql:3306/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gameweare}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: gameweare
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-gameweare}
+      REDIS_HOST: redis
+      OFFICIAL_LLM_BASE_URL: ${OFFICIAL_LLM_BASE_URL:-}
+      OFFICIAL_LLM_MODEL: ${OFFICIAL_LLM_MODEL:-}
+      OFFICIAL_LLM_API_KEY: ${OFFICIAL_LLM_API_KEY:-}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: gameweare-games
+      MINIO_PUBLIC_BASE_URL: http://localhost:9000/gameweare-games
+      WEB_ORIGIN: http://localhost:1314
+      AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:-local-dev-key-change-before-public-use-32}
+      LLM_ALLOW_PRIVATE_ENDPOINTS: "true"
+      AGENT_FILESYSTEM: local
+    ports: ["127.0.0.1:8081:8080"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 10

@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Play, Settings } from "lucide-react";
+import { ArrowLeft, ChevronRight, Clock3, GripVertical, Plus, Sparkles, Play, Settings } from "lucide-react";
 import { API_BASE_URL } from "../utils/constants";
 import { readApiError } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
@@ -21,6 +21,7 @@ import type {
   RecentGame,
   PendingImage,
   CreateRunEvent,
+  CreateTaskSummary,
 } from "../types";
 
 function isPlanPreview(value: unknown): value is PlanPreview {
@@ -28,13 +29,36 @@ function isPlanPreview(value: unknown): value is PlanPreview {
 }
 
 function isDecentralizedPreview(value: unknown): value is DecentralizedPreviewResponse {
-  return value !== null && typeof value === "object" && "experts" in value;
+  return value !== null && typeof value === "object" && "candidates" in value;
+}
+
+const ACTIVE_STATUSES = new Set(["pending", "generating"]);
+
+function taskStatus(status: string, publishStatus?: string | null) {
+  if (publishStatus === "published") return { label: "Published", tone: "complete" };
+  if (status === "completed") return { label: "Ready", tone: "complete" };
+  if (status === "planning" || status === "reviewing") return { label: "Needs review", tone: "review" };
+  if (status === "failed") return { label: "Failed", tone: "failed" };
+  if (status === "canceled" || status === "cancelled") return { label: "Canceled", tone: "muted" };
+  return { label: status === "pending" ? "Queued" : "Creating", tone: "active" };
+}
+
+function taskTitle(prompt: string) {
+  return prompt.trim().replace(/\s+/g, " ") || "Untitled game";
+}
+
+function taskTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Recently" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function Create() {
   const [message, setMessage] = React.useState("");
   const [status, setStatus] = React.useState("Checking Create configuration...");
   const [aiConfig, setAiConfig] = React.useState<AIConfigState | null>(null);
+  const [fundingMode, setFundingMode] = React.useState<"byok" | "voucher">("byok");
+  const [vouchers, setVouchers] = React.useState<{ id: string; status: string; expiresAt: string }[]>([]);
+  const [voucherId, setVoucherId] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("https://api.openai.com/v1");
   const [model, setModel] = React.useState("gpt-5.5");
   const [apiKey, setApiKey] = React.useState("");
@@ -44,8 +68,11 @@ function Create() {
   const [createType, setCreateType] = React.useState<"init" | "opt">("init");
   const [projectId, setProjectId] = React.useState("");
   const [projects, setProjects] = React.useState<CreateProject[]>([]);
-  const [modeOpen, setModeOpen] = React.useState(false);
   const [job, setJob] = React.useState<CreateJob | null>(null);
+  const [taskHistory, setTaskHistory] = React.useState<CreateTaskSummary[]>([]);
+  const [selectedJobId, setSelectedJobId] = React.useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = React.useState(282);
+  const [historyError, setHistoryError] = React.useState(false);
   const [runSteps, setRunSteps] = React.useState<CreateRunStep[]>([]);
   const [streaming, setStreaming] = React.useState(false);
   const [planPreview, setPlanPreview] = React.useState<PlanPreview | null>(null);
@@ -58,8 +85,14 @@ function Create() {
   const [busy, setBusy] = React.useState(false);
   const [pendingImages, setPendingImages] = React.useState<PendingImage[]>([]);
   const streamAbortRef = React.useRef<AbortController | null>(null);
+  const selectedJobRef = React.useRef<string | null>(null);
+  const composerRef = React.useRef<HTMLFormElement | null>(null);
+  const workspaceRef = React.useRef<HTMLDivElement | null>(null);
   const pendingImagesRef = React.useRef<PendingImage[]>([]);
   const { apiFetch, token } = useAuth();
+  const optimizableProjects = projects.filter((project) => Boolean(project.gameId) && project.status !== "archived");
+  const availableVouchers = vouchers.filter((voucher) => voucher.status === "available" && new Date(voucher.expiresAt).getTime() > Date.now());
+  const fundingReady = fundingMode === "voucher" ? Boolean(aiConfig?.officialConfigured && voucherId) : Boolean(aiConfig?.configured && !editingConfig);
 
   React.useEffect(() => {
     pendingImagesRef.current = pendingImages;
@@ -77,9 +110,22 @@ function Create() {
     if (projectsResponse.ok) {
       const projectPayload = (await projectsResponse.json()) as CreateProject[];
       setProjects(projectPayload);
-      if (!projectId && projectPayload.length > 0) setProjectId(projectPayload[0].projectId);
+      const firstReady = projectPayload.find((project) => project.gameId && project.status !== "archived");
+      setProjectId((current) => projectPayload.some((project) => project.projectId === current && project.gameId)
+        ? current : firstReady?.projectId ?? "");
     }
-  }, [apiFetch, projectId]);
+  }, [apiFetch]);
+
+  const loadTaskHistory = React.useCallback(async () => {
+    try {
+      const response = await apiFetch("/create/jobs");
+      if (!response.ok) throw new Error("Task history unavailable");
+      setTaskHistory((await response.json()) as CreateTaskSummary[]);
+      setHistoryError(false);
+    } catch {
+      setHistoryError(true);
+    }
+  }, [apiFetch]);
 
   const loadCreateState = React.useCallback(async () => {
     const configResponse = await apiFetch("/create/ai-config");
@@ -95,6 +141,12 @@ function Create() {
     if (recentResponse.ok) {
       setRecentGame((await recentResponse.json()) as RecentGame | null);
     }
+    const voucherResponse = await apiFetch("/vouchers/me");
+    if (voucherResponse.ok) {
+      const list = await voucherResponse.json() as { id: string; status: string; expiresAt: string }[];
+      setVouchers(list);
+      setVoucherId((current) => list.some((item) => item.id === current && item.status === "available") ? current : list.find((item) => item.status === "available" && new Date(item.expiresAt).getTime() > Date.now())?.id ?? "");
+    }
     await loadProjects();
   }, [apiFetch, loadProjects]);
 
@@ -103,8 +155,10 @@ function Create() {
   }, [loadCreateState]);
 
   React.useEffect(() => {
-    if (agentMode !== "chat") setAgentMode("chat");
-  }, [agentMode]);
+    void loadTaskHistory();
+    const timer = window.setInterval(() => void loadTaskHistory(), 10000);
+    return () => window.clearInterval(timer);
+  }, [loadTaskHistory]);
 
   async function loadProjectPreview(nextProjectId = projectId) {
     if (!nextProjectId) {
@@ -190,7 +244,8 @@ function Create() {
     }
   }
 
-  function mergeRunEvent(event: CreateRunEvent) {
+  function mergeRunEvent(event: CreateRunEvent, sourceJobId: string) {
+    if (selectedJobRef.current !== sourceJobId) return;
     if (event.type === "heartbeat" || !event.stepNo || !event.stage || !event.status) return;
     const preview = event.metrics ? event.metrics.planPreview : undefined;
     if (event.type === "plan_ready" && isPlanPreview(preview)) {
@@ -226,19 +281,25 @@ function Create() {
     } else if (event.type === "error") {
       setStatus(event.outputSummary || "Create generation failed.");
     } else if (event.type === "done") {
-      setStatus("Create generation completed.");
+      setStatus("A generation step completed. Checking task status...");
     } else if (event.outputSummary) {
       setStatus(event.outputSummary);
     }
   }
 
-  async function loadFinalJob(jobId: string) {
+  async function loadFinalJob(jobId: string): Promise<CreateJob | null> {
     const response = await apiFetch(`/create/jobs/${jobId}`);
     if (response.ok) {
       const payload = (await response.json()) as CreateJob;
-      setJob(payload);
-      await loadCreateState();
+      if (selectedJobRef.current === jobId) {
+        setJob(payload);
+        if (payload.status === "completed") setStatus("Game is ready for review or publishing.");
+        else if (payload.status === "failed") setStatus(payload.errorMessage || "Game generation failed.");
+      }
+      await Promise.all([loadTaskHistory(), loadProjects()]);
+      return payload;
     }
+    return null;
   }
 
   async function connectRunEvents(runId: string, jobId: string) {
@@ -252,7 +313,7 @@ function Create() {
         signal: controller.signal
       });
       if (!response.ok || !response.body) {
-        setStatus("Run event stream could not be opened. Use Run steps to refresh.");
+        if (selectedJobRef.current === jobId) setStatus("Run event stream could not be opened. Use Run steps to refresh.");
         return;
       }
       const reader = response.body.getReader();
@@ -275,10 +336,10 @@ function Create() {
             runId, stepNo: step.stepNo, stage: step.stage, status: step.status,
             outputSummary: step.outputSummary ?? null, createdAt: step.createdAt,
           };
-          mergeRunEvent(event);
+          mergeRunEvent(event, jobId);
           if (event.type === "done") {
-            await loadFinalJob(jobId);
-            return;
+            const latest = await loadFinalJob(jobId);
+            if (latest && !ACTIVE_STATUSES.has(latest.status)) return;
           }
           if (event.type === "error") {
             await loadFinalJob(jobId);
@@ -288,19 +349,122 @@ function Create() {
       }
       await loadFinalJob(jobId);
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && selectedJobRef.current === jobId) {
         setStatus(error instanceof Error ? error.message : "Run event stream interrupted.");
       }
     } finally {
-      setStreaming(false);
+      if (streamAbortRef.current === controller) setStreaming(false);
     }
+  }
+
+  function animateTaskIntoSidebar(from: DOMRect, taskId: string, prompt: string) {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = document.getElementById(`create-task-${taskId}`);
+      if (!target) return;
+      const to = target.getBoundingClientRect();
+      const ghost = document.createElement("div");
+      ghost.className = "create-task-flight";
+      ghost.textContent = taskTitle(prompt);
+      Object.assign(ghost.style, {
+        left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`,
+      });
+      document.body.appendChild(ghost);
+      const flight = ghost.animate([
+        { transform: "translate(0, 0) scale(1, 1)", opacity: 0.9, borderRadius: "20px" },
+        { transform: `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width}, ${to.height / from.height})`, opacity: 0.18, borderRadius: "13px" },
+      ], { duration: 650, easing: "cubic-bezier(.22,1,.36,1)" });
+      flight.onfinish = () => ghost.remove();
+      flight.oncancel = () => ghost.remove();
+    }));
+  }
+
+  function startNewTask(nextProjectId?: string) {
+    streamAbortRef.current?.abort();
+    selectedJobRef.current = null;
+    setSelectedJobId(null);
+    setJob(null);
+    setRunSteps([]);
+    setPlanPreview(null);
+    setDecentralizedPreview(null);
+    setStreaming(false);
+    setStatus("Describe a game idea to start a new task.");
+    if (nextProjectId) {
+      setCreateType("opt");
+      setProjectId(nextProjectId);
+      setAgentMode("refine");
+      setMessage("");
+    } else {
+      setCreateType("init");
+      setAgentMode("chat");
+      setMessage("");
+    }
+  }
+
+  function focusComposer() {
+    window.requestAnimationFrame(() => {
+      const textarea = composerRef.current?.querySelector("textarea");
+      textarea?.scrollIntoView({ behavior: "smooth", block: "center" });
+      textarea?.focus({ preventScroll: true });
+    });
+  }
+
+  async function openTask(taskId: string) {
+    if (selectedJobRef.current === taskId) return;
+    streamAbortRef.current?.abort();
+    selectedJobRef.current = taskId;
+    setSelectedJobId(taskId);
+    setJob(null);
+    setRunSteps([]);
+    setPlanPreview(null);
+    setDecentralizedPreview(null);
+    setStreaming(false);
+    setStatus("Loading task details...");
+    try {
+      const response = await apiFetch(`/create/jobs/${taskId}`);
+      if (!response.ok) throw new Error("Task details could not be loaded.");
+      const payload = (await response.json()) as CreateJob;
+      if (selectedJobRef.current !== taskId) return;
+      setJob(payload);
+      setStatus(payload.status === "completed" ? "Game is ready for review or publishing." : payload.status === "failed" ? payload.errorMessage || "Game generation failed." : `Task is ${taskStatus(payload.status).label.toLowerCase()}.`);
+      if (payload.runId) {
+        const stepsResponse = await apiFetch(`/create/runs/${payload.runId}/steps`);
+        if (stepsResponse.ok && selectedJobRef.current === taskId) setRunSteps((await stepsResponse.json()) as CreateRunStep[]);
+        if (payload.status === "planning") await loadPlanPreview(payload.runId);
+        if (payload.status === "reviewing") await loadDecentralizedPreviews(payload.runId);
+        if (ACTIVE_STATUSES.has(payload.status) && selectedJobRef.current === taskId) void connectRunEvents(payload.runId, payload.id);
+      }
+    } catch (error) {
+      if (selectedJobRef.current === taskId) setStatus(error instanceof Error ? error.message : "Task could not be loaded.");
+    }
+  }
+
+  function beginResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (window.innerWidth <= 800) return;
+    event.preventDefault();
+    const move = (next: PointerEvent) => {
+      const left = workspaceRef.current?.getBoundingClientRect().left ?? 0;
+      setSidebarWidth(Math.max(228, Math.min(420, next.clientX - left)));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      document.body.classList.remove("resizing-create-sidebar");
+    };
+    document.body.classList.add("resizing-create-sidebar");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
   }
 
   function addImages(files: FileList | null) {
     if (!files?.length) return;
-    const accepted = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    const accepted = Array.from(files).filter((file) => ["image/png", "image/jpeg", "image/webp"].includes(file.type));
     if (accepted.length === 0) {
-      setStatus("Only image files can be attached to Create.");
+      setStatus("Attach PNG, JPEG, or WebP images.");
+      return;
+    }
+    if (pendingImagesRef.current.length + accepted.length > 3) {
+      setStatus("At most three reference images are supported.");
       return;
     }
     setPendingImages((current) => [
@@ -354,6 +518,8 @@ function Create() {
 
   async function submitJob(event: React.FormEvent) {
     event.preventDefault();
+    const startingRect = composerRef.current?.getBoundingClientRect();
+    const submittedPrompt = message;
     setBusy(true);
     setLlmTest(null);
     setStatus("Starting Create run...");
@@ -366,9 +532,11 @@ function Create() {
       setBusy(false);
       return;
     }
-    const requestAgentMode: AgentMode = "chat";
-    const inputAssets: CreateInputAsset[] = [];
+    const requestAgentMode: AgentMode = agentMode;
+    let inputAssets: CreateInputAsset[] = [];
     setStatus("Starting Create run...");
+    try {
+    inputAssets = await uploadPendingImages();
     const response = await apiFetch("/create/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Idempotency-Key": crypto.randomUUID() },
@@ -378,7 +546,9 @@ function Create() {
         inputAssets,
         agentMode: requestAgentMode,
         createType,
-        projectId: createType === "opt" ? projectId : undefined
+        projectId: createType === "opt" ? projectId : undefined,
+        fundingMode,
+        voucherId: fundingMode === "voucher" ? voucherId : undefined
       })
     });
     if (!response.ok) {
@@ -393,16 +563,29 @@ function Create() {
       } else {
         setStatus(error.message);
       }
-      setBusy(false);
       return;
     }
     const payload = (await response.json()) as CreateJob;
+    selectedJobRef.current = payload.id;
+    setSelectedJobId(payload.id);
     setJob(payload);
+    setTaskHistory((current) => [{
+      id: payload.id, prompt: submittedPrompt, status: payload.status,
+      agentMode: payload.agentMode, createType: payload.createType,
+      projectId: payload.projectId, createdAt: payload.createdAt,
+    }, ...current.filter((item) => item.id !== payload.id)]);
     if (payload.projectId) setProjectId(payload.projectId);
-    setStatus(`Job ${payload.id} started. Streaming generation steps...`);
-    setBusy(false);
+    setStatus("Task started. Generation progress is updating below.");
+    if (startingRect) animateTaskIntoSidebar(startingRect, payload.id, submittedPrompt);
+    void loadTaskHistory();
     if (payload.runId) {
       void connectRunEvents(payload.runId, payload.id);
+    }
+    } catch (error) {
+      await cleanupUploadedImages(inputAssets);
+      setStatus(error instanceof Error ? error.message : "Could not start the task. Please try again.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -449,17 +632,10 @@ function Create() {
   function continueCurrentProject() {
     const nextProjectId = job?.projectId ?? projectId;
     if (!nextProjectId) return;
-    setCreateType("opt");
-    setAgentMode("chat");
-    setProjectId(nextProjectId);
-    setMessage("");
-    setJob(null);
-    setRunSteps([]);
-    setPlanPreview(null);
-    setDecentralizedPreview(null);
+    startNewTask(nextProjectId);
     setStatus("Continue optimize selected. Add the next request for this project.");
     void loadProjectPreview(nextProjectId);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    focusComposer();
   }
 
   async function loadPlanPreview(runId: string) {
@@ -575,11 +751,55 @@ function Create() {
 
   return (
     <main className="create-layout">
-      <section>
-        <p className="eyebrow">Create</p>
-        <h1>Describe a game idea</h1>
-        <p>Configure base_url, model, and api_key once. The backend stores and uses the saved configuration without sending it back to the browser.</p>
-      </section>
+      <header className="create-page-heading">
+        <div>
+          <p className="eyebrow">Game studio / Create</p>
+          <h1>Make something playable.</h1>
+          <p>Start an idea, then follow its progress from your task history.</p>
+        </div>
+        <span className="create-page-mark"><Sparkles size={17} /> CREATION SPACE</span>
+      </header>
+      <div className="create-workspace" ref={workspaceRef} style={{ "--task-sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
+        <aside className="create-sidebar" aria-label="Creation tasks">
+          <div className="create-sidebar-top">
+            <div><span className="create-overline">YOUR WORKSPACE</span><h2>Tasks <small>{taskHistory.length}</small></h2></div>
+            <button type="button" className="create-new-icon" onClick={() => startNewTask()} aria-label="New task"><Plus size={19} /></button>
+          </div>
+          <button type="button" className={`create-new-task ${selectedJobId === null ? "selected" : ""}`} onClick={() => startNewTask()}>
+            <span className="create-new-task-symbol"><Plus size={17} /></span><span>New creation<strong>Start with an idea</strong></span><ChevronRight size={15} />
+          </button>
+          <div className="create-sidebar-label"><span>RECENT TASKS</span><span>{taskHistory.length > 0 ? "Latest first" : ""}</span></div>
+          <div className="create-task-list">
+            {taskHistory.length === 0 && <p className="create-task-empty">{historyError ? "Task history is unavailable. Try refreshing the page." : "Your game ideas will appear here after you create them."}</p>}
+            {taskHistory.map((item) => {
+              const state = taskStatus(item.status);
+              return <button type="button" id={`create-task-${item.id}`} key={item.id} className={`create-task-item ${selectedJobId === item.id ? "selected" : ""}`} onClick={() => void openTask(item.id)} aria-current={selectedJobId === item.id ? "true" : undefined}>
+                <span className="create-task-item-top"><span className={`create-task-dot ${state.tone}`} /><span className={`create-task-state ${state.tone}`}>{state.label}</span><time>{taskTime(item.createdAt)}</time></span>
+                <strong>{taskTitle(item.prompt)}</strong>
+                <span className="create-task-item-foot">{item.createType === "opt" ? "Continue" : "New game"} <span>·</span> {item.agentMode || "chat"}</span>
+              </button>;
+            })}
+          </div>
+          <div className="create-sidebar-foot"><span className="create-sidebar-spark">✦</span> Every idea has a place to grow.</div>
+        </aside>
+        <div className="create-resize-handle" role="separator" aria-label="Resize task list" aria-orientation="vertical" aria-valuemin={228} aria-valuemax={420} aria-valuenow={sidebarWidth} tabIndex={0} onPointerDown={beginResize} onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") { event.preventDefault(); setSidebarWidth((width) => Math.max(228, width - 20)); }
+          if (event.key === "ArrowRight") { event.preventDefault(); setSidebarWidth((width) => Math.min(420, width + 20)); }
+        }}><GripVertical size={17} /></div>
+        <div className="create-detail">
+      {selectedJobId ? (
+        <section className="create-focus-card" aria-live="polite">
+          <div className="create-focus-top"><span className="create-overline">TASK WORKSPACE</span><button type="button" onClick={() => startNewTask()}><ArrowLeft size={15} /> New task</button></div>
+          <div className="create-focus-main">
+            <div className="create-focus-symbol"><Sparkles size={28} /></div>
+            <div className="create-focus-copy"><span>GAME CREATION</span><h2>{taskTitle(job?.prompt ?? taskHistory.find((item) => item.id === selectedJobId)?.prompt ?? "Loading task...")}</h2><p><Clock3 size={14} /> {taskTime(job?.createdAt ?? taskHistory.find((item) => item.id === selectedJobId)?.createdAt ?? "")}</p></div>
+            <span className={`create-focus-status ${taskStatus(job?.status ?? taskHistory.find((item) => item.id === selectedJobId)?.status ?? "pending", job?.publishStatus).tone}`}><span />{taskStatus(job?.status ?? taskHistory.find((item) => item.id === selectedJobId)?.status ?? "pending", job?.publishStatus).label}</span>
+          </div>
+          <div className="create-progress-track" aria-hidden="true"><span className="done" /><span className={runSteps.length > 0 ? "done" : ""} /><span className={job?.status === "completed" ? "done" : ""} /><span className={job?.publishStatus === "published" ? "done" : ""} /></div>
+          <div className="create-progress-labels"><span>Queued</span><span>Generating</span><span>Ready</span><span>Published</span></div>
+        </section>
+      ) : <div className="create-compose-heading"><span className="create-overline">NEW CREATION</span><h2>Describe your next game</h2><p>Give the studio a concept, mechanic, or mood to build from.</p></div>}
+      {!selectedJobId && <>
       {aiConfig && (!aiConfig.configured || editingConfig) && (
         <form className="prompt-panel" onSubmit={saveConfig}>
           <label>
@@ -656,14 +876,21 @@ function Create() {
           <Link to={recentGame.playUrl} className="secondary-action">Play recent</Link>
         </section>
       )}
-      <form className="prompt-panel" onSubmit={submitJob}>
+      <form className="prompt-panel" onSubmit={submitJob} ref={composerRef}>
+        <fieldset className="create-mode-picker"><legend>生成费用来源</legend><div className="create-mode-options">
+          <button type="button" className={fundingMode === "byok" ? "selected" : undefined} onClick={() => setFundingMode("byok")}>使用我的 API Key</button>
+          <button type="button" className={fundingMode === "voucher" ? "selected" : undefined} onClick={() => setFundingMode("voucher")}>使用官方生成券</button>
+        </div></fieldset>
+        {fundingMode === "voucher" && <label><span>选择生成券</span><select value={voucherId} onChange={(event) => setVoucherId(event.target.value)} disabled={!availableVouchers.length}>
+          {availableVouchers.length ? availableVouchers.map((voucher) => <option key={voucher.id} value={voucher.id}>有效期至 {new Date(voucher.expiresAt).toLocaleDateString()} · {voucher.id.slice(0, 8)}</option>) : <option value="">暂无可用券</option>}
+        </select><small>{aiConfig?.officialConfigured ? "一张券支付一次创建或优化任务。失败时自动返还。" : "官方模型暂未配置，请联系管理员。"} <Link to="/rewards">查看券包与活动</Link></small></label>}
         <div className="create-type-row">
           <button
             type="button"
             className={createType === "init" ? "selected" : undefined}
             onClick={() => {
               setCreateType("init");
-              setAgentMode("chat");
+              if (!INIT_AGENT_MODES.includes(agentMode as (typeof INIT_AGENT_MODES)[number])) setAgentMode("chat");
               setProjectPreview(null);
             }}
           >
@@ -674,10 +901,10 @@ function Create() {
             className={createType === "opt" ? "selected" : undefined}
             onClick={() => {
               setCreateType("opt");
-               setAgentMode("chat");
               if (projectId) void loadProjectPreview(projectId);
+              focusComposer();
             }}
-            disabled={projects.length === 0}
+            disabled={optimizableProjects.length === 0}
           >
             Continue optimize
           </button>
@@ -693,7 +920,7 @@ function Create() {
               }}
               required
             >
-              {projects.map((project) => (
+              {optimizableProjects.map((project) => (
                 <option key={project.projectId} value={project.projectId}>
                   {project.title} · {project.publishStatus ?? "no draft"}{project.currentVersionNo ? ` · v${project.currentVersionNo}` : ""} · {project.projectId}
                 </option>
@@ -727,7 +954,15 @@ function Create() {
             <small>This is a playable creator preview, including unpublished drafts. Click inside the frame before using keyboard controls.</small>
           </section>
         )}
-        <div className="mode-picker">Mode: chat</div>
+        <fieldset className="create-mode-picker">
+          <legend>Creation mode</legend>
+          <div className="create-mode-options">
+            {(createType === "opt" ? OPT_AGENT_MODES : INIT_AGENT_MODES).map((mode) => (
+              <button key={mode} type="button" className={agentMode === mode ? "selected" : undefined}
+                aria-pressed={agentMode === mode} onClick={() => setAgentMode(mode)}>{mode}</button>
+            ))}
+          </div>
+        </fieldset>
         <div className="multimodal-composer">
           {pendingImages.length > 0 && (
             <div className="image-preview-list">
@@ -746,15 +981,19 @@ function Create() {
             value={message}
             onChange={(event) => setMessage(event.target.value)}
             placeholder="A neon puzzle game where players connect constellations..."
-            disabled={!aiConfig?.configured || editingConfig || busy}
+            maxLength={4000}
+            required
+            disabled={!fundingReady || busy}
           />
+          <label className="create-image-attach">Reference images (up to 3)<input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => { addImages(event.target.files); event.target.value = ""; }} disabled={busy || streaming || pendingImages.length >= 3} /></label>
           <div className="composer-actions">
-            <button type="submit" disabled={!aiConfig?.configured || editingConfig || busy || streaming}>
+            <button type="submit" disabled={!message.trim() || !fundingReady || busy || streaming}>
               {streaming ? "Creating..." : "Create game"}
             </button>
           </div>
         </div>
       </form>
+      </>}
       <div className="status-panel">{status}</div>
       {job?.agentMode === "plan" && job.runId && !planPreview && (
         <section className="status-panel">
@@ -871,25 +1110,24 @@ function Create() {
       {job && (
         <section className="job-panel">
           <div className="result-panel">
-            <div>
-              <span>Generated game</span>
-              <strong>{job.gameSlug ?? job.id}</strong>
-              {job.projectId && <span>Project: {job.projectId}</span>}
-              {job.versionNo && <span>Version: v{job.versionNo}</span>}
-              {job.publishStatus && <span>Status: {job.publishStatus} · {job.visibility ?? "private"}</span>}
-              {job.runId && <span>Run: {job.runId}</span>}
-              {job.taskId && <span>Task: {job.taskId}</span>}
-              <span>Mode: {job.agentMode ?? agentMode}</span>
-              {streaming && <span>Streaming run events...</span>}
+          <div className="create-result-summary">
+              {job.status === "completed" && job.coverDataUrl && <img className="create-result-cover" src={job.coverDataUrl} alt={`Cover for ${taskTitle(job.prompt)}`} />}
+              <span>CREATION STATUS</span>
+              <strong>{job.publishStatus === "published" ? "Your game is live" : job.status === "completed" ? "Your game is ready" : job.status === "failed" ? "This attempt stopped" : job.status === "planning" || job.status === "reviewing" ? "Waiting for your review" : "Making your game"}</strong>
+              <p>{streaming ? "Live updates are coming in." : job.status === "completed" ? "Review the result or keep improving it." : job.status === "failed" ? "Check the run steps for details." : "We will keep this task in your list as it progresses."}</p>
+              <details className="create-technical-details">
+                <summary>Technical details</summary>
+                <span>Task: {job.id}</span>
+                {job.projectId && <span>Project: {job.projectId}</span>}
+                {job.runId && <span>Run: {job.runId}</span>}
+                {job.versionNo && <span>Version: v{job.versionNo}</span>}
+                <span>Mode: {job.agentMode ?? agentMode}</span>
+              </details>
             </div>
             <div className="result-actions">
               {job.runId && <button type="button" className="secondary-action" disabled={busy} onClick={loadRunSteps}>Run steps</button>}
-              {job.status === "completed" && job.publishStatus !== "published" && (
-                <>
-                  <button type="button" className="secondary-action" disabled={busy} onClick={continueCurrentProject}>Continue optimize</button>
-                  <button type="button" className="primary-action" disabled={busy} onClick={() => void publishDraft()}>Publish</button>
-                </>
-              )}
+              {job.status === "completed" && <button type="button" className="secondary-action" disabled={busy} onClick={continueCurrentProject}>Continue optimize</button>}
+              {job.status === "completed" && job.publishStatus === "draft" && <button type="button" className="primary-action" disabled={busy} onClick={() => void publishDraft()}>Publish</button>}
               {job.playUrl && job.publishStatus === "published" && <Link to={job.playUrl} className="primary-action"><Play size={18} />Play now</Link>}
             </div>
           </div>
@@ -904,21 +1142,22 @@ function Create() {
           {runSteps.length > 0 && (
             <div className="run-step-list">
               {runSteps.map((step) => {
-                const outputTokens = step.metrics.tokenUsage && typeof step.metrics.tokenUsage === "object"
-                  ? (step.metrics.tokenUsage as Record<string, unknown>).outputTokens
-                  : step.metrics.outputTokens;
+                const metrics = step.metrics ?? {};
+                const outputTokens = metrics.tokenUsage && typeof metrics.tokenUsage === "object"
+                  ? (metrics.tokenUsage as Record<string, unknown>).outputTokens
+                  : metrics.outputTokens;
                 return (
                   <div key={step.stepNo}>
                     <span>#{step.stepNo} {runStageLabel(step.stage)} · {step.status}</span>
                     {step.inputSummary && <p>{step.inputSummary}</p>}
                     {(step.stage === "llm_call" || step.stage === "cover_llm_call") && (
                       <small>
-                        prefix words {String(step.metrics.prefixEnglishWords ?? "-")} · 中文 {String(step.metrics.prefixChineseChars ?? "-")} · output tokens {String(outputTokens ?? "-")}
+                        prefix words {String(metrics.prefixEnglishWords ?? "-")} · 中文 {String(metrics.prefixChineseChars ?? "-")} · output tokens {String(outputTokens ?? "-")}
                       </small>
                     )}
                     {step.stage === "cover_uploaded" && (
                       <small>
-                        {String(step.metrics.contentType ?? "-")} · {String(step.metrics.sizeBytes ?? "-")} bytes · {String(step.metrics.objectKey ?? "-")}
+                        {String(metrics.contentType ?? "-")} · {String(metrics.sizeBytes ?? "-")} bytes · {String(metrics.objectKey ?? "-")}
                       </small>
                     )}
                   </div>
@@ -928,6 +1167,8 @@ function Create() {
           )}
         </section>
       )}
+        </div>
+      </div>
     </main>
   );
 }

@@ -27,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AuthService {
     private static final Pattern EMAIL = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
     private static final long SESSION_SECONDS = Duration.ofDays(7).toSeconds();
+    private static final long ABSOLUTE_SESSION_SECONDS = Duration.ofDays(30).toSeconds();
     private static final String DUMMY_HASH = new BCryptPasswordEncoder().encode("not-a-real-password");
 
     private final JdbcTemplate jdbc;
@@ -82,6 +83,7 @@ public class AuthService {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
         }
         jdbc.update("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?", row.id());
+        redis.delete("auth:login:attempts:" + hash(email));
         return issue(new UserProfile(row.id(), row.email(), row.displayName(), null, row.role(), Instant.now()));
     }
 
@@ -89,7 +91,7 @@ public class AuthService {
     public void logout(String token) {
         if (token != null && !token.isBlank()) {
             String tokenHash = hash(token);
-            redis.opsForValue().set("auth:revoked:" + tokenHash, "1", Duration.ofSeconds(SESSION_SECONDS));
+            redis.opsForValue().set("auth:revoked:" + tokenHash, "1", Duration.ofSeconds(ABSOLUTE_SESSION_SECONDS));
             redis.delete("auth:session:" + tokenHash);
             jdbc.update("UPDATE user_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE token_hash=? AND revoked_at IS NULL", tokenHash);
         }
@@ -103,24 +105,46 @@ public class AuthService {
         if (cached != null) {
             try {
                 String[] fields = cached.split(":", -1);
-                if (fields.length == 6) return new UserProfile(decode(fields[0]), decode(fields[1]),
-                        decode(fields[2]), decode(fields[3]), decode(fields[4]),
-                        fields[5].isEmpty() ? null : Instant.ofEpochMilli(Long.parseLong(fields[5])));
+                if (fields.length == 8) {
+                    UserProfile profile = new UserProfile(decode(fields[0]), decode(fields[1]),
+                            decode(fields[2]), decode(fields[3]), decode(fields[4]),
+                            fields[5].isEmpty() ? null : Instant.ofEpochMilli(Long.parseLong(fields[5])));
+                    Instant expiry = Instant.ofEpochMilli(Long.parseLong(fields[6]));
+                    if (expiry.isAfter(Instant.now().plus(Duration.ofDays(1)))) return profile;
+                    redis.delete("auth:session:" + tokenHash);
+                }
             } catch (RuntimeException corrupt) {
                 redis.delete("auth:session:" + tokenHash);
             }
         }
         var users = jdbc.query("""
-                SELECT u.id,u.email,u.display_name,u.avatar_url,u.role,u.last_login_at,s.expires_at
+                SELECT u.id,u.email,u.display_name,u.avatar_url,u.role,u.last_login_at,s.expires_at,s.created_at
                 FROM user_sessions s JOIN users u ON u.id=s.user_id
                 WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP
-                """, (rs, ignored) -> new SessionUser(user(rs), rs.getTimestamp("expires_at").toInstant()), tokenHash);
+                """, (rs, ignored) -> new SessionUser(user(rs), rs.getTimestamp("expires_at").toInstant(),
+                        rs.getTimestamp("created_at").toInstant()), tokenHash);
         if (users.isEmpty()) return null;
-        UserProfile profile = users.get(0).profile();
+        SessionUser session = users.get(0);
+        UserProfile profile = session.profile();
+        Instant expiresAt = session.expiresAt();
+        if (expiresAt.isBefore(Instant.now().plus(Duration.ofDays(1)))) {
+            Instant newExpiry = Instant.now().plusSeconds(SESSION_SECONDS);
+            Instant absolute = session.createdAt().plusSeconds(ABSOLUTE_SESSION_SECONDS);
+            if (newExpiry.isAfter(absolute)) newExpiry = absolute;
+            if (newExpiry.isAfter(expiresAt)) {
+                int updated = jdbc.update("""
+                        UPDATE user_sessions SET expires_at=? WHERE token_hash=? AND revoked_at IS NULL
+                          AND expires_at>UTC_TIMESTAMP(6) AND expires_at<?
+                        """, java.sql.Timestamp.from(newExpiry), tokenHash, java.sql.Timestamp.from(newExpiry));
+                if (updated > 0) expiresAt = newExpiry;
+            }
+        }
+        if (Boolean.TRUE.equals(redis.hasKey("auth:revoked:" + tokenHash))) return null;
         String value = String.join(":", encode(profile.id()), encode(profile.email()), encode(profile.displayName()),
                 encode(profile.avatarUrl()), encode(profile.role()),
-                profile.lastLoginAt() == null ? "" : Long.toString(profile.lastLoginAt().toEpochMilli()));
-        long cacheSeconds = Math.min(60, Duration.between(Instant.now(), users.get(0).expiresAt()).toSeconds());
+                profile.lastLoginAt() == null ? "" : Long.toString(profile.lastLoginAt().toEpochMilli()),
+                Long.toString(expiresAt.toEpochMilli()), Long.toString(session.createdAt().toEpochMilli()));
+        long cacheSeconds = Math.min(60, Duration.between(Instant.now(), expiresAt).toSeconds());
         if (cacheSeconds > 0) redis.opsForValue().set("auth:session:" + tokenHash, value, Duration.ofSeconds(cacheSeconds));
         return profile;
     }
@@ -177,7 +201,7 @@ public class AuthService {
     }
 
     private record LoginRow(String id, String email, String passwordHash, String displayName, String role) {}
-    private record SessionUser(UserProfile profile, Instant expiresAt) {}
+    private record SessionUser(UserProfile profile, Instant expiresAt, Instant createdAt) {}
 
     public record UserProfile(String id, String email, String displayName, String avatarUrl, String role,
                               Instant lastLoginAt) {}

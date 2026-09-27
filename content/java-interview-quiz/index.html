@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Java 面试词霸 · 词语识别挑战</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:14px}
+#app{width:100%;max-width:640px;background:linear-gradient(160deg,#161b22,#101720);border:1px solid #263140;border-radius:16px;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+h1{font-size:20px;letter-spacing:1px}
+h1 span{color:#f0883e}
+.sub{color:#8b98a5;font-size:12.5px;margin-top:6px;line-height:1.7}
+.hud{display:flex;gap:8px;margin:14px 0 10px;font-size:12.5px}
+.hud div{flex:1;background:#1c2430;border:1px solid #2b3646;border-radius:9px;padding:7px 6px;text-align:center;color:#8b98a5}
+.hud b{display:block;font-size:16px;color:#58a6ff;margin-top:3px}
+.bar{height:6px;background:#1c2430;border-radius:99px;overflow:hidden;margin-bottom:12px}
+.bar i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#3fb950,#f0883e,#f85149);transition:width .25s linear}
+#hist{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+#hist .chip{width:auto;margin:0;padding:5px 9px;font-size:12px;text-align:center;border-radius:8px;background:#1c2430;border:1px solid #303b4d;color:#8b98a5;transition:.16s;line-height:1.3}
+#hist .chip:hover{transform:none;border-color:#58a6ff;background:#202b3a;color:#e6edf3}
+#hist .chip.cur{border-color:#58a6ff;color:#e6edf3;box-shadow:0 0 0 2px rgba(88,166,255,.25)}
+#hist .chip.ok{background:#12261a;border-color:#3fb950;color:#7ee787}
+#hist .chip.no{background:#2a1618;border-color:#f85149;color:#ffa198}
+#hist .chip.cur.ok{box-shadow:0 0 0 2px rgba(63,185,80,.35)}
+#hist .chip.cur.no{box-shadow:0 0 0 2px rgba(248,81,73,.35)}
+.tag{display:inline-block;background:#1c2430;border:1px solid #303b4d;border-radius:6px;padding:3px 8px;font-size:11.5px;color:#8b98a5;margin-bottom:10px}
+#qt{font-size:16.5px;line-height:1.6;margin:4px 0 14px;font-weight:600}
+button{font-family:inherit;font-size:14.5px;color:#e6edf3;background:#1c2430;border:1px solid #303b4d;border-radius:11px;padding:13px 15px;width:100%;text-align:left;cursor:pointer;transition:.16s;margin-bottom:9px;line-height:1.45}
+button:hover:not(:disabled){border-color:#58a6ff;background:#202b3a;transform:translateX(3px)}
+button:disabled{cursor:default;opacity:.95}
+button.ok{border-color:#3fb950;background:#12261a;color:#7ee787}
+button.no{border-color:#f85149;background:#2a1618;color:#ffa198}
+#fb{display:none;background:#131c26;border-left:3px solid #58a6ff;border-radius:0 9px 9px 0;padding:11px 13px;font-size:13px;color:#b6c2cf;line-height:1.65;margin-top:6px}
+#next{margin-top:12px;text-align:center;background:#238636;border-color:#2ea043;font-weight:600}
+#next:hover{background:#2ea043;transform:none}
+.main{text-align:center;background:#1f6feb;border-color:#388bfd;font-weight:600;margin-top:8px}
+.main:hover{background:#388bfd;transform:none}
+.hrow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+.hint{font-size:11.5px;color:#6e7b8b}
+#reset{width:auto;margin:0;padding:7px 12px;font-size:12.5px;text-align:center;color:#8b98a5;border-radius:9px}
+#reset:hover{transform:none;color:#e6edf3;border-color:#f0883e}
+#end{text-align:center;display:none}
+.big{font-size:44px;font-weight:700;color:#f0883e;margin:8px 0}
+.rank{font-size:15px;color:#58a6ff;margin-bottom:12px}
+#game{display:none}
+</style>
+</head>
+<body>
+<div id="app">
+<h1>Java 面试词霸 · <span>词语识别挑战</span></h1>
+<div id="start">
+<p class="sub">从 Java SE 核心知识点题库中按 8 个方向抽取 <b>16 题</b>（每方向基础、进阶各 1 题）。<br>每题 22 秒，答对得分：基础 100 + 剩余时间 ×5 + 连击 ×20。<br>答错或超时连击清零。上方编号条可随时切回已答题目，重制按钮换一套新题。</p>
+<button class="main" id="go">开始挑战 ▶</button>
+</div>
+<div id="game">
+<div class="hud"><div>题目<b id="h1">1/10</b></div><div>得分<b id="h2">0</b></div><div>连击<b id="h3">0</b></div><div>答对<b id="h6">0</b></div></div>
+<div class="bar"><i id="h4"></i></div>
+<div id="hist"></div>
+<div class="tag" id="h5">Java SE</div>
+<div id="qt"></div>
+<div id="opts"></div>
+<div id="fb"></div>
+<button id="next" style="display:none">下一题 ▶</button>
+<div class="hrow"><span class="hint">← → 切换题目 · 1~4 选项 · Enter 下一题</span><button id="reset">↻ 重制本局</button></div>
+</div>
+<div id="end">
+<div class="big" id="e1">0</div>
+<div class="rank" id="e2"></div>
+<p class="sub" id="e3"></p>
+<button class="main" id="again">再来一局 ↻</button>
+</div>
+</div>
+<script>
+var POOL=[
+{q:"Integer 等包装类自动装箱时，通常缓存哪个数值范围？",o:["-128 ~ 127","0 ~ 255","-256 ~ 256","0 ~ 65535"],a:0,e:"Integer/Short/Byte/Long 缓存 -128~127，Character 缓存 0~127，Boolean 缓存两个实例。"},
+{q:"对 Java 参数传递，最准确的描述是？",o:["对象引用本身按值传递","Java 存在引用传递","基本类型按引用传递","传对象时会共享形参变量"],a:0,e:"形参是副本，能修改共同对象字段，但重新赋值不会改变调用方变量指向。"},
+{q:"下列哪一项能单独构成方法重载？",o:["参数列表不同","仅返回类型不同","仅访问权限不同","仅异常声明不同"],a:0,e:"重载要求方法名相同且参数列表不同，属于编译期绑定。"},
+{q:"Java 8 接口中不能包含下列哪项？",o:["普通实例字段","default 方法","静态方法","抽象方法"],a:0,e:"接口可含抽象/default/静态方法，但不能保存普通实例状态。"},
+{q:"final 修饰引用变量时，含义是？",o:["引用不能改指向，对象仍可变","引用和对象都不可变","对象自动成为不可变","只能修饰局部变量"],a:0,e:"final 只锁定引用指向，其指向对象的内容仍可能变化。"},
+{q:"只重写 equals 而不重写 hashCode 会怎样？",o:["逻辑相等对象落入不同桶，查找去重失效","编译直接报错","equals 永远返回 false","HashMap 立即退化为红黑树"],a:0,e:"equals 为 true 时 hashCode 必须相同，HashMap/HashSet 同时依赖两者。"},
+{q:"循环中拼接字符串变量，推荐使用？",o:["StringBuilder","直接用 + 号拼接","多线程共享 StringBuffer","频繁调用 concat"],a:0,e:"可避免产生大量中间 String 对象；StringBuffer 主要方法同步。"},
+{q:"ArrayList 无参构造后首次添加元素，通常扩容到？",o:["10","1","16","原容量的 0.75 倍"],a:0,e:"Java 8 首次添加扩到 10，此后一般扩为约 1.5 倍，已知规模可预设容量。"},
+{q:"HashMap 容量保持 2 的幂，主要好处是？",o:["让 (n-1)&hash 均匀利用哈希低位","减少对象头内存","避免链表树化","保证线程安全"],a:0,e:"用位运算代替取模，并要求低位分布均匀。"},
+{q:"HashMap 中允许的 null 情况是？",o:["1 个 null key 和多个 null value","多个 null key","完全不允许 null","只允许 null value"],a:0,e:"允许一个 null key 与多个 null value，但它不是线程安全容器。"},
+{q:"LinkedHashMap 设 accessOrder=true 并重写 removeEldestEntry 可实现？",o:["LRU 缓存","FIFO 队列","按 key 排序的映射","线程安全缓存"],a:0,e:"读取或更新会把节点移到链尾，淘汰最久未被访问的条目即 LRU。"},
+{q:"TreeMap 的查找、插入、删除复杂度是？",o:["O(log n)","O(1)","O(n)","摊销 O(1)"],a:0,e:"基于红黑树，按自然顺序或 Comparator 排序，TreeSet 基于 TreeMap。"},
+{q:"比较两个 int 大小时，推荐写法是？",o:["Integer.compare(a,b)","a - b","(int)Math.abs(a-b)","强转后 compareTo"],a:0,e:"a-b 可能整数溢出导致结果错误；比较器最好与 equals 一致。"},
+{q:"普通集合的 fail-fast 迭代器在遍历中检测到结构修改会抛出？",o:["ConcurrentModificationException","NullPointerException","ClassCastException","IllegalStateException"],a:0,e:"它用于尽早暴露不确定结果，不是线程安全保证。"},
+{q:"单线程遍历中删除元素，应使用？",o:["Iterator.remove()","集合的 remove(E)","增强 for 中直接删除","先 clear 再重建"],a:0,e:"并发场景应使用并发集合或锁，弱一致迭代可能看到中间状态。"},
+{q:"组合优于继承强调的是？",o:["继承必须符合真实的 is-a 关系","完全禁止使用继承","接口必须继承抽象类","子类不应复用父类代码"],a:0,e:"仅为复用少量代码而继承会把子类绑死在父类实现细节上。"}
+];
+POOL.forEach(function(q){q.topic='基础与集合';q.level='基础'});
+POOL=POOL.concat([{"topic":"基础与集合","level":"进阶","q":"JDK 8 HashMap 某桶冲突节点达到树化阈值，但数组容量只有 32，下一步通常是什么？","o":["优先扩容数组，容量至少 64 才考虑树化","立即转为红黑树","把所有桶改成 TreeMap","直接拒绝插入"],"a":0,"e":"达到树化阈值时若表容量小于 64，HashMap 会优先扩容，减少冲突；树化还受节点数等条件约束。"},{"topic":"基础与集合","level":"进阶","q":"多个线程共享一个映射，业务需要原子地按键创建值，哪种写法更合适？","o":["ConcurrentHashMap.computeIfAbsent，且映射函数避免递归更新同一映射","HashMap 的 containsKey 后再 put","给 HashMap 的 value 加 volatile","先调用 get，再在没有锁时调用 put"],"a":0,"e":"containsKey/get 与 put 的组合不是原子操作；ConcurrentHashMap 的按键计算方法可提供相应原子性。"},{"topic":"基础与集合","level":"进阶","q":"为什么 ConcurrentHashMap 不允许 null value？","o":["并发下 get 返回 null 无法可靠区分键不存在与值为 null","因为所有 Map 都不允许 null","因为 CAS 指令不能处理 null 引用","因为 null 的 hashCode 无法计算"],"a":0,"e":"并发修改可能发生在 get 与 containsKey 之间，因此允许 null value 会造成不可消除的歧义。"},{"topic":"基础与集合","level":"进阶","q":"频繁按索引读取、偶尔尾部追加的列表，通常应优先选择什么？","o":["ArrayList，并按预估规模设置初始容量","LinkedList，因为插入永远是 O(1)","TreeSet，因为有顺序","CopyOnWriteArrayList，无论读写比例如何"],"a":0,"e":"ArrayList 随机访问为 O(1)，尾部追加通常较快；LinkedList 的索引定位需要遍历。"},{"topic":"基础与集合","level":"进阶","q":"遍历 ArrayList 时需要删除当前元素，哪种方法能保持迭代器状态一致？","o":["使用同一个 Iterator 的 remove()","在增强 for 中调用 list.remove()","修改 modCount 让检查通过","先复制 expectedModCount 再删除"],"a":0,"e":"Iterator.remove() 会同步迭代器的预期修改次数；直接改集合可能触发 ConcurrentModificationException。"},{"topic":"基础与集合","level":"进阶","q":"实现固定容量 LRU 缓存，LinkedHashMap 应如何配置？","o":["accessOrder=true，并在 removeEldestEntry 判断容量","保持默认插入顺序，只覆写 hashCode","改用 TreeMap 按键排序","仅把 value 设置成 volatile"],"a":0,"e":"访问顺序使最近访问节点移到尾部，removeEldestEntry 可淘汰最久未访问的节点。"},{"topic":"基础与集合","level":"进阶","q":"Comparator 比较两个可能接近 int 边界的整数，哪种实现更稳妥？","o":["Integer.compare(a,b)","直接返回 a-b","返回 Math.abs(a-b)","只比较 hashCode"],"a":0,"e":"a-b 可能溢出并颠倒比较结果；Integer.compare 不依赖减法。"},{"topic":"基础与集合","level":"进阶","q":"方法只从 List 中读取 T 类型值，参数声明更适合哪种通配符？","o":["List<? extends T>","List<? super T>","List<Object>","原始类型 List"],"a":0,"e":"PECS：生产 T 值的集合使用 extends；super 更适合写入 T 的消费者。"},{"topic":"反射与代理","level":"基础","q":"想根据配置中的全限定类名在运行时加载类，常用哪个入口？","o":["Class.forName(className)","Object.getClass()，无需对象","SomeClass.class，可接受任意字符串","new Class(className)"],"a":0,"e":"Class.forName 可按字符串加载类，默认形式还会触发初始化；要处理 ClassNotFoundException。"},{"topic":"反射与代理","level":"基础","q":"要获取一个对象的运行时实际类型，应使用什么？","o":["object.getClass()","声明变量时写的父类名.class","object.toString()","Object.class"],"a":0,"e":"getClass() 返回对象运行时类型的 Class 对象；变量声明类型可能只是父类或接口。"},{"topic":"反射与代理","level":"基础","q":"Spring IoC 创建和装配 Bean 的常见方式包含哪项？","o":["读取定义后构造对象并注入依赖，必要时使用反射","必须在每个 Controller 中手动 new 依赖","把所有 Bean 变成静态字段","只通过 SQL 创建 Java 对象"],"a":0,"e":"容器根据配置或注解管理对象生命周期与依赖；反射是实现手段之一。"},{"topic":"反射与代理","level":"基础","q":"JDK 动态代理的代理对象主要基于什么生成？","o":["接口及 InvocationHandler","目标类的 final 方法","SQL 映射文件","对象序列化流"],"a":0,"e":"JDK Proxy 实现指定接口，把接口调用转交 InvocationHandler。"},{"topic":"反射与代理","level":"进阶","q":"反射中 getMethods() 与 getDeclaredMethods() 的关键区别是什么？","o":["前者返回可见的 public 方法含继承方法，后者返回本类声明的方法含非 public","前者只返回 private 方法","两者完全相同","后者会执行方法"],"a":0,"e":"Declared 系列关注当前类声明；普通 getMethods 关注 public API 和继承关系。"},{"topic":"反射与代理","level":"进阶","q":"CGLIB 通过生成子类增强方法，遇到 final 类或 final 方法会怎样？","o":["final 类不能按子类方式代理，final 方法无法被覆写增强","自动改用 JDK Proxy 代理全部方法","final 会在运行时失效","可直接修改已加载字节码"],"a":0,"e":"子类代理依赖继承与方法覆写，final 正好限制了这两件事。"},{"topic":"反射与代理","level":"进阶","q":"Spring AOP 中同一个 Bean 的方法直接调用自己的另一个带事务注解的方法，为什么事务可能不生效？","o":["内部调用没有经过代理对象","数据库不支持事务","反射不能调用私有方法","事务注解只支持静态方法"],"a":0,"e":"常见代理式 AOP 只拦截经过代理的调用；this.method() 通常绕开代理。"},{"topic":"反射与代理","level":"进阶","q":"MyBatis 将查询行映射到 Java 对象时，反射通常负责哪部分？","o":["按映射规则访问构造器、属性或 setter","替数据库执行 SQL 优化","代替 JDBC 维护事务隔离","把所有字段自动变成 public"],"a":0,"e":"反射帮助创建对象与设置属性；SQL 执行仍由 JDBC/驱动及数据库负责。"},{"topic":"异常与拷贝","level":"基础","q":"IOException 属于受检异常时，调用方必须如何处理？","o":["捕获它或继续在方法签名声明抛出","只能让 JVM 自动忽略","必须转成 Error","只能写在 finally 中"],"a":0,"e":"受检异常在编译期受检查，需要 catch 或 throws。"},{"topic":"异常与拷贝","level":"基础","q":"浅拷贝一个含可变 List 字段的对象后，修改副本 List 的内容会怎样？","o":["原对象通常也能看到修改，因为两者引用同一个 List","原对象永远不受影响","JVM 自动递归复制 List","编译器禁止修改"],"a":0,"e":"浅拷贝复制引用值，不复制被引用的可变对象。"},{"topic":"异常与拷贝","level":"基础","q":"throw 和 throws 分别用于哪里？","o":["throw 在方法体抛具体异常，throws 在声明中列可能抛出的异常","两者都只能写在 catch 中","throw 声明异常，throws 构造对象","两者没有区别"],"a":0,"e":"throw 是执行动作，throws 是方法契约声明。"},{"topic":"异常与拷贝","level":"基础","q":"浅拷贝后给副本的 String 字段赋新字符串，原对象字段为什么不变？","o":["重新赋值改变的是副本字段的引用，String 对象本身不可变","浅拷贝会自动深拷贝所有 String","String 是基本类型","原对象字段被 JVM 锁定"],"a":0,"e":"两个字段最初可指向同一个不可变 String；副本重新赋值后只是指向另一个对象。"},{"topic":"异常与拷贝","level":"进阶","q":"try 返回 1，finally 又返回 2，最终返回什么？","o":["2；finally 的 return 覆盖了先前结果","1；try 的 return 立即结束方法","抛出编译错误","由 JIT 随机决定"],"a":0,"e":"finally 中的 return 会覆盖 try/catch 的返回或异常，因此应避免这样写。"},{"topic":"异常与拷贝","level":"进阶","q":"try-with-resources 中业务代码和 close() 都抛异常，通常如何保留关闭异常？","o":["业务异常为主，关闭异常作为 suppressed exception","关闭异常永远取代业务异常","两个异常都被吞掉","只保留栈顶异常"],"a":0,"e":"可通过主异常的 getSuppressed() 查看资源关闭时的附加异常。"},{"topic":"异常与拷贝","level":"进阶","q":"把对象转 JSON 再转回对象作为深拷贝方案，哪种说法更准确？","o":["适用性取决于类型信息、循环引用、序列化规则等，不能无条件保证深拷贝","对任何对象图都能无损复制","比手写复制必然更快","会自动复制数据库连接和线程"],"a":0,"e":"JSON 对多态、循环引用、瞬态字段和资源对象有边界，工程中应按对象模型选择复制方案。"},{"topic":"异常与拷贝","level":"进阶","q":"服务层捕获底层异常后想保留根因并提供业务语义，推荐怎么做？","o":["抛出带错误码的新异常，并把原异常设为 cause","只返回 null，丢弃异常","把完整堆栈直接返回给前端","在 finally 里 return 成功"],"a":0,"e":"异常链保留排障根因；对外返回稳定、可控的业务错误信息。"},{"topic":"字符串与Java8","level":"基础","q":"Java 8 的 String 主要使用什么保存字符数据？","o":["char[]","byte[] 加 coder 标志","StringBuilder","直接存 UTF-8 文件指针"],"a":0,"e":"Java 8 String 主要基于 char[]；紧凑字符串的 byte[]+coder 从 Java 9 开始。"},{"topic":"字符串与Java8","level":"基础","q":"单线程循环拼接大量字符串，通常优先使用哪种类？","o":["StringBuilder","每轮创建新的 StringBuffer","不断执行 String 的 + 且忽略成本","ConcurrentHashMap"],"a":0,"e":"StringBuilder 可变且不做同步，适合单线程频繁拼接。"},{"topic":"字符串与Java8","level":"基础","q":"Stream 的 filter、map 等中间操作在什么时机执行？","o":["通常在终止操作触发时惰性执行","调用 filter 时立即遍历所有元素","在 JVM 启动时执行","必须显式 new Thread 后执行"],"a":0,"e":"Stream 管道通常由 collect、forEach、count 等终止操作驱动。"},{"topic":"字符串与Java8","level":"基础","q":"Java 8 的 LocalDateTime 与旧 Date 相比，哪项更符合设计特点？","o":["对象不可变，适合清晰表达日期时间值","内部可被任意调用者直接修改","必然自带时区","只能用于数据库"],"a":0,"e":"java.time 类型通常不可变；LocalDateTime 本身不携带时区。"},{"topic":"字符串与Java8","level":"进阶","q":"Optional.orElse(expensive()) 与 orElseGet(() -> expensive()) 的关键差异是什么？","o":["orElse 的参数先求值；orElseGet 仅在为空时调用供应者","两者都总是惰性调用","orElseGet 只能返回 null","orElse 只能处理异常"],"a":0,"e":"Java 方法参数会先求值，昂贵默认值通常用 orElseGet 延迟计算。"},{"topic":"字符串与Java8","level":"进阶","q":"同一个 Stream 已执行一次 collect()，想再执行 count()，结果通常是什么？","o":["抛 IllegalStateException，应创建新 Stream","安全重放原始流水线","自动缓存第一次结果","只在并行流上允许"],"a":0,"e":"Stream 不是可重用集合；终止操作后不能再次消费同一条流。"},{"topic":"字符串与Java8","level":"进阶","q":"Java Lambda 的运行时实现，哪项描述更准确？","o":["常借助 invokedynamic 与 LambdaMetafactory，而非简单等同匿名内部类","必须为每个调用创建一个 .java 文件","本质是反射 Method.invoke","只能在接口有两个抽象方法时使用"],"a":0,"e":"Lambda 面向函数式接口，JVM 通过调用点动态链接其实现。"},{"topic":"字符串与Java8","level":"进阶","q":"对 String 执行 intern()，返回值最准确的含义是什么？","o":["返回与该内容对应的字符串池引用","原地修改 String 的字符数组","强制创建两个新对象","把字符串写到磁盘缓存"],"a":0,"e":"intern() 让调用者取得池中同内容字符串的规范引用；具体对象创建数量取决于上下文。"},{"topic":"并发与JMM","level":"基础","q":"一个线程更新停止标志，另一个线程循环读取，单一标志通常可用什么保证可见性？","o":["volatile boolean","只给局部变量加 final","把线程优先级调高","增加 HashMap 容量"],"a":0,"e":"volatile 在读写之间建立可见性与相应的 happens-before 关系。"},{"topic":"并发与JMM","level":"基础","q":"volatile int count 的 count++ 为什么仍可能丢失更新？","o":["读、加、写是复合操作，volatile 不保证整体原子性","volatile 只对 boolean 生效","JIT 会忽略所有 volatile","int 的值不能被多个线程看到"],"a":0,"e":"需要原子类、锁或其他原子更新方案来保护复合操作。"},{"topic":"并发与JMM","level":"基础","q":"CAS 发现共享值与预期值不一致时，会发生什么？","o":["本次比较交换失败，调用者可决定重试","自动阻塞线程直到值相同","无条件覆盖共享值","把预期值写入所有线程缓存"],"a":0,"e":"CAS 是条件更新；失败时不会把新值写入目标位置。"},{"topic":"并发与JMM","level":"基础","q":"线程池复用线程时使用 ThreadLocal 保存请求上下文，最重要的清理动作是什么？","o":["在 finally 中调用 remove()","只把 ThreadLocal 变量设为 null","仅依赖 GC 自动清理 value","让每个线程永不结束"],"a":0,"e":"复用线程可能把上一个请求的数据带到下一个请求；finally 清理更可靠。"},{"topic":"并发与JMM","level":"进阶","q":"线程 A 在 synchronized 块中写字段并退出，线程 B 随后进入同一把锁读取，依据哪条规则可见？","o":["同一监视器的 unlock happens-before 后续 lock","只依据 CPU 时钟顺序","因为字段默认都是 volatile","因为 HashMap 保证顺序"],"a":0,"e":"同一把锁的释放与后续获取建立 happens-before。"},{"topic":"并发与JMM","level":"进阶","q":"双重检查锁定单例中的 instance 为什么通常需要 volatile？","o":["避免发布未完成初始化的对象，并保证可见性","让构造器变成原子方法","让对象永远留在新生代","消除所有同步成本"],"a":0,"e":"volatile 限制相关重排序并建立可见性；同步块仍负责互斥初始化。"},{"topic":"并发与JMM","level":"进阶","q":"线程池中用 InheritableThreadLocal 传递每个请求的数据，为什么可能拿到旧值？","o":["继承发生在线程创建时，复用的工作线程不会按任务重新继承","它总会在每个任务前深拷贝","线程池强制清空所有 ThreadLocal","它只能传 int"],"a":0,"e":"线程池复用打破了“每个任务创建一个新子线程”的前提，需要显式上下文传播和清理。"},{"topic":"并发与JMM","level":"进阶","q":"高并发计数主要做累加，LongAdder 相比单个 AtomicLong 的典型取舍是什么？","o":["分散竞争提升吞吐，但 sum() 不保证与并发更新构成原子快照","每次 sum() 都获得全局排他锁","只支持单线程","自动解决持久化一致性"],"a":0,"e":"LongAdder 适合高竞争统计，不适合作为要求线性化精确读取的唯一账本。"},{"topic":"线程池","level":"基础","q":"ThreadPoolExecutor 提交任务时，核心线程已满而队列未满，通常先做什么？","o":["将任务放入工作队列","立即创建到 maximumPoolSize","立即执行拒绝策略","删除一个正在运行的任务"],"a":0,"e":"典型顺序是先补核心线程，再入队；队列放不下时才尝试扩到最大线程数。"},{"topic":"线程池","level":"基础","q":"线程池队列已满且线程数已达上限，默认 AbortPolicy 会怎样？","o":["抛出 RejectedExecutionException","由提交线程执行","静默丢弃","无限阻塞直到有空位"],"a":0,"e":"默认拒绝策略显式报错，便于调用方处理容量不足。"},{"topic":"线程池","level":"基础","q":"shutdown() 与 shutdownNow() 的核心差异是什么？","o":["前者等待已提交任务执行，后者尝试中断运行任务并返回未执行任务","两者都会立即杀死所有线程","前者接受新任务","后者保证已运行任务一定停止"],"a":0,"e":"shutdownNow 依赖任务响应中断，不能保证强制停止正在运行的任务。"},{"topic":"线程池","level":"基础","q":"为何生产环境常显式配置有界队列？","o":["限制积压任务占用的内存，并让系统有明确过载行为","让所有任务同时运行","保证不发生任何拒绝","使线程池无需监控"],"a":0,"e":"有界队列把容量和拒绝策略显式化，避免无限积压。"},{"topic":"线程池","level":"进阶","q":"核心线程 4、最大线程 20，却使用近似无界 LinkedBlockingQueue，高负载时最大线程数为何常不起作用？","o":["队列很难满，任务优先排队，通常不会扩到 20","线程池忽略 corePoolSize","因为 LinkedBlockingQueue 只能存 4 个元素","因为 keepAliveTime 为 0"],"a":0,"e":"扩容到非核心线程发生在入队失败之后；近似无界队列使该条件难以触发。"},{"topic":"线程池","level":"进阶","q":"CallerRunsPolicy 在池仍运行且发生拒绝时，有何背压效果？","o":["提交任务的线程自己执行任务，提交速度随之下降","新增一个无限寿命线程","把任务写入磁盘队列","保证调用线程完全不受影响"],"a":0,"e":"调用者承担执行成本，能抑制生产速度；线程池关闭后该策略不会替你执行任务。"},{"topic":"线程池","level":"进阶","q":"通过 submit() 提交的任务抛异常，调用方通常如何获取异常？","o":["调用 Future.get() 时得到 ExecutionException，需检查 cause","异常必然直接从 submit() 同步抛出","异常永远丢失","只会由 UncaughtExceptionHandler 接收"],"a":0,"e":"submit 把任务结果与异常封装在 Future 中；忽略 Future 可能漏掉失败。"},{"topic":"线程池","level":"进阶","q":"CPU 密集型与 IO 密集型任务混用同一线程池时，最稳妥的调参依据是什么？","o":["分池或隔离后结合阻塞比例、队列、延迟与压测调整","固定设为 CPU 核数乘 100","只看最大线程数，不看队列","永远使用 Executors.newCachedThreadPool()"],"a":0,"e":"经验公式只是起点；资源隔离和实际负载数据比固定倍数更可靠。"},{"topic":"锁与AQS","level":"基础","q":"ReentrantLock 的“可重入”主要意味着什么？","o":["同一线程持有锁时可再次获取，并需匹配次数释放","任意其他线程可直接重入","锁会自动升级为读写锁","lock() 永远不阻塞"],"a":0,"e":"同一持有线程再次获取时增加持有计数；unlock 次数要与 lock 对应。"},{"topic":"锁与AQS","level":"基础","q":"AQS 的 state 在 ReentrantLock 中通常表示什么？","o":["锁的持有与重入计数","线程池队列长度","JVM 的 GC 年龄","数据库事务编号"],"a":0,"e":"AQS 用 state 表示同步状态；不同同步器会赋予它不同含义。"},{"topic":"锁与AQS","level":"基础","q":"使用 ReentrantLock 时，最稳妥的释放结构是什么？","o":["成功 lock 后用 try/finally 在 finally 中 unlock","只在业务成功时 unlock","依赖垃圾回收自动释放","在另一个线程中 unlock"],"a":0,"e":"Lock 不会像 synchronized 块那样自动释放；异常路径也必须解锁。"},{"topic":"锁与AQS","level":"基础","q":"Semaphore(3) 的共享模式，主要约束是什么？","o":["同一时刻最多 3 个许可被持有","只能创建 3 个 Java 对象","线程池最多 3 个核心线程","所有任务必须串行"],"a":0,"e":"信号量用许可数限制同时访问某资源的任务数。"},{"topic":"锁与AQS","level":"进阶","q":"需要等待锁但允许响应中断，ReentrantLock 应选择哪个方法？","o":["lockInterruptibly()","synchronized 关键字","Thread.stop()","只调用 isLocked()"],"a":0,"e":"lockInterruptibly 在等待锁期间可被中断；synchronized 监视器进入通常不可中断。"},{"topic":"锁与AQS","level":"进阶","q":"Condition.await() 被调用时，当前线程对关联锁会怎样？","o":["释放锁并等待；被唤醒后重新获取锁才能继续","始终持有锁等待","自动终止线程","永久修改 AQS 的公平性"],"a":0,"e":"await 把等待线程放入条件队列并释放关联锁，恢复执行前要重新取得锁。"},{"topic":"锁与AQS","level":"进阶","q":"公平 ReentrantLock 与非公平锁的典型差异是什么？","o":["公平锁倾向检查排队前驱，非公平锁允许新线程抢占机会","公平锁保证每个线程严格相同 CPU 时间","非公平锁无法重入","公平锁不使用 AQS"],"a":0,"e":"公平性约束的是获取顺序倾向，伴随额外调度成本；不等于绝对实时顺序。"},{"topic":"锁与AQS","level":"进阶","q":"使用 wait/notify 实现生产消费时，等待条件为什么通常写在 while 中？","o":["唤醒后必须重新检查条件，防止虚假唤醒或条件已被别的线程改变","while 会自动释放所有锁","if 在 Java 中不能编译","notify 会永久改变条件"],"a":0,"e":"线程恢复运行时条件可能不再成立，应在同一监视器下循环检查。"},{"topic":"JVM与IO","level":"基础","q":"Java 8 中类元数据主要存放在哪一类区域？","o":["本地内存中的元空间","每个对象的实例字段","程序计数器","线程局部变量表"],"a":0,"e":"HotSpot Java 8 用 Metaspace 实现方法区的一部分，元数据使用本地内存。"},{"topic":"JVM与IO","level":"基础","q":"对象可达性分析从什么集合出发？","o":["GC Roots","所有 StringBuilder","仅新生代 Eden","所有文件句柄"],"a":0,"e":"从 GC Roots 沿引用链搜索；不可达对象才可能成为回收对象。"},{"topic":"JVM与IO","level":"基础","q":"BIO 与基于 Selector 的 NIO 在大量连接场景下的主要差异是什么？","o":["NIO 可用少量线程管理多个连接，BIO 常见一连接一阻塞线程","BIO 永远比 NIO 吞吐高","NIO 只能读取文件","Selector 会自动执行 SQL"],"a":0,"e":"IO 多路复用使一个线程可轮询多个通道的就绪事件。"},{"topic":"JVM与IO","level":"基础","q":"递归无终止条件导致调用栈不断增长，最典型的错误是什么？","o":["StackOverflowError","ClassNotFoundException","ConcurrentModificationException","IllegalArgumentException"],"a":0,"e":"每次方法调用需要栈帧，超过线程栈允许深度会发生 StackOverflowError。"},{"topic":"JVM与IO","level":"进阶","q":"HotSpot 普通对象头里的 Mark Word 可能包含哪类信息？","o":["锁状态、哈希码及分代年龄等运行时数据","所有业务字段的完整副本","方法字节码","数据库主键索引"],"a":0,"e":"Mark Word 保存随对象状态变化的运行时元数据；类型指针是对象头的另一部分。"},{"topic":"JVM与IO","level":"进阶","q":"ByteBuffer 写入数据后准备让 Channel 读取，通常应先调用什么？","o":["flip()，切换 limit 与 position 以进入读取状态","clear()，立即抹去数据","compact()，把所有数据写入磁盘","rewind()，并把 limit 设为 capacity"],"a":0,"e":"flip 把当前 position 设为 limit，再把 position 归零；读取范围正好是刚写入的数据。"},{"topic":"JVM与IO","level":"进阶","q":"类加载器的双亲委派通常先做什么？","o":["把加载请求交给父加载器尝试，父加载失败后自己再找","直接覆盖 JDK 核心类","始终由子加载器优先加载","只适用于数据库驱动"],"a":0,"e":"父优先有助于核心类一致性与类加载稳定性，特殊容器可设计不同策略。"},{"topic":"JVM与IO","level":"进阶","q":"G1 相比传统连续分代收集器的一个关键组织方式是什么？","o":["把堆划分为多个 Region，并按回收收益选择集合","完全取消 GC Roots","所有对象都直接进入老年代","每次只能回收一个线程栈"],"a":0,"e":"G1 使用 Region 组织堆，仍保留年轻代/老年代概念，并在停顿目标下选择回收集合。"}]);
+var TOPICS=["基础与集合","反射与代理","异常与拷贝","字符串与Java8","并发与JMM","线程池","锁与AQS","JVM与IO"];
+var LIMIT=22,ROUND=16;
+var deck=[],idx=0,score=0,streak=0,right=0,tid=null,left=0,locked=false;
+function $(i){return document.getElementById(i)}
+function shuffle(a){for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1)),t=a[i];a[i]=a[j];a[j]=t}return a}
+function build(q){
+  var ps=q.o.map(function(t,i){return{t:t,c:i===q.a}});
+  shuffle(ps);
+  var k=0;for(var i=0;i<ps.length;i++){if(ps[i].c)k=i}
+  return{q:q.q,o:ps.map(function(p){return p.t}),a:k,e:q.e,topic:q.topic,level:q.level,done:false,pick:null,gain:0,st:0,left:LIMIT};
+}
+function selectQuestions(){
+  var chosen=[];
+  TOPICS.forEach(function(topic){
+    ['基础','进阶'].forEach(function(level){
+      var candidates=POOL.filter(function(q){return q.topic===topic&&q.level===level});
+      chosen.push(shuffle(candidates)[0]);
+    });
+  });
+  return shuffle(chosen).map(build);
+}
+function start(){
+  deck=selectQuestions();
+  idx=0;score=0;streak=0;right=0;locked=false;
+  $("start").style.display="none";$("end").style.display="none";$("game").style.display="block";
+  render();
+}
+function fbHTML(d){
+  if(d.pick===d.a)return "<b style='color:#7ee787'>✔ 正确 +"+d.gain+"</b>（连击 ×"+d.st+"）<br>"+d.e;
+  return "<b style='color:#ffa198'>"+(d.pick<0?"⏱ 超时":"✘ 答错")+"</b><br>"+d.e;
+}
+function renderHist(){
+  var h=$("hist");h.innerHTML="";
+  deck.forEach(function(d,i){
+    var b=document.createElement("button");
+    b.className="chip"+(i===idx?" cur":"")+(d.done?(d.pick===d.a?" ok":" no"):"");
+    b.textContent=(i+1)+(d.done?(d.pick===d.a?" ✓":" ✗"):"");
+    b.title=(d.done?"已作答 · ":"未作答 · ")+d.q;
+    b.onclick=function(){idx=i;render()};
+    h.appendChild(b);
+  });
+}
+function render(){
+  clearInterval(tid);
+  var q=deck[idx];
+  locked=q.done;
+  $("h1").textContent=(idx+1)+"/"+ROUND;
+  $("h2").textContent=score;
+  $("h3").textContent=streak;
+  $("h6").textContent=right;
+  $("h5").textContent=q.done?"已作答 · 点编号可切回":q.topic+" · "+q.level;
+  $("qt").textContent=q.q;
+  var box=$("opts");box.innerHTML="";
+  q.o.forEach(function(t,i){
+    var b=document.createElement("button");
+    b.textContent=String.fromCharCode(65+i)+". "+t;
+    if(q.done){
+      b.disabled=true;
+      if(i===q.a)b.className="ok";
+      if(i===q.pick&&q.pick!==q.a)b.className="no";
+    }else{
+      b.onclick=function(){answer(i)};
+    }
+    box.appendChild(b);
+  });
+  if(q.done){
+    left=q.left;
+    $("h4").style.width=Math.max(0,left/LIMIT*100)+"%";
+    $("fb").innerHTML=fbHTML(q);
+    $("fb").style.display="block";
+    $("next").style.display="block";
+    $("next").textContent=(idx===ROUND-1)?"查看成绩 ▶":"下一题 ▶";
+  }else{
+    $("fb").innerHTML="";$("fb").style.display="none";
+    $("next").style.display="none";
+    left=q.left;
+    $("h4").style.width=Math.max(0,left/LIMIT*100)+"%";
+    tid=setInterval(tick,100);
+  }
+  renderHist();
+}
+function tick(){
+  left-=0.1;
+  deck[idx].left=Math.max(0,left);
+  $("h4").style.width=Math.max(0,left/LIMIT*100)+"%";
+  if(left<=0){clearInterval(tid);answer(-1)}
+}
+function answer(pick){
+  if(locked)return;
+  locked=true;clearInterval(tid);
+  var q=deck[idx],btns=$("opts").children,i;
+  for(i=0;i<btns.length;i++)btns[i].disabled=true;
+  btns[q.a].className="ok";
+  q.done=true;q.pick=pick;q.left=Math.max(0,left);
+  if(pick===q.a){
+    q.gain=100+Math.round(q.left*5)+streak*20;
+    score+=q.gain;streak++;right++;q.st=streak;
+  }else{
+    if(pick>=0)btns[pick].className="no";
+    q.gain=0;q.st=0;streak=0;
+  }
+  $("h2").textContent=score;$("h3").textContent=streak;$("h6").textContent=right;
+  $("h5").textContent="已作答 · 点编号可切回";
+  $("fb").innerHTML=fbHTML(q);
+  $("fb").style.display="block";
+  $("next").style.display="block";
+  $("next").textContent=(idx===ROUND-1)?"查看成绩 ▶":"下一题 ▶";
+  renderHist();
+}
+function forward(){
+  if(idx<ROUND-1){idx++;render()}
+  else finish();
+}
+$("next").onclick=forward;
+function finish(){
+  clearInterval(tid);
+  $("game").style.display="none";$("end").style.display="block";
+  var answered=0,mist=0;
+  deck.forEach(function(d){if(d.done){answered++;if(d.pick!==d.a)mist++}});
+  var acc=Math.round(right/ROUND*100);
+  $("e1").textContent=score;
+  var r=acc>=90?"🏆 面试官沉默：Java 词霸":acc>=70?"🥇 基础扎实，边界再抠细":acc>=50?"🥈 有印象，但细节会翻车":"🥉 基础还需巩固";
+  $("e2").textContent=r+" · 正确率 "+acc+"%";
+  var weak=[];deck.forEach(function(d){if(!d.done||d.pick!==d.a){if(weak.indexOf(d.topic)<0)weak.push(d.topic)}});
+  $("e3").innerHTML="本轮答对 <b>"+right+"</b>/"+ROUND+" 题，错/超时 <b>"+mist+"</b> 题，未作答 <b>"+(ROUND-answered)+
+  "</b> 题。<br>重点复习："+(weak.length?weak.join("、"):"无，继续挑战进阶题")+"。";
+  $("e3").innerHTML+="<br>分方向："+TOPICS.map(function(topic){var items=deck.filter(function(d){return d.topic===topic});var correct=items.filter(function(d){return d.done&&d.pick===d.a}).length;return topic+" "+correct+"/2";}).join(" · ");
+}
+$("go").onclick=start;
+$("again").onclick=start;
+$("reset").onclick=function(){
+  if(confirm("重制本局？将重新抽题并清空得分与记录。")){start()}
+};
+document.addEventListener("keydown",function(e){
+  if($("game").style.display!=="block")return;
+  if(e.key>="1"&&e.key<="4"){var b=$("opts").children[+e.key-1];if(b&&!b.disabled)b.click()}
+  if(e.key==="Enter"&&$("next").style.display==="block")$("next").click();
+  if(e.key==="ArrowRight")forward();
+  if(e.key==="ArrowLeft"&&idx>0){idx--;render()}
+});
+</script>
+</body>
+</html>

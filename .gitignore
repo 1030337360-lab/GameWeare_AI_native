@@ -44,5 +44,7 @@ Thumbs.db
 tmp/
 temp/
 .tmp/
+.runtime/
+.agentscope-source/
 *.tmp
 *.swp

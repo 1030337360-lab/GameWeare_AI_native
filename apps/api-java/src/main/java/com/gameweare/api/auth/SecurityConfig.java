@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -18,12 +19,24 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @Configuration
 public class SecurityConfig {
     @Bean
+    @Order(1)
+    SecurityFilterChain playableDocumentChain(HttpSecurity http) throws Exception {
+        http.securityMatcher("/play/*/document")
+                .csrf(csrf -> csrf.disable())
+                .headers(headers -> headers.frameOptions(frame -> frame.disable()))
+                .authorizeHttpRequests(a -> a.anyRequest().permitAll());
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     SecurityFilterChain securityFilterChain(HttpSecurity http, AuthFilter authFilter) throws Exception {
         http.csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(a -> a
                         .requestMatchers(HttpMethod.POST, "/auth/register", "/auth/login", "/auth/logout", "/events/play", "/play/events").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/internal/agent-model/*/v1/chat/completions").permitAll()
                         .requestMatchers(HttpMethod.GET, "/auth/session", "/games", "/games/**", "/play/**", "/actuator/health", "/health").permitAll()
                         .requestMatchers(HttpMethod.GET, "/auth/google/start", "/auth/google/callback").permitAll()
                 .requestMatchers("/maintenance/**").hasAnyRole("ADMIN", "MAINTAINER")

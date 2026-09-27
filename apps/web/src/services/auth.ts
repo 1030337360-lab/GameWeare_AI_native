@@ -3,6 +3,14 @@
 import { API_BASE_URL } from "../utils/constants";
 import type { AuthResponse, SessionState, UserProfile } from "../types";
 
+async function authError(response: Response, fallback: string): Promise<Error> {
+  const body = await response.json().catch(() => null);
+  const message = body && typeof body.message === "string" && body.message.trim()
+    ? body.message
+    : fallback;
+  return new Error(message);
+}
+
 export async function login(email: string, password: string): Promise<AuthResponse> {
   const response = await fetch(`${API_BASE_URL}/auth/login`, {
     method: "POST",
@@ -10,8 +18,7 @@ export async function login(email: string, password: string): Promise<AuthRespon
     body: JSON.stringify({ email, password }),
   });
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Login failed");
+    throw await authError(response, response.status === 401 ? "Invalid email or password" : "Login failed");
   }
   return (await response.json()) as AuthResponse;
 }
@@ -27,8 +34,7 @@ export async function register(
     body: JSON.stringify({ email, password, displayName }),
   });
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Registration failed");
+    throw await authError(response, response.status === 409 ? "Email already registered" : "Registration failed");
   }
   return (await response.json()) as AuthResponse;
 }

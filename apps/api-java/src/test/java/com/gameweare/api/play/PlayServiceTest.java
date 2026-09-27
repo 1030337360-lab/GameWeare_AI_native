@@ -27,7 +27,7 @@ import static org.mockito.Mockito.when;
 /** Play events: 30-minute dedupe windows keep the plays counter race-free. */
 class PlayServiceTest {
     private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
-    private final PlayService service = new PlayService(jdbc, mock(MinioClient.class), "bucket");
+    private final PlayService service = new PlayService(jdbc, mock(MinioClient.class), "bucket", "http://localhost:1314");
 
     private PlayController.PlayEvent event(String type, String anonymousId) {
         return new PlayController.PlayEvent("game-slug", type, anonymousId, Instant.now(), null, null, Map.of());

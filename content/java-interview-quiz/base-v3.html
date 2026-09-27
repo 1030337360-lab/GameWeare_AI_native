@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Java 面试词霸 · 词语识别挑战</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:14px}
+#app{width:100%;max-width:640px;background:linear-gradient(160deg,#161b22,#101720);border:1px solid #263140;border-radius:16px;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+h1{font-size:20px;letter-spacing:1px}
+h1 span{color:#f0883e}
+.sub{color:#8b98a5;font-size:12.5px;margin-top:6px;line-height:1.7}
+.hud{display:flex;gap:8px;margin:14px 0 10px;font-size:12.5px}
+.hud div{flex:1;background:#1c2430;border:1px solid #2b3646;border-radius:9px;padding:7px 6px;text-align:center;color:#8b98a5}
+.hud b{display:block;font-size:16px;color:#58a6ff;margin-top:3px}
+.bar{height:6px;background:#1c2430;border-radius:99px;overflow:hidden;margin-bottom:12px}
+.bar i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#3fb950,#f0883e,#f85149);transition:width .25s linear}
+#hist{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+#hist .chip{width:auto;margin:0;padding:5px 9px;font-size:12px;text-align:center;border-radius:8px;background:#1c2430;border:1px solid #303b4d;color:#8b98a5;transition:.16s;line-height:1.3}
+#hist .chip:hover{transform:none;border-color:#58a6ff;background:#202b3a;color:#e6edf3}
+#hist .chip.cur{border-color:#58a6ff;color:#e6edf3;box-shadow:0 0 0 2px rgba(88,166,255,.25)}
+#hist .chip.ok{background:#12261a;border-color:#3fb950;color:#7ee787}
+#hist .chip.no{background:#2a1618;border-color:#f85149;color:#ffa198}
+#hist .chip.cur.ok{box-shadow:0 0 0 2px rgba(63,185,80,.35)}
+#hist .chip.cur.no{box-shadow:0 0 0 2px rgba(248,81,73,.35)}
+.tag{display:inline-block;background:#1c2430;border:1px solid #303b4d;border-radius:6px;padding:3px 8px;font-size:11.5px;color:#8b98a5;margin-bottom:10px}
+#qt{font-size:16.5px;line-height:1.6;margin:4px 0 14px;font-weight:600}
+button{font-family:inherit;font-size:14.5px;color:#e6edf3;background:#1c2430;border:1px solid #303b4d;border-radius:11px;padding:13px 15px;width:100%;text-align:left;cursor:pointer;transition:.16s;margin-bottom:9px;line-height:1.45}
+button:hover:not(:disabled){border-color:#58a6ff;background:#202b3a;transform:translateX(3px)}
+button:disabled{cursor:default;opacity:.95}
+button.ok{border-color:#3fb950;background:#12261a;color:#7ee787}
+button.no{border-color:#f85149;background:#2a1618;color:#ffa198}
+#fb{display:none;background:#131c26;border-left:3px solid #58a6ff;border-radius:0 9px 9px 0;padding:11px 13px;font-size:13px;color:#b6c2cf;line-height:1.65;margin-top:6px}
+#next{margin-top:12px;text-align:center;background:#238636;border-color:#2ea043;font-weight:600}
+#next:hover{background:#2ea043;transform:none}
+.main{text-align:center;background:#1f6feb;border-color:#388bfd;font-weight:600;margin-top:8px}
+.main:hover{background:#388bfd;transform:none}
+.hrow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+.hint{font-size:11.5px;color:#6e7b8b}
+#reset{width:auto;margin:0;padding:7px 12px;font-size:12.5px;text-align:center;color:#8b98a5;border-radius:9px}
+#reset:hover{transform:none;color:#e6edf3;border-color:#f0883e}
+#end{text-align:center;display:none}
+.big{font-size:44px;font-weight:700;color:#f0883e;margin:8px 0}
+.rank{font-size:15px;color:#58a6ff;margin-bottom:12px}
+#game{display:none}
+</style>
+</head>
+<body>
+<div id="app">
+<h1>Java 面试词霸 · <span>词语识别挑战</span></h1>
+<div id="start">
+<p class="sub">从 Java SE 核心知识点题库中随机抽 <b>10 题</b>。<br>每题 22 秒，答对得分：基础 100 + 剩余时间 ×5 + 连击 ×20。<br>答错或超时连击清零。上方编号条可随时切回已答题目，重制按钮换一套新题。</p>
+<button class="main" id="go">开始挑战 ▶</button>
+</div>
+<div id="game">
+<div class="hud"><div>题目<b id="h1">1/10</b></div><div>得分<b id="h2">0</b></div><div>连击<b id="h3">0</b></div><div>答对<b id="h6">0</b></div></div>
+<div class="bar"><i id="h4"></i></div>
+<div id="hist"></div>
+<div class="tag" id="h5">Java SE</div>
+<div id="qt"></div>
+<div id="opts"></div>
+<div id="fb"></div>
+<button id="next" style="display:none">下一题 ▶</button>
+<div class="hrow"><span class="hint">← → 切换题目 · 1~4 选项 · Enter 下一题</span><button id="reset">↻ 重制本局</button></div>
+</div>
+<div id="end">
+<div class="big" id="e1">0</div>
+<div class="rank" id="e2"></div>
+<p class="sub" id="e3"></p>
+<button class="main" id="again">再来一局 ↻</button>
+</div>
+</div>
+<script>
+var POOL=[
+{q:"Integer 等包装类自动装箱时，通常缓存哪个数值范围？",o:["-128 ~ 127","0 ~ 255","-256 ~ 256","0 ~ 65535"],a:0,e:"Integer/Short/Byte/Long 缓存 -128~127，Character 缓存 0~127，Boolean 缓存两个实例。"},
+{q:"对 Java 参数传递，最准确的描述是？",o:["对象引用本身按值传递","Java 存在引用传递","基本类型按引用传递","传对象时会共享形参变量"],a:0,e:"形参是副本，能修改共同对象字段，但重新赋值不会改变调用方变量指向。"},
+{q:"下列哪一项能单独构成方法重载？",o:["参数列表不同","仅返回类型不同","仅访问权限不同","仅异常声明不同"],a:0,e:"重载要求方法名相同且参数列表不同，属于编译期绑定。"},
+{q:"Java 8 接口中不能包含下列哪项？",o:["普通实例字段","default 方法","静态方法","抽象方法"],a:0,e:"接口可含抽象/default/静态方法，但不能保存普通实例状态。"},
+{q:"final 修饰引用变量时，含义是？",o:["引用不能改指向，对象仍可变","引用和对象都不可变","对象自动成为不可变","只能修饰局部变量"],a:0,e:"final 只锁定引用指向，其指向对象的内容仍可能变化。"},
+{q:"只重写 equals 而不重写 hashCode 会怎样？",o:["逻辑相等对象落入不同桶，查找去重失效","编译直接报错","equals 永远返回 false","HashMap 立即退化为红黑树"],a:0,e:"equals 为 true 时 hashCode 必须相同，HashMap/HashSet 同时依赖两者。"},
+{q:"循环中拼接字符串变量，推荐使用？",o:["StringBuilder","直接用 + 号拼接","多线程共享 StringBuffer","频繁调用 concat"],a:0,e:"可避免产生大量中间 String 对象；StringBuffer 主要方法同步。"},
+{q:"ArrayList 无参构造后首次添加元素，通常扩容到？",o:["10","1","16","原容量的 0.75 倍"],a:0,e:"Java 8 首次添加扩到 10，此后一般扩为约 1.5 倍，已知规模可预设容量。"},
+{q:"HashMap 容量保持 2 的幂，主要好处是？",o:["让 (n-1)&hash 均匀利用哈希低位","减少对象头内存","避免链表树化","保证线程安全"],a:0,e:"用位运算代替取模，并要求低位分布均匀。"},
+{q:"HashMap 中允许的 null 情况是？",o:["1 个 null key 和多个 null value","多个 null key","完全不允许 null","只允许 null value"],a:0,e:"允许一个 null key 与多个 null value，但它不是线程安全容器。"},
+{q:"LinkedHashMap 设 accessOrder=true 并重写 removeEldestEntry 可实现？",o:["LRU 缓存","FIFO 队列","按 key 排序的映射","线程安全缓存"],a:0,e:"读取或更新会把节点移到链尾，淘汰最久未被访问的条目即 LRU。"},
+{q:"TreeMap 的查找、插入、删除复杂度是？",o:["O(log n)","O(1)","O(n)","摊销 O(1)"],a:0,e:"基于红黑树，按自然顺序或 Comparator 排序，TreeSet 基于 TreeMap。"},
+{q:"比较两个 int 大小时，推荐写法是？",o:["Integer.compare(a,b)","a - b","(int)Math.abs(a-b)","强转后 compareTo"],a:0,e:"a-b 可能整数溢出导致结果错误；比较器最好与 equals 一致。"},
+{q:"普通集合的 fail-fast 迭代器在遍历中检测到结构修改会抛出？",o:["ConcurrentModificationException","NullPointerException","ClassCastException","IllegalStateException"],a:0,e:"它用于尽早暴露不确定结果，不是线程安全保证。"},
+{q:"单线程遍历中删除元素，应使用？",o:["Iterator.remove()","集合的 remove(E)","增强 for 中直接删除","先 clear 再重建"],a:0,e:"并发场景应使用并发集合或锁，弱一致迭代可能看到中间状态。"},
+{q:"组合优于继承强调的是？",o:["继承必须符合真实的 is-a 关系","完全禁止使用继承","接口必须继承抽象类","子类不应复用父类代码"],a:0,e:"仅为复用少量代码而继承会把子类绑死在父类实现细节上。"}
+];
+var LIMIT=22,ROUND=10;
+var deck=[],idx=0,score=0,streak=0,right=0,tid=null,left=0,locked=false;
+function $(i){return document.getElementById(i)}
+function shuffle(a){for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1)),t=a[i];a[i]=a[j];a[j]=t}return a}
+function build(q){
+  var ps=q.o.map(function(t,i){return{t:t,c:i===q.a}});
+  shuffle(ps);
+  var k=0;for(var i=0;i<ps.length;i++){if(ps[i].c)k=i}
+  return{q:q.q,o:ps.map(function(p){return p.t}),a:k,e:q.e,done:false,pick:null,gain:0,st:0,left:LIMIT};
+}
+function start(){
+  deck=shuffle(POOL.slice()).slice(0,ROUND).map(build);
+  idx=0;score=0;streak=0;right=0;locked=false;
+  $("start").style.display="none";$("end").style.display="none";$("game").style.display="block";
+  render();
+}
+function fbHTML(d){
+  if(d.pick===d.a)return "<b style='color:#7ee787'>✔ 正确 +"+d.gain+"</b>（连击 ×"+d.st+"）<br>"+d.e;
+  return "<b style='color:#ffa198'>"+(d.pick<0?"⏱ 超时":"✘ 答错")+"</b><br>"+d.e;
+}
+function renderHist(){
+  var h=$("hist");h.innerHTML="";
+  deck.forEach(function(d,i){
+    var b=document.createElement("button");
+    b.className="chip"+(i===idx?" cur":"")+(d.done?(d.pick===d.a?" ok":" no"):"");
+    b.textContent=(i+1)+(d.done?(d.pick===d.a?" ✓":" ✗"):"");
+    b.title=(d.done?"已作答 · ":"未作答 · ")+d.q;
+    b.onclick=function(){idx=i;render()};
+    h.appendChild(b);
+  });
+}
+function render(){
+  clearInterval(tid);
+  var q=deck[idx];
+  locked=q.done;
+  $("h1").textContent=(idx+1)+"/"+ROUND;
+  $("h2").textContent=score;
+  $("h3").textContent=streak;
+  $("h6").textContent=right;
+  $("h5").textContent=q.done?"已作答 · 点编号可切回":"知识点 "+(idx+1)+" · 词语识别";
+  $("qt").textContent=q.q;
+  var box=$("opts");box.innerHTML="";
+  q.o.forEach(function(t,i){
+    var b=document.createElement("button");
+    b.textContent=String.fromCharCode(65+i)+". "+t;
+    if(q.done){
+      b.disabled=true;
+      if(i===q.a)b.className="ok";
+      if(i===q.pick&&q.pick!==q.a)b.className="no";
+    }else{
+      b.onclick=function(){answer(i)};
+    }
+    box.appendChild(b);
+  });
+  if(q.done){
+    left=q.left;
+    $("h4").style.width=Math.max(0,left/LIMIT*100)+"%";
+    $("fb").innerHTML=fbHTML(q);
+    $("fb").style.display="block";
+    $("next").style.display="block";
+    $("next").textContent=(idx===ROUND-1)?"查看成绩 ▶":"下一题 ▶";
+  }else{
+    $("fb").innerHTML="";$("fb").style.display="none";
+    $("next").style.display="none";
+    left=q.left;
+    $("h4").style.width=Math.max(0,left/LIMIT*100)+"%";
+    tid=setInterval(tick,100);
+  }
+  renderHist();
+}
+function tick(){
+  left-=0.1;
+  deck[idx].left=Math.max(0,left);
+  $("h4").style.width=Math.max(0,left/LIMIT*100)+"%";
+  if(left<=0){clearInterval(tid);answer(-1)}
+}
+function answer(pick){
+  if(locked)return;
+  locked=true;clearInterval(tid);
+  var q=deck[idx],btns=$("opts").children,i;
+  for(i=0;i<btns.length;i++)btns[i].disabled=true;
+  btns[q.a].className="ok";
+  q.done=true;q.pick=pick;q.left=Math.max(0,left);
+  if(pick===q.a){
+    q.gain=100+Math.round(q.left*5)+streak*20;
+    score+=q.gain;streak++;right++;q.st=streak;
+  }else{
+    if(pick>=0)btns[pick].className="no";
+    q.gain=0;q.st=0;streak=0;
+  }
+  $("h2").textContent=score;$("h3").textContent=streak;$("h6").textContent=right;
+  $("h5").textContent="已作答 · 点编号可切回";
+  $("fb").innerHTML=fbHTML(q);
+  $("fb").style.display="block";
+  $("next").style.display="block";
+  $("next").textContent=(idx===ROUND-1)?"查看成绩 ▶":"下一题 ▶";
+  renderHist();
+}
+function forward(){
+  if(idx<ROUND-1){idx++;render()}
+  else finish();
+}
+$("next").onclick=forward;
+function finish(){
+  clearInterval(tid);
+  $("game").style.display="none";$("end").style.display="block";
+  var answered=0,mist=0;
+  deck.forEach(function(d){if(d.done){answered++;if(d.pick!==d.a)mist++}});
+  var acc=Math.round(right/ROUND*100);
+  $("e1").textContent=score;
+  var r=acc>=90?"🏆 面试官沉默：Java 词霸":acc>=70?"🥇 基础扎实，边界再抠细":acc>=50?"🥈 有印象，但细节会翻车":"🥉 需要重读讲义第一二三节";
+  $("e2").textContent=r+" · 正确率 "+acc+"%";
+  $("e3").innerHTML="本轮答对 <b>"+right+"</b>/"+ROUND+" 题，错/超时 <b>"+mist+"</b> 题，未作答 <b>"+(ROUND-answered)+
+  "</b> 题。<br>重点复习：包装类缓存、equals/hashCode 契约、HashMap 扩容与树化、LinkedHashMap 与 LRU、fail-fast 与并发集合。";
+}
+$("go").onclick=start;
+$("again").onclick=start;
+$("reset").onclick=function(){
+  if(confirm("重制本局？将重新抽题并清空得分与记录。")){start()}
+};
+document.addEventListener("keydown",function(e){
+  if($("game").style.display!=="block")return;
+  if(e.key>="1"&&e.key<="4"){var b=$("opts").children[+e.key-1];if(b&&!b.disabled)b.click()}
+  if(e.key==="Enter"&&$("next").style.display==="block")$("next").click();
+  if(e.key==="ArrowRight")forward();
+  if(e.key==="ArrowLeft"&&idx>0){idx--;render()}
+});
+</script>
+</body>
+</html>

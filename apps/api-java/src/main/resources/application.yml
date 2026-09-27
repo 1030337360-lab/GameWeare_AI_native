@@ -14,6 +14,7 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -41,6 +42,14 @@ management:
       exposure:
         include: health,info,prometheus
 gameweare:
+  agent:
+    engine: ${AGENT_ENGINE:legacy}
+    filesystem: ${AGENT_FILESYSTEM:kubernetes}
+    docker:
+      image: ${AGENT_DOCKER_IMAGE:public.ecr.aws/docker/library/python:3.12-alpine}
+    kubernetes:
+      namespace: ${AGENT_SANDBOX_NAMESPACE:create-runners}
+      warm-pool: ${AGENT_SANDBOX_WARM_POOL:gameweare-create}
   web-origin: ${WEB_ORIGIN:http://localhost:1314}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
@@ -52,5 +61,10 @@ gameweare:
     interval-ms: 1000
   llm:
     allow-private-endpoints: ${LLM_ALLOW_PRIVATE_ENDPOINTS:false}
+    allowed-hosts: ${LLM_ALLOWED_HOSTS:}
+  official-llm:
+    base-url: ${OFFICIAL_LLM_BASE_URL:}
+    model: ${OFFICIAL_LLM_MODEL:}
+    api-key: ${OFFICIAL_LLM_API_KEY:}
   auth:
     token-ttl-seconds: ${TOKEN_TTL_SECONDS:604800}

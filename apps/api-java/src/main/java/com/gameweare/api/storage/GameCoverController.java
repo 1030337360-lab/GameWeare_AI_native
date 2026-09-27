@@ -1,5 +1,6 @@
 package com.gameweare.api.storage;
 
+import com.gameweare.api.create.CoverGenerator;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import java.util.List;
@@ -26,18 +27,28 @@ public class GameCoverController {
 
     @GetMapping("/games/{slug}/cover")
     public ResponseEntity<byte[]> cover(@PathVariable String slug) {
-        List<String> keys = jdbc.queryForList("""
-            SELECT cover_object_key FROM games
-            WHERE slug=? AND publish_status='published' AND visibility='public' AND cover_object_key IS NOT NULL
-            """, String.class, slug);
-        if (keys.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game cover not found");
-        String key = keys.get(0);
+        List<java.util.Map<String, Object>> games = jdbc.queryForList("""
+            SELECT cover_object_key,title,description FROM games
+            WHERE slug=? AND publish_status='published' AND visibility='public'
+            """, slug);
+        if (games.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game cover not found");
+        String key = (String) games.get(0).get("cover_object_key");
+        if (key == null) {
+            String title = String.valueOf(games.get(0).get("title"));
+            String description = String.valueOf(games.get(0).get("description"));
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType("image/svg+xml"))
+                    .header("Content-Security-Policy", "default-src 'none'; script-src 'none'; object-src 'none'")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header(HttpHeaders.CACHE_CONTROL, "public, max-age=3600")
+                    .body(CoverGenerator.fallback(title, description));
+        }
         List<String> mime = jdbc.queryForList("SELECT content_type FROM assets WHERE object_key=? AND kind='cover' LIMIT 1", String.class, key);
         String type = mime.isEmpty() ? "image/png" : mime.get(0);
         try (var stream = minio.getObject(GetObjectArgs.builder().bucket(bucket).object(key).build())) {
             byte[] content = stream.readNBytes(10 * 1024 * 1024 + 1);
             if (content.length > 10 * 1024 * 1024) throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Cover too large");
             return ResponseEntity.ok().contentType(MediaType.parseMediaType(type))
+                    .header("Content-Security-Policy", "default-src 'none'; script-src 'none'; object-src 'none'")
                     .header("X-Content-Type-Options", "nosniff")
                     .header(HttpHeaders.CACHE_CONTROL, "public, max-age=3600")
                     .body(content);

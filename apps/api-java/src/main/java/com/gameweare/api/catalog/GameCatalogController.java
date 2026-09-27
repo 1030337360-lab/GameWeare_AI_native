@@ -14,6 +14,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -101,8 +103,14 @@ public class GameCatalogController {
 @Service
 class CatalogService {
     private final JdbcTemplate jdbc;
+    private final GameCatalogCache cache;
+    private final GameTrendingService trending;
 
-    CatalogService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    @org.springframework.beans.factory.annotation.Autowired
+    CatalogService(JdbcTemplate jdbc, GameCatalogCache cache, GameTrendingService trending) {
+        this.jdbc = jdbc; this.cache = cache; this.trending = trending;
+    }
+    CatalogService(JdbcTemplate jdbc) { this.jdbc = jdbc; this.cache = null; this.trending = null; }
 
     public List<Map<String, Object>> list(String query, String tag, String userId) {
         if (query != null && query.length() > 100 || tag != null && tag.length() > 80) {
@@ -143,6 +151,28 @@ class CatalogService {
     }
 
     public Map<String, Object> detail(String slug, String userId) {
+        Integer visible = jdbc.queryForObject("SELECT COUNT(*) FROM games WHERE slug=? AND publish_status='published' AND visibility='public'",
+                Integer.class, slug);
+        if (visible == null || visible == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found");
+        Map<String, Object> game = cache == null ? publicDetail(slug)
+                : cache.publicGame(slug, () -> publicDetail(slug));
+        if (game == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found");
+        Map<String, Object> out = new LinkedHashMap<>(game);
+        if (userId != null) {
+            List<Map<String, Object>> flags = jdbc.queryForList("""
+                    SELECT EXISTS(SELECT 1 FROM game_likes l WHERE l.game_id=g.id AND l.user_id=?) AS liked,
+                           EXISTS(SELECT 1 FROM game_favorites f WHERE f.game_id=g.id AND f.user_id=?) AS favorited
+                    FROM games g WHERE g.slug=?
+                    """, userId, userId, slug);
+            if (!flags.isEmpty()) {
+                out.put("likedByMe", flags.get(0).get("liked"));
+                out.put("favoritedByMe", flags.get(0).get("favorited"));
+            }
+        }
+        return out;
+    }
+
+    private Map<String, Object> publicDetail(String slug) {
         List<Map<String, Object>> rows = jdbc.query("""
             SELECT g.id, g.slug, g.title, g.description, g.author_id, g.cover_object_key,
                    g.plays_count, g.likes_count, g.favorites_count, g.published_at, g.created_at,
@@ -152,9 +182,11 @@ class CatalogService {
                    EXISTS(SELECT 1 FROM game_favorites f WHERE f.game_id=g.id AND f.user_id=?) AS favorited
             FROM games g LEFT JOIN users u ON u.id=g.author_id
             WHERE g.slug=? AND g.publish_status='published' AND g.visibility='public' LIMIT 1
-            """, (rs, n) -> mapGame(rs), userId == null ? "" : userId, userId == null ? "" : userId, slug);
-        if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found");
-        return rows.get(0);
+            """, (rs, n) -> mapGame(rs), "", "", slug);
+        if (rows.isEmpty()) return null;
+        Map<String, Object> game = rows.get(0);
+        game.put("publishedAt", game.get("publishedAt").toString());
+        return game;
     }
 
     public List<Map<String, Object>> versions(String slug) {
@@ -192,6 +224,7 @@ class CatalogService {
               AND v.build_status='passed' AND v.safety_status='passed'
             """, slug, userId, versionId);
         if (updated == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game version not found");
+        invalidateAfterCommit(slug);
         return versions(slug);
     }
 
@@ -200,6 +233,8 @@ class CatalogService {
         List<String> ids = jdbc.queryForList("SELECT id FROM games WHERE slug=? AND author_id=? AND publish_status<>'deleted'", String.class, slug, userId);
         if (ids.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found");
         jdbc.update("UPDATE games SET publish_status='deleted', visibility='private' WHERE id=?", ids.get(0));
+        invalidateAfterCommit(slug);
+        trendAfterCommit(ids.get(0));
         return Map.of("gameId", ids.get(0), "gameSlug", slug, "deleted", true, "runLogsPreserved", true);
     }
 
@@ -237,6 +272,8 @@ class CatalogService {
             int deleted = jdbc.update("DELETE FROM " + table + " WHERE user_id=? AND game_id=?", userId, gameId);
             if (deleted > 0) jdbc.update("UPDATE games SET " + countColumn + "=GREATEST(" + countColumn + "-1,0) WHERE id=?", gameId);
         }
+        invalidateAfterCommit(slug);
+        trendAfterCommit(gameId);
         return jdbc.queryForObject("""
             SELECT g.likes_count, g.favorites_count,
                    EXISTS(SELECT 1 FROM game_likes l WHERE l.game_id=g.id AND l.user_id=?) AS liked,
@@ -257,13 +294,14 @@ class CatalogService {
         game.put("id", slug);
         game.put("title", rs.getString("title"));
         game.put("author", rs.getString("author") == null ? "Creator" : rs.getString("author"));
+        game.put("creatorId", rs.getString("author_id"));
         game.put("description", rs.getString("description"));
         String tagNames = rs.getString("tag_names");
         game.put("tags", tagNames == null || tagNames.isBlank() ? List.of() : List.of(tagNames.split("\\|\\|\\|")));
         var published = rs.getTimestamp("published_at");
         if (published == null) published = rs.getTimestamp("created_at");
         game.put("publishedAt", published == null ? Instant.EPOCH : published.toInstant());
-        game.put("coverUrl", rs.getString("cover_object_key") == null ? "" : "/games/" + slug + "/cover");
+        game.put("coverUrl", "/games/" + slug + "/cover");
         game.put("plays", rs.getLong("plays_count"));
         game.put("likes", rs.getLong("likes_count"));
         game.put("favorites", rs.getLong("favorites_count"));
@@ -271,5 +309,23 @@ class CatalogService {
         game.put("favoritedByMe", rs.getBoolean("favorited"));
         game.put("section", "Recently Created");
         return game;
+    }
+
+    private void invalidateAfterCommit(String slug) {
+        if (cache == null) return;
+        if (TransactionSynchronizationManager.isSynchronizationActive())
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { cache.invalidate(slug); }
+            });
+        else cache.invalidate(slug);
+    }
+
+    private void trendAfterCommit(String gameId) {
+        if (trending == null) return;
+        if (TransactionSynchronizationManager.isSynchronizationActive())
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { trending.refresh(gameId); }
+            });
+        else trending.refresh(gameId);
     }
 }

@@ -1,14 +1,28 @@
 {
+  "project": "GameWeare",
+  "note": "passes means the feature exists in the Java implementation; it does not mean production readiness or live-provider verification.",
   "features": [
-    {"id": 1, "domain": "backend", "name": "Archive Python API", "passes": true},
-    {"id": 2, "domain": "backend", "name": "Spring Boot application", "passes": true},
-    {"id": 3, "domain": "backend", "name": "MySQL Flyway schema", "passes": true},
-    {"id": 4, "domain": "backend", "name": "Authentication and sessions", "passes": true},
-    {"id": 5, "domain": "backend", "name": "Token billing", "passes": true},
-    {"id": 6, "domain": "backend", "name": "Catalog, uploads and play", "passes": true},
-    {"id": 7, "domain": "backend", "name": "Create jobs and worker", "passes": true},
-    {"id": 8, "domain": "backend", "name": "Maintenance and advanced agents", "passes": true},
-    {"id": 9, "domain": "backend", "name": "Compose and end-to-end verification", "passes": true},
-    {"id": 10, "domain": "frontend", "name": "Frontend compatibility", "passes": true}
+    {"id": 1, "domain": "backend", "name": "Archive Python API", "passes": true, "evidence": "archive/python-api contains the former API source, SQL, tests and scripts"},
+    {"id": 2, "domain": "backend", "name": "Spring Boot application", "passes": true, "evidence": "Java 17 / Spring Boot 4 build and Docker Compose runtime"},
+    {"id": 3, "domain": "backend", "name": "MySQL Flyway schema", "passes": true, "evidence": "V1-V11 migrations including creator follows, check-in award accounting, campaigns, claims, and generation vouchers"},
+    {"id": 4, "domain": "backend", "name": "Authentication and sessions", "passes": true, "evidence": "BCrypt, MySQL token hashes, Redis rate limit/cache/revocation and cross-replica login/logout check", "remainingVerification": "Live Google OAuth and sustained load test"},
+    {"id": 5, "domain": "backend", "name": "Token billing", "passes": true, "evidence": "Legacy balance ledger retains row locks and reconciliation; new create jobs use provider-side quota enforcement and persist reported usage without local reservation", "remainingVerification": "Provider billing reconciliation, database failover and worker crash fault injection"},
+    {"id": 6, "domain": "backend", "name": "Catalog, uploads and play", "passes": true, "evidence": "MySQL/MinIO controllers, generated SVG covers, safe legacy fallback, browser-loaded cover and mock-provider play E2E"},
+    {"id": 7, "domain": "backend", "name": "Create jobs and worker", "passes": true, "evidence": "Transactional outbox, RabbitMQ worker, leases, mock-provider chat/react/plan/decentralized/refine E2E, draft publication isolation", "remainingVerification": "Real AI provider and image input E2E"},
+    {"id": 8, "domain": "backend", "name": "Maintenance and advanced agents", "passes": true, "evidence": "Maintenance/profile routes, plan/decentralized approval, react generation and refine iteration with publish-time version switch", "remainingVerification": "Real-model ReAct tool loop and full refine strategy parity with archived Python implementation"},
+    {"id": 9, "domain": "backend", "name": "Compose and end-to-end verification", "passes": true, "evidence": "CI smoke validates Flyway/auth/external artifact flow; two-replica script validates auth, idempotency, version allocation and billing", "remainingVerification": "Hosted GitHub Actions run and disaster recovery drill"},
+    {"id": 11, "domain": "backend", "name": "External agent artifact receipt and compile validation", "passes": true, "evidence": "Authenticated validate/receive endpoints; HTML packaging and non-executing JavaScript parse; MinIO draft version; CI smoke"},
+    {"id": 10, "domain": "frontend", "name": "Frontend compatibility", "passes": true, "evidence": "React production build passes and pages use Java API", "remainingVerification": "Browser automation for login/create/play"},
+    {"id": 12, "domain": "backend", "name": "AgentScope Java and Kubernetes sandbox", "passes": false, "evidence": "Official Harness and subagent tools passed 21 local Docker-sandbox E2E checks: chat, plan approval, three candidate agents, MinIO publication, browser play and token ledger; Kubernetes manifests and Java runtime compile", "remainingVerification": "Real Kubernetes context, agent-sandbox controller, isolated RuntimeClass, DeepSeek tool calls, cross-replica resume and usage reconciliation"},
+    {"id": 13, "domain": "backend", "name": "Voucher seckill and redemption", "passes": true, "evidence": "Redis Lua and Stream, RabbitMQ confirmations/retries, MySQL stock and uniqueness, terminal reconciliation; local two-instance stock-one 80-request run issued exactly one voucher and mock-funded game reached publication and playable HTML", "remainingVerification": "Hosted CI fault injection and configured official production provider"},
+    {"id": 14, "domain": "backend", "name": "Check-in, creator follows and analytics", "passes": true, "evidence": "MySQL check-in and follow records, future-effective reward rules, Redis Bitmap/Set/ZSet/HLL projections, Cache Aside public game details, CI smoke and frontend build", "remainingVerification": "Month-boundary reward integration test and sustained cache load"}
+  ],
+  "followUps": [
+    {"id": "F1", "priority": "P0", "name": "Production secret and application AI network policy", "passes": true, "evidence": "Production Compose, startup guard, exact host allowlist and DNS-pinned outbound client", "remainingVerification": "Host-level egress firewall or proxy in deployment"},
+    {"id": "F2", "priority": "P1", "name": "CI with Maven tests, web build, API smoke and two-replica verification", "passes": true, "evidence": ".github/workflows/ci.yml, scripts/ci-smoke.ps1 and scripts/multi-instance-verify.ps1; local runs passed", "remainingVerification": "First hosted GitHub Actions run"},
+    {"id": "F3", "priority": "P1", "name": "Multi-instance concurrency checks", "passes": true, "evidence": "scripts/multi-instance-verify.ps1 passed for cross-replica auth, artifact idempotency, version uniqueness and token ledger", "remainingVerification": "Worker crash and DB failover fault injection"},
+    {"id": "F4", "priority": "P1", "name": "Real provider, Google OAuth and image upload verification", "passes": false},
+    {"id": "F5", "priority": "P1", "name": "Metrics, readiness checks and database/object backup restore", "passes": false},
+    {"id": "F6", "priority": "P2", "name": "Full Python strategy parity and API versioning decision", "passes": false}
   ]
 }

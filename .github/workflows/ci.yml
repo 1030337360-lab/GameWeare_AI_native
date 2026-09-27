@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  java-and-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: |
+            apps/api-java/pom.xml
+            apps/agent-sandbox-runtime/pom.xml
+      - name: Java tests and package
+        working-directory: apps/api-java
+        run: mvn -B --no-transfer-progress verify
+      - name: Sandbox runtime package
+        working-directory: apps/agent-sandbox-runtime
+        run: mvn -B --no-transfer-progress verify
+      - name: Sandbox runtime HTTP contract
+        run: |
+          docker build -t gameweare-sandbox-runtime:ci apps/agent-sandbox-runtime
+          docker run --rm -d --name gameweare-sandbox-ci -p 127.0.0.1:18888:8888 gameweare-sandbox-runtime:ci
+          trap 'docker stop gameweare-sandbox-ci' EXIT
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18888/ && break || sleep 1; done
+          curl -fsS -X POST http://127.0.0.1:18888/execute -H 'Content-Type: application/json' -d '{"command":"printf ok"}' | grep -q '"stdout":"ok"'
+          curl -fsS -X POST http://127.0.0.1:18888/upload -F 'file=@apps/agent-sandbox-runtime/pom.xml;filename=contract.xml'
+          curl -fsS http://127.0.0.1:18888/exists/contract.xml | grep -q '"exists":true'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18888/download/%2Fetc%2Fpasswd)" = "400"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Frontend install and build
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run build
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: java-and-web
+    env:
+      MYSQL_PASSWORD: ci-only-mysql-password
+      MYSQL_ROOT_PASSWORD: ci-only-root-password
+      RABBITMQ_PASSWORD: ci-only-rabbit-password
+      MINIO_ACCESS_KEY: ci-only-minio-access
+      MINIO_SECRET_KEY: ci-only-minio-secret
+      AI_CONFIG_SECRET: ci-only-config-secret-at-least-32-characters
+      LLM_ALLOW_PRIVATE_ENDPOINTS: 'false'
+      OFFICIAL_LLM_BASE_URL: http://mock-llm:8080
+      OFFICIAL_LLM_MODEL: mock-model
+      OFFICIAL_LLM_API_KEY: ci-only-mock-model-key
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Start Java API and dependencies
+        run: docker compose up -d --build --wait mysql rabbitmq redis minio api
+      - name: Verify Flyway, login and artifact validation
+        shell: pwsh
+        run: ./scripts/ci-smoke.ps1
+      - name: Start second API replica and local billing provider
+        run: docker compose -f docker-compose.yml -f docker-compose.multi-instance.yml --profile test up -d --no-build --wait mock-llm api api-replica
+      - name: Verify multi-instance consistency
+        shell: pwsh
+        run: ./scripts/multi-instance-verify.ps1
+      - name: Verify stock-one voucher seckill across replicas
+        shell: pwsh
+        run: ./scripts/seckill-verify.ps1 -VerifyRedemption -VerifyDuplicateDelivery -VerifyRabbitRecovery -VerifyCompensation -VerifyRedisRestart
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose -f docker-compose.yml -f docker-compose.multi-instance.yml --profile test logs --no-color --tail=150 api api-replica mysql rabbitmq redis minio mock-llm
+      - name: Stop stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.multi-instance.yml --profile test down -v --remove-orphans

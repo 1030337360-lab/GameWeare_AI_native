@@ -2,8 +2,10 @@ package com.gameweare.api.play;
 
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
+import com.gameweare.api.catalog.GameTrendingService;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
+import java.net.URI;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +19,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -52,9 +56,28 @@ class PlayService {
     private final JdbcTemplate jdbc;
     private final MinioClient minio;
     private final String bucket;
+    private final String frameAncestor;
+    private final GameTrendingService trending;
+    private final PlayUvService uv;
 
-    PlayService(JdbcTemplate jdbc, MinioClient minio, @Value("${gameweare.minio.bucket:gameweare}") String bucket) {
+    @org.springframework.beans.factory.annotation.Autowired
+    PlayService(JdbcTemplate jdbc, MinioClient minio, GameTrendingService trending, PlayUvService uv,
+            @Value("${gameweare.minio.bucket:gameweare}") String bucket,
+            @Value("${gameweare.web-origin:http://localhost:1314}") String webOrigin) {
         this.jdbc = jdbc; this.minio = minio; this.bucket = bucket;
+        this.trending = trending; this.uv = uv;
+        URI origin = URI.create(webOrigin);
+        if (!("http".equalsIgnoreCase(origin.getScheme()) || "https".equalsIgnoreCase(origin.getScheme()))
+                || origin.getHost() == null || origin.getUserInfo() != null
+                || (origin.getRawPath() != null && !origin.getRawPath().isEmpty()
+                        && !"/".equals(origin.getRawPath()))
+                || origin.getRawQuery() != null || origin.getRawFragment() != null)
+            throw new IllegalArgumentException("gameweare.web-origin must be an HTTP origin");
+        this.frameAncestor = origin.getScheme() + "://" + origin.getRawAuthority();
+    }
+
+    PlayService(JdbcTemplate jdbc, MinioClient minio, String bucket, String webOrigin) {
+        this(jdbc, minio, null, null, bucket, webOrigin);
     }
 
     public Map<String, Object> manifest(String slug) {
@@ -79,7 +102,7 @@ class PlayService {
             if (content.length > 10 * 1024 * 1024) throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Game document too large");
             return ResponseEntity.ok()
                     .contentType(MediaType.TEXT_HTML)
-                    .header("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-ancestors 'self'")
+                    .header("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-ancestors 'self' " + frameAncestor)
                     .header("X-Content-Type-Options", "nosniff")
                     .header(HttpHeaders.CACHE_CONTROL, "public, max-age=60")
                     .body(content);
@@ -108,6 +131,17 @@ class PlayService {
         jdbc.update("INSERT INTO play_events(id,user_id,anonymous_id,game_id,event_type,created_at) VALUES (?,?,?,?,?,UTC_TIMESTAMP())",
                 UUID.randomUUID().toString(), userId, anonymousId, gameId, event.event());
         if (counted) jdbc.update("UPDATE games SET plays_count=plays_count+1 WHERE id=?", gameId);
+        if (trending != null || uv != null) {
+            boolean acceptedForUv = "game_view".equals(event.event()) || "game_start".equals(event.event());
+            String observedAnonymous = anonymousId;
+            boolean updatedCount = counted;
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() {
+                    if (updatedCount && trending != null) trending.refresh(gameId);
+                    if (acceptedForUv && uv != null) uv.record(gameId, userId, observedAnonymous);
+                }
+            });
+        }
         return Map.of("status", "accepted", "gameId", event.gameId(), "event", event.event(), "counted", counted);
     }
 

@@ -3,6 +3,8 @@ package com.gameweare.api.create;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -33,13 +35,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gameweare.api.billing.TokenBillingService;
+import com.gameweare.api.voucher.GenerationVoucherService;
+import com.gameweare.api.catalog.GameCatalogCache;
+import com.gameweare.api.catalog.GameTrendingService;
 
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 
 @Service
 public class CreateService {
-    static final long RESERVED_TOKENS = 32768;
     private static final ObjectMapper JSON = new ObjectMapper();
     /** Production requires HTTPS providers on public addresses; local stacks may opt in via gameweare.llm.allow-private-endpoints. */
     static volatile boolean privateLlmEndpointsAllowed = false;
@@ -49,23 +53,47 @@ public class CreateService {
             });
     private final JdbcTemplate db;
     private final TokenBillingService billing;
+    private final GenerationVoucherService vouchers;
+    @org.springframework.beans.factory.annotation.Autowired(required = false) private GameCatalogCache gameCache;
+    @org.springframework.beans.factory.annotation.Autowired(required = false) private GameTrendingService trending;
     private final String encryptionSecret;
     private final MinioClient minio;
     private final String bucket;
+    private String agentEngine = "legacy";
     private final SecureRandom random = new SecureRandom();
+    @Value("${gameweare.official-llm.base-url:}") private String officialBaseUrl;
+    @Value("${gameweare.official-llm.model:}") private String officialModel;
+    @Value("${gameweare.official-llm.api-key:}") private String officialApiKey;
 
-    public CreateService(JdbcTemplate db, TokenBillingService billing, MinioClient minio,
+    @org.springframework.beans.factory.annotation.Autowired
+    public CreateService(JdbcTemplate db, TokenBillingService billing, GenerationVoucherService vouchers, MinioClient minio,
                          @Value("${AI_CONFIG_SECRET:}") String secret,
                          @Value("${gameweare.minio.bucket}") String bucket) {
         this.db = db;
         this.billing = billing;
+        this.vouchers = vouchers;
         this.encryptionSecret = secret;
         this.minio = minio;
         this.bucket = bucket;
     }
 
+    // Retained for small unit tests that exercise BYOK validation without a Spring context.
+    CreateService(JdbcTemplate db, TokenBillingService billing, MinioClient minio, String secret, String bucket) {
+        this(db, billing, null, minio, secret, bucket);
+    }
+
     @Value("${gameweare.llm.allow-private-endpoints:false}")
     void configurePrivateLlmEndpoints(boolean allowed) { privateLlmEndpointsAllowed = allowed; }
+
+    @Value("${gameweare.llm.allowed-hosts:}")
+    void configureAllowedLlmHosts(String hosts) { LlmClient.allowedHosts = hosts; }
+
+    @Value("${gameweare.agent.engine:legacy}")
+    void configureAgentEngine(String engine) {
+        if (!Set.of("legacy", "agentscope").contains(engine))
+            throw new IllegalArgumentException("gameweare.agent.engine must be legacy or agentscope");
+        this.agentEngine = engine;
+    }
 
     @Transactional
     public Map<String, Object> create(String userId, CreateController.JobRequest input, String idempotencyKey) {
@@ -82,10 +110,19 @@ public class CreateService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "At most three images are supported");
         String mode = Optional.ofNullable(input.agentMode()).orElse("chat");
         String type = Optional.ofNullable(input.createType()).orElse("init");
-        if (!Set.of("chat", "react", "plan", "refine", "decentralized", "init", "opt").contains(mode)
-                || !Set.of("init", "opt").contains(type))
+        if (!Set.of("chat", "react", "plan", "refine", "decentralized").contains(mode)
+                || !Set.of("init", "opt").contains(type)
+                || "refine".equals(mode) && !"opt".equals(type))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid generation mode");
-        if (configRow(userId) == null) throw new ResponseStatusException(HttpStatus.CONFLICT, "Configure an AI provider first");
+        String fundingMode = Optional.ofNullable(input.fundingMode()).orElse("byok");
+        if (!Set.of("byok", "voucher").contains(fundingMode))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid funding mode");
+        if ("byok".equals(fundingMode) && input.voucherId() != null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "voucherId requires voucher funding");
+        if ("byok".equals(fundingMode) && configRow(userId) == null)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Configure an AI provider first");
+        if ("voucher".equals(fundingMode) && !officialConfigured())
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Official generation is not configured");
         String projectId = input.projectId();
         String existingGameId = null;
         if (projectId == null || projectId.isBlank()) {
@@ -93,16 +130,21 @@ public class CreateService {
             db.update("INSERT INTO create_projects(id,user_id,title,status,created_at,updated_at) VALUES(?,?,?,'draft',NOW(),NOW())",
                     projectId, userId, title(input.prompt()));
         } else {
-            Map<String, Object> project = one("SELECT game_id FROM create_projects WHERE id=? AND user_id=? FOR UPDATE", projectId, userId);
+            Map<String, Object> project = one("SELECT game_id,status FROM create_projects WHERE id=? AND user_id=? FOR UPDATE", projectId, userId);
             if (project == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found");
-            Integer active = db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE project_id=? AND status IN ('pending','generating')", Integer.class, projectId);
+            if ("archived".equals(project.get("status")))
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Project is archived");
+            Integer active = db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE project_id=? AND status IN ('pending','generating','planning','reviewing')", Integer.class, projectId);
             if (active != null && active > 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "Project already has an active generation");
             existingGameId = (String) project.get("game_id");
+            if ("opt".equals(type) && existingGameId == null)
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Project has no game version to optimize");
         }
         String id = UUID.randomUUID().toString();
-        billing.reserve(userId, id, RESERVED_TOKENS);
-        db.update("INSERT INTO create_jobs(id,user_id,project_id,prompt,agent_mode,create_type,status,reserved_tokens,game_id,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,?,?,NOW(),NOW())",
-                id, userId, projectId, input.prompt(), mode, type, RESERVED_TOKENS, existingGameId, idempotencyKey);
+        db.update("INSERT INTO create_jobs(id,user_id,project_id,prompt,agent_mode,create_type,status,reserved_tokens,game_id,idempotency_key,engine,funding_mode,voucher_id,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,?,?,?,?,?,NOW(),NOW())",
+                id, userId, projectId, input.prompt(), mode, type, 0, existingGameId, idempotencyKey, agentEngine,
+                fundingMode, input.voucherId());
+        if ("voucher".equals(fundingMode)) vouchers.reserve(userId, input.voucherId(), id);
         if (input.inputAssets() != null) {
             long totalBytes = 0;
             for (CreateController.InputAsset asset : input.inputAssets()) {
@@ -128,7 +170,7 @@ public class CreateService {
     }
 
     private Map<String, Object> existingRow(String userId, String key) {
-        return one("SELECT id,prompt,agent_mode,create_type,project_id FROM create_jobs WHERE user_id=? AND idempotency_key=?", userId, key);
+        return one("SELECT id,prompt,agent_mode,create_type,project_id,funding_mode,voucher_id FROM create_jobs WHERE user_id=? AND idempotency_key=?", userId, key);
     }
 
     private Map<String, Object> checkedExisting(String userId, CreateController.JobRequest input, Map<String, Object> row) {
@@ -139,6 +181,8 @@ public class CreateService {
                 || !Objects.equals(input.prompt(), row.get("prompt"))
                 || !Objects.equals(Optional.ofNullable(input.agentMode()).orElse("chat"), row.get("agent_mode"))
                 || !Objects.equals(Optional.ofNullable(input.createType()).orElse("init"), row.get("create_type"))
+                || !Objects.equals(Optional.ofNullable(input.fundingMode()).orElse("byok"), row.get("funding_mode"))
+                || !Objects.equals(input.voucherId(), row.get("voucher_id"))
                 || input.projectId() != null && !Objects.equals(input.projectId(), row.get("project_id")))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key was used for another request");
         return job(userId, (String) row.get("id"));
@@ -149,37 +193,137 @@ public class CreateService {
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", id);
+        result.put("fundingMode", row.get("funding_mode"));
+        result.put("voucherId", row.get("voucher_id"));
         result.put("status", row.get("status"));
         result.put("prompt", row.get("prompt"));
-        result.put("createdAt", row.get("created_at"));
+        Object createdAt = row.get("created_at");
+        result.put("createdAt", createdAt instanceof LocalDateTime local ? Timestamp.valueOf(local) : createdAt);
         result.put("agentMode", row.get("agent_mode"));
         result.put("createType", row.get("create_type"));
         result.put("projectId", row.get("project_id"));
         result.put("runId", id);
         result.put("gameId", row.get("game_id"));
         result.put("versionId", row.get("version_id"));
+        if (row.get("version_id") != null) {
+            Integer versionNo = db.queryForObject("SELECT version_no FROM game_versions WHERE id=?", Integer.class,
+                    row.get("version_id"));
+            result.put("versionNo", versionNo);
+            result.put("coverDataUrl", coverDataUrl((String) row.get("version_id"),
+                    (String) row.get("game_id"), (String) row.get("prompt")));
+        }
         result.put("errorMessage", row.get("error_message"));
         result.put("logs", steps(userId, id, 0).stream().map(s -> Map.of("stage", s.get("stage"), "status", s.get("status"), "message", s.get("message"))).toList());
         if (row.get("game_id") != null) {
-            Map<String, Object> game = one("SELECT slug,publish_status,visibility FROM games WHERE id=?", row.get("game_id"));
+            Map<String, Object> game = one("SELECT slug,publish_status,visibility,current_version_id FROM games WHERE id=?", row.get("game_id"));
             if (game != null) {
                 result.put("gameSlug", game.get("slug"));
-                result.put("publishStatus", game.get("publish_status"));
+                String publishStatus = "completed".equals(row.get("status"))
+                        ? String.valueOf(game.get("publish_status")) : null;
+                if (publishStatus != null && row.get("version_id") != null
+                        && !Objects.equals(row.get("version_id"), game.get("current_version_id"))) {
+                    String latest = db.queryForObject("SELECT id FROM create_jobs WHERE project_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
+                            String.class, row.get("project_id"));
+                    publishStatus = id.equals(latest) ? "draft" : "superseded";
+                }
+                result.put("publishStatus", publishStatus);
                 result.put("visibility", game.get("visibility"));
-                result.put("playUrl", "/games/" + game.get("slug") + "/play");
+                result.put("playUrl", "/play/" + game.get("slug"));
             }
         }
         return result;
     }
 
+    private String originalCoverKey(String gameId) {
+        if (gameId == null) return null;
+        List<String> keys = db.queryForList("""
+                SELECT a.object_key FROM game_versions v
+                JOIN create_jobs j ON j.id=v.source_job_id AND j.create_type='init'
+                JOIN assets a ON a.version_id=v.id AND a.kind='cover'
+                WHERE v.game_id=? ORDER BY v.version_no LIMIT 1
+                """, String.class, gameId);
+        return keys.isEmpty() ? null : keys.get(0);
+    }
+
+    private String coverDataUrl(String versionId, String gameId, String prompt) {
+        String originalKey = originalCoverKey(gameId);
+        if (originalKey == null && gameId != null) {
+            List<String> keys = db.queryForList("SELECT cover_object_key FROM games WHERE id=? AND cover_object_key IS NOT NULL",
+                    String.class, gameId);
+            if (!keys.isEmpty()) originalKey = keys.get(0);
+        }
+        List<Map<String, Object>> covers = originalKey == null
+                ? db.queryForList("SELECT bucket,object_key,content_type FROM assets WHERE version_id=? AND kind='cover' LIMIT 1",
+                        versionId)
+                : db.queryForList("SELECT bucket,object_key,content_type FROM assets WHERE object_key=? AND kind='cover' LIMIT 1",
+                        originalKey);
+        if (!covers.isEmpty()) {
+            Map<String, Object> cover = covers.get(0);
+            try (var stream = minio.getObject(GetObjectArgs.builder().bucket((String) cover.get("bucket"))
+                    .object((String) cover.get("object_key")).build())) {
+                byte[] bytes = stream.readNBytes(150_001);
+                if (bytes.length <= 150_000)
+                    return "data:" + cover.get("content_type") + ";base64," + Base64.getEncoder().encodeToString(bytes);
+            } catch (Exception ignored) { /* The catalog endpoint can still serve the fallback cover. */ }
+        }
+        return "data:image/svg+xml;base64," + Base64.getEncoder().encodeToString(
+                CoverGenerator.fallback(title(prompt), prompt));
+    }
+
+    public List<Map<String, Object>> jobs(String userId) {
+        return db.query("SELECT id,prompt,status,agent_mode,create_type,project_id,created_at FROM create_jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+                (rs, ignored) -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("id", rs.getString("id"));
+                    item.put("prompt", rs.getString("prompt"));
+                    item.put("status", rs.getString("status"));
+                    item.put("agentMode", rs.getString("agent_mode"));
+                    item.put("createType", rs.getString("create_type"));
+                    item.put("projectId", rs.getString("project_id"));
+                    item.put("createdAt", rs.getTimestamp("created_at"));
+                    return item;
+                }, userId);
+    }
+
     @Transactional
     public Map<String, Object> publish(String userId, String id) {
-        Map<String, Object> row = one("SELECT game_id,status FROM create_jobs WHERE id=? AND user_id=?", id, userId);
+        Map<String, Object> row = one("SELECT game_id,version_id,project_id,status,agent_mode,create_type FROM create_jobs WHERE id=? AND user_id=?", id, userId);
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found");
         if (!"completed".equals(row.get("status")) || row.get("game_id") == null)
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation has not completed");
-        db.update("UPDATE games SET publish_status='published',visibility='public',published_at=NOW(),updated_at=NOW() WHERE id=? AND author_id=?",
+        if ("external".equals(row.get("agent_mode")))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "External artifact requires safety review before publication");
+        String latestJob = db.queryForObject("SELECT id FROM create_jobs WHERE project_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
+                String.class, row.get("project_id"));
+        if (!id.equals(latestJob))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Publish the latest completed project version");
+        String safetyStatus = db.queryForObject("SELECT v.safety_status FROM games g JOIN game_versions v ON v.game_id=g.id WHERE g.id=? AND g.author_id=? AND v.id=?",
+                String.class, row.get("game_id"), userId, row.get("version_id"));
+        if (!"passed".equals(safetyStatus))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Game version is awaiting safety review");
+        String originalCover = originalCoverKey((String) row.get("game_id"));
+        List<String> covers = "opt".equals(row.get("create_type")) ? List.of()
+                : db.queryForList("SELECT object_key FROM assets WHERE version_id=? AND kind='cover' LIMIT 1",
+                        String.class, row.get("version_id"));
+        db.update("UPDATE games SET current_version_id=?,cover_object_key=COALESCE(?,cover_object_key),"
+                        + "publish_status='published',visibility='public',published_at=NOW(),updated_at=NOW() "
+                        + "WHERE id=? AND author_id=?",
+                row.get("version_id"), originalCover == null ? (covers.isEmpty() ? null : covers.get(0)) : originalCover,
                 row.get("game_id"), userId);
+        String publishedId = (String) row.get("game_id");
+        String slug = db.queryForObject("SELECT slug FROM games WHERE id=?", String.class, publishedId);
+        Runnable updateProjection = () -> {
+            if (gameCache != null) gameCache.invalidate(slug);
+            if (trending != null) trending.refresh(publishedId);
+        };
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() {
+                        updateProjection.run();
+                    }
+                });
+        else updateProjection.run();
         return job(userId, id);
     }
 
@@ -205,7 +349,9 @@ public class CreateService {
 
     public Map<String, Object> preview(String userId, String id) {
         Map<String, Object> row = one("SELECT g.id game_id,g.slug,g.title,g.description,v.id version_id,v.version_no,v.entry_object_key "
-                + "FROM create_projects p JOIN games g ON g.id=p.game_id JOIN game_versions v ON v.id=g.current_version_id "
+                + "FROM create_projects p JOIN games g ON g.id=p.game_id JOIN game_versions v ON v.id=COALESCE("
+                + "(SELECT j.version_id FROM create_jobs j WHERE j.project_id=p.id AND j.status='completed' "
+                + "ORDER BY j.created_at DESC LIMIT 1),g.current_version_id) "
                 + "WHERE p.id=? AND p.user_id=?", id, userId);
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project preview not found");
         try (var stream = minio.getObject(GetObjectArgs.builder().bucket(bucket).object((String) row.get("entry_object_key")).build())) {
@@ -226,7 +372,7 @@ public class CreateService {
                 + "WHERE j.user_id=? AND j.status='completed' ORDER BY j.created_at DESC LIMIT 1", userId);
         if (row == null) return null;
         return Map.of("gameId", row.get("game_id"), "gameSlug", row.get("slug"), "title", row.get("title"),
-                "playUrl", "/games/" + row.get("slug") + "/play", "jobId", row.get("job_id"));
+                "playUrl", "/play/" + row.get("slug"), "jobId", row.get("job_id"));
     }
 
     private Map<String, Object> projectMap(String id, String title, String status, String gameId, Object created, Object updated) {
@@ -277,6 +423,7 @@ public class CreateService {
             if ("init".equals(job.get("create_type")) && job.get("game_id") == null)
                 db.update("UPDATE create_projects SET status='deleted',updated_at=NOW() WHERE id=? AND game_id IS NULL", job.get("project_id"));
             billing.refund(userId, id);
+            if (vouchers != null) vouchers.release(userId, id);
         } else {
             int resumed = db.update("UPDATE create_jobs SET status='pending',lease_token=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=? AND status='planning'", id);
             if (resumed != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "Run is not waiting for plan approval");
@@ -320,6 +467,7 @@ public class CreateService {
             db.update("UPDATE create_job_workflows SET phase='rejected' WHERE job_id=?", id);
             step(id, 3, "decentralized_rejected", "completed", "Directions rejected by user; run canceled and kept for review");
             billing.refund(userId, id);
+            if (vouchers != null) vouchers.release(userId, id);
         } else {
             if (!"candidate_selected".equals(workflow.get("phase")))
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Select a preview candidate before confirming");
@@ -434,6 +582,7 @@ public class CreateService {
         Map<String, Object> row = configRow(userId);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("authenticated", true); out.put("configured", row != null); out.put("staticGeneration", false);
+        out.put("officialConfigured", officialConfigured());
         if (row != null) { out.put("baseUrl", row.get("base_url")); out.put("model", row.get("model")); out.put("provider", row.get("provider")); }
         return out;
     }
@@ -464,6 +613,25 @@ public class CreateService {
     }
 
     Map<String, Object> configRow(String userId) { return one("SELECT * FROM ai_configs WHERE user_id=?", userId); }
+
+    boolean officialConfigured() {
+        return officialBaseUrl != null && !officialBaseUrl.isBlank()
+                && officialModel != null && !officialModel.isBlank()
+                && officialApiKey != null && !officialApiKey.isBlank();
+    }
+
+    Map<String, Object> configRowForJob(String userId, Map<String, Object> job) {
+        if (!"voucher".equals(job.get("funding_mode"))) return configRow(userId);
+        if (!officialConfigured()) return null;
+        validateBaseUrl(officialBaseUrl);
+        return Map.of("base_url", officialBaseUrl, "model", officialModel,
+                "provider", "official", "official_api_key", officialApiKey);
+    }
+
+    String keyFor(Map<String, Object> config) {
+        Object official = config.get("official_api_key");
+        return official == null ? decrypt((String) config.get("api_key_ciphertext")) : official.toString();
+    }
     private Map<String, Object> one(String sql, Object... args) {
         try { return db.queryForMap(sql, args); } catch (EmptyResultDataAccessException e) { return null; }
     }
@@ -472,11 +640,8 @@ public class CreateService {
     static void validateBaseUrl(String input) {
         try {
             java.net.URI uri = java.net.URI.create(input.strip());
-            if (uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null)
-                throw new IllegalArgumentException();
-            if (!privateLlmEndpointsAllowed && !"https".equalsIgnoreCase(uri.getScheme()))
-                throw new IllegalArgumentException();
-        } catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "baseUrl must be a valid HTTPS URL"); }
+            new LlmEndpointPolicy(LlmClient.allowedHosts, privateLlmEndpointsAllowed).validate(uri);
+        } catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "baseUrl must use an allowed HTTPS AI provider"); }
     }
 
     private SecretKeySpec aesKey() {

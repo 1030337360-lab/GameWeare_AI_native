@@ -1,0 +1,1 @@
+ALTER TABLE create_jobs ADD COLUMN engine VARCHAR(16) NOT NULL DEFAULT 'legacy';

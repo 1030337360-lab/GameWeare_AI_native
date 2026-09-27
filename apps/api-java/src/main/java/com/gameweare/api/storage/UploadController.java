@@ -18,6 +18,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -101,9 +102,12 @@ class UploadService {
                 "publicUrl", "/uploads/" + assetId + "/content");
     }
 
+    @Transactional
     public Map<String, Object> delete(String assetId, String userId) {
-        List<Map<String, Object>> rows = jdbc.queryForList("SELECT bucket,object_key FROM assets WHERE id=? AND owner_id=? AND kind='upload'", assetId, userId);
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT bucket,object_key FROM assets WHERE id=? AND owner_id=? AND kind='upload' FOR UPDATE", assetId, userId);
         if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Upload not found");
+        Integer uses = jdbc.queryForObject("SELECT COUNT(*) FROM create_job_inputs WHERE asset_id=?", Integer.class, assetId);
+        if (uses != null && uses > 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "Upload is used by a creation job");
         Map<String, Object> row = rows.get(0);
         try { minio.removeObject(RemoveObjectArgs.builder().bucket(row.get("bucket").toString()).object(row.get("object_key").toString()).build()); }
         catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Object storage unavailable", e); }

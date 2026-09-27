@@ -145,7 +145,7 @@ class ProfileService {
         out.put("description", row.get("description"));
         out.put("tags", jdbc.queryForList("SELECT t.name FROM tags t JOIN game_tags gt ON gt.tag_id=t.id WHERE gt.game_id=? ORDER BY t.name", String.class, row.get("game_id")));
         out.put("publishedAt", row.get("published_at"));
-        out.put("coverUrl", row.get("cover_object_key") == null ? "" : "/games/" + row.get("slug") + "/cover");
+        out.put("coverUrl", "/games/" + row.get("slug") + "/cover");
         out.put("plays", row.get("plays_count")); out.put("likes", row.get("likes_count"));
         out.put("favorites", row.get("favorites_count"));
         out.put("likedByMe", jdbc.queryForObject("SELECT COUNT(*) FROM game_likes WHERE game_id=? AND user_id=?", Long.class, row.get("game_id"), userId) > 0);

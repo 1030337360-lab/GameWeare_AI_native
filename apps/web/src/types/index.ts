@@ -10,6 +10,7 @@ export type Game = {
   id: string;
   thumbnailUrl: string | null;
   creatorName: string;
+  creatorId?: string;
   title: string;
   author: string;
   description: string;
@@ -95,6 +96,7 @@ export type CreateJob = {
   id: string;
   status: string;
   prompt: string;
+  errorMessage?: string | null;
   createdAt: string;
   logs: AgentLog[];
   gameId: string | null;
@@ -104,13 +106,18 @@ export type CreateJob = {
   publishStatus: string | null;
   visibility: string | null;
   versionNo: number | null;
+  coverDataUrl?: string | null;
   agentMode: AgentMode | null;
   createType: "init" | "opt" | null;
   projectId: string | null;
   runId: string | null;
   taskId: string | null;
   resumeStatus: string | null;
+  fundingMode?: "byok" | "voucher";
+  voucherId?: string | null;
 };
+
+export type CreateTaskSummary = Pick<CreateJob, "id" | "prompt" | "status" | "agentMode" | "createType" | "projectId" | "createdAt">;
 
 export type CreateProjectPreview = {
   projectId: string;
@@ -144,6 +151,7 @@ export type PendingImage = {
 export type AIConfigState = {
   authenticated: boolean;
   configured: boolean;
+  officialConfigured?: boolean;
   baseUrl?: string | null;
   model?: string | null;
   provider: string | null;
@@ -411,6 +419,7 @@ export const RUN_STAGE_LABELS: Record<string, string> = {
   cover_llm_call: "封面模型返回",
   cover_generated: "封面已生成",
   cover_uploaded: "封面已保存到 MinIO",
+  cover_reused: "保留原始封面",
   decentralized_preview_generation_started: "去中心化预览开始",
   decentralized_experts_generated: "创意专家已生成",
   decentralized_preview_candidate: "静态候选已生成",

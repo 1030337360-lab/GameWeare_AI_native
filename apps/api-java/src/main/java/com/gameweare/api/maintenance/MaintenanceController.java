@@ -38,6 +38,10 @@ public class MaintenanceController {
     public List<Map<String, Object>> jobs(@RequestParam(required=false) String status, @RequestParam(defaultValue="50") int limit, HttpServletRequest r) {
         return service.jobs(actor(r), status, limit);
     }
+    @GetMapping("/jobs/{id}/trace")
+    public Map<String, Object> jobTrace(@PathVariable String id, HttpServletRequest r) {
+        return service.jobTrace(actor(r), id);
+    }
     @GetMapping("/create-runs/failed")
     public List<Map<String, Object>> failed(@RequestParam(defaultValue="20") int limit, HttpServletRequest r) {
         return service.failed(actor(r), limit);
@@ -72,6 +76,11 @@ public class MaintenanceController {
     public List<Map<String, Object>> reviews(@RequestParam(required=false) String status, @RequestParam(defaultValue="50") int limit, HttpServletRequest r) {
         return service.reviews(actor(r), status, limit);
     }
+    @GetMapping("/agent-usage")
+    public List<Map<String, Object>> agentUsage(@RequestParam(required=false) String jobId,
+                                                @RequestParam(defaultValue="50") int limit, HttpServletRequest r) {
+        return service.agentUsage(actor(r), jobId, limit);
+    }
 
     private String actor(HttpServletRequest request) {
         Object id = request.getAttribute("userId");
@@ -85,6 +94,10 @@ class MaintenanceService {
     private final JdbcTemplate jdbc;
     private final MinioClient minio;
     private final CreateService creation;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.gameweare.api.catalog.GameCatalogCache gameCache;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.gameweare.api.catalog.GameTrendingService trending;
     MaintenanceService(JdbcTemplate jdbc, MinioClient minio, CreateService creation) {
         this.jdbc=jdbc; this.minio=minio; this.creation=creation;
     }
@@ -126,6 +139,73 @@ class MaintenanceService {
         }, args.toArray());
     }
 
+    /** Read-only administrator view of the persisted execution trail. Never return prompts sent to the provider or credentials. */
+    public Map<String, Object> jobTrace(String actor, String id) {
+        authorize(actor);
+        var jobs = jdbc.queryForList("""
+            SELECT j.id,j.status,j.engine,j.agent_mode,j.create_type,j.project_id,j.game_id,j.prompt,
+                   j.error_message,j.reserved_tokens,j.actual_tokens,j.attempts,j.created_at,j.updated_at,
+                   u.email AS creator_email,g.slug AS game_slug,g.publish_status
+            FROM create_jobs j JOIN users u ON u.id=j.user_id LEFT JOIN games g ON g.id=j.game_id
+            WHERE j.id=?
+            """, id);
+        if (jobs.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found");
+        var j = jobs.get(0);
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String field : List.of("id", "status", "engine", "project_id", "game_id", "reserved_tokens",
+                "actual_tokens", "attempts", "created_at", "updated_at", "creator_email", "game_slug", "publish_status")) {
+            String output = switch (field) {
+                case "project_id" -> "projectId"; case "game_id" -> "gameId";
+                case "reserved_tokens" -> "reservedTokens"; case "actual_tokens" -> "actualTokens";
+                case "created_at" -> "createdAt"; case "updated_at" -> "updatedAt";
+                case "creator_email" -> "creatorEmail"; case "game_slug" -> "gameSlug";
+                case "publish_status" -> "publishStatus"; default -> field;
+            };
+            result.put(output, j.get(field));
+        }
+        result.put("agentMode", j.get("agent_mode"));
+        result.put("createType", j.get("create_type"));
+        result.put("promptSummary", sanitize((String) j.get("prompt"), 500));
+        result.put("errorMessage", sanitize((String) j.get("error_message"), 3500));
+        result.put("steps", jdbc.query("""
+            SELECT step_no,stage,status,message,created_at FROM create_run_steps
+            WHERE job_id=? ORDER BY step_no LIMIT 200
+            """, (rs, n) -> {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("stepNo", rs.getInt("step_no"));
+            step.put("stage", rs.getString("stage"));
+            step.put("status", rs.getString("status"));
+            step.put("message", sanitize(rs.getString("message"), 3500));
+            step.put("createdAt", rs.getTimestamp("created_at"));
+            return step;
+        }, id));
+        result.put("modelCalls", jdbc.query("""
+            SELECT id,model,state,prompt_tokens,completion_tokens,started_at,ended_at
+            FROM agent_model_calls WHERE job_id=? ORDER BY started_at LIMIT 100
+            """, (rs, n) -> {
+            Map<String, Object> call = new LinkedHashMap<>();
+            call.put("id", rs.getString("id"));
+            call.put("model", rs.getString("model"));
+            call.put("state", rs.getString("state"));
+            call.put("promptTokens", rs.getObject("prompt_tokens"));
+            call.put("completionTokens", rs.getObject("completion_tokens"));
+            call.put("startedAt", rs.getTimestamp("started_at"));
+            call.put("endedAt", rs.getTimestamp("ended_at"));
+            return call;
+        }, id));
+        var workflows = jdbc.queryForList("""
+            SELECT phase,prompt_tokens,completion_tokens,used_tokens FROM create_job_workflows WHERE job_id=?
+            """, id);
+        if (!workflows.isEmpty()) {
+            var workflow = workflows.get(0);
+            result.put("workflow", Map.of("phase", workflow.get("phase"),
+                    "promptTokens", workflow.get("prompt_tokens"),
+                    "completionTokens", workflow.get("completion_tokens"),
+                    "usedTokens", workflow.get("used_tokens")));
+        }
+        return result;
+    }
+
     public List<Map<String,Object>> failed(String actor, int limit) {
         authorize(actor);
         List<Map<String,Object>> output = new ArrayList<>();
@@ -141,7 +221,7 @@ class MaintenanceService {
             for (var s : jdbc.queryForList("SELECT step_no,stage,status,message,created_at FROM create_run_steps WHERE job_id=? ORDER BY step_no",id)) {
                 Map<String,Object> step = new LinkedHashMap<>();
                 step.put("stepNo",s.get("step_no")); step.put("stage",s.get("stage")); step.put("status",s.get("status"));
-                step.put("inputSummary",null); step.put("outputSummary",sanitize((String)s.get("message"),500));
+                step.put("inputSummary",null); step.put("outputSummary",sanitize((String)s.get("message"),3500));
                 step.put("metrics",Map.of()); step.put("outputTokens",null); step.put("createdAt",s.get("created_at")); steps.add(step);
             }
             Map<String,Object> run = new LinkedHashMap<>();
@@ -207,6 +287,7 @@ class MaintenanceService {
             int changed=jdbc.update("UPDATE games SET "+String.join(",",fields)+" WHERE id=? AND publish_status<>'deleted'",values.toArray());
             if(changed==0) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Game not found");
             audit(actor,"maintenance.game.updated","game",id,"{}");
+            projectGame(id);
         }
         return oneGame(id);
     }
@@ -218,7 +299,26 @@ class MaintenanceService {
         if(status==null||!Set.of("approved","rejected").contains(status)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Invalid moderation status");
         if(count("SELECT COUNT(*) FROM games WHERE id=? AND publish_status<>'deleted'",id)==0) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Game not found");
         if("rejected".equals(status)) jdbc.update("UPDATE games SET publish_status='rejected',visibility='private' WHERE id=?",id);
+        if("rejected".equals(status)) projectGame(id);
         return review(actor,"game",id,status,body.getOrDefault("reason",""));
+    }
+
+    private void projectGame(String id) {
+        Runnable updateProjection = () -> {
+            if (gameCache != null) {
+                String slug = jdbc.queryForObject("SELECT slug FROM games WHERE id=?", String.class, id);
+                gameCache.invalidate(slug);
+            }
+            if (trending != null) trending.refresh(id);
+        };
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() {
+                        updateProjection.run();
+                    }
+                });
+        else updateProjection.run();
     }
 
     public List<Map<String,Object>> assets(String actor,String gameId,String jobId,int limit){
@@ -262,6 +362,30 @@ class MaintenanceService {
             m.put("id",rs.getString("id"));m.put("targetType",rs.getString("target_type"));m.put("targetId",rs.getString("target_id"));
             m.put("status",rs.getString("status"));m.put("reason",rs.getString("reason"));m.put("reviewerId",rs.getString("reviewer_id"));
             m.put("createdAt",rs.getTimestamp("created_at"));m.put("reviewedAt",rs.getTimestamp("reviewed_at"));return m;
+        },args.toArray());
+    }
+
+    /** Per-job AgentScope usage rollup so maintainers can see the billing failure window. */
+    public List<Map<String,Object>> agentUsage(String actor,String jobId,int limit){
+        authorize(actor);
+        String sql="""
+            SELECT c.job_id,j.status AS job_status,j.engine,c.model,
+                   SUM(c.state='completed') AS completed_calls,
+                   SUM(c.state='pending') AS pending_calls,
+                   SUM(c.state='unknown') AS unknown_calls,
+                   COALESCE(SUM(CASE WHEN c.state='completed' THEN c.prompt_tokens+c.completion_tokens END),0) AS recorded_tokens
+            FROM agent_model_calls c JOIN create_jobs j ON j.id=c.job_id
+            """;
+        List<Object> args=new ArrayList<>();
+        if(jobId!=null&&!jobId.isBlank()){sql+=" WHERE c.job_id=?";args.add(jobId);}
+        sql+=" GROUP BY c.job_id,j.status,j.engine,c.model ORDER BY unknown_calls DESC,completed_calls DESC LIMIT ?";args.add(limit(limit));
+        return jdbc.query(sql,(rs,n)->{
+            Map<String,Object> m=new LinkedHashMap<>();
+            m.put("jobId",rs.getString("job_id"));m.put("jobStatus",rs.getString("job_status"));
+            m.put("engine",rs.getString("engine"));m.put("model",rs.getString("model"));
+            m.put("completedCalls",rs.getLong("completed_calls"));m.put("pendingCalls",rs.getLong("pending_calls"));
+            m.put("unknownCalls",rs.getLong("unknown_calls"));m.put("recordedTokens",rs.getLong("recorded_tokens"));
+            return m;
         },args.toArray());
     }
 

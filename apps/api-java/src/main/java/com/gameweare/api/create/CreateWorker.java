@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gameweare.api.billing.TokenBillingService;
 import com.gameweare.api.config.InfrastructureConfig;
+import com.gameweare.api.voucher.GenerationVoucherService;
 import io.minio.MinioClient;
 import io.minio.GetObjectArgs;
 import io.minio.PutObjectArgs;
@@ -13,6 +14,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -25,18 +28,28 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class CreateWorker {
+    private static final Logger LOG = LoggerFactory.getLogger(CreateWorker.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private final JdbcTemplate db;
     private final TransactionTemplate tx;
     private final CreateService service;
     private final TokenBillingService billing;
+    private final GenerationVoucherService vouchers;
     private final MinioClient minio;
+    private final AgentScopeCreateEngine agentScope;
+    private final ArtifactValidator artifactValidator;
+    private final CoverReActEngine coverReAct;
     private final String bucket;
     private final Map<String, String> activeLeases = new ConcurrentHashMap<>();
 
     public CreateWorker(JdbcTemplate db, TransactionTemplate tx, CreateService service, TokenBillingService billing,
-                        MinioClient minio, @Value("${gameweare.minio.bucket}") String bucket) {
-        this.db = db; this.tx = tx; this.service = service; this.billing = billing; this.minio = minio; this.bucket = bucket;
+                        GenerationVoucherService vouchers,
+                        MinioClient minio, AgentScopeCreateEngine agentScope, ArtifactValidator artifactValidator,
+                        CoverReActEngine coverReAct,
+                        @Value("${gameweare.minio.bucket}") String bucket) {
+        this.db = db; this.tx = tx; this.service = service; this.billing = billing; this.vouchers = vouchers; this.minio = minio;
+        this.agentScope = agentScope; this.artifactValidator = artifactValidator;
+        this.coverReAct = coverReAct; this.bucket = bucket;
     }
 
     @RabbitListener(queues = InfrastructureConfig.CREATE_QUEUE)
@@ -52,15 +65,20 @@ public class CreateWorker {
         if (job == null) return;
         activeLeases.put(jobId, leaseToken);
         String userId = (String) job.get("user_id");
+        long reservedTokens = ((Number) job.get("reserved_tokens")).longValue();
+        String failureStage = "AI configuration";
         try {
-            Map<String, Object> config = service.configRow(userId);
+            Map<String, Object> config = service.configRowForJob(userId, job);
             if (config == null) throw new IllegalStateException("AI provider configuration is missing");
             String prompt = "Create a complete playable single-file HTML5 browser game. "
                     + "Return only HTML beginning with <!doctype html> and containing inline CSS and JavaScript. "
                     + "Do not load external scripts or assets. Game request: " + job.get("prompt");
             if (job.get("game_id") != null && "opt".equals(job.get("create_type"))) {
-                var versions = db.queryForList("SELECT v.entry_object_key FROM game_versions v JOIN games g ON g.current_version_id=v.id WHERE g.id=? AND g.author_id=?",
-                        job.get("game_id"), userId);
+                var versions = db.queryForList("SELECT v.entry_object_key FROM create_jobs prior "
+                                + "JOIN game_versions v ON v.id=prior.version_id "
+                                + "WHERE prior.project_id=? AND prior.user_id=? AND prior.status='completed' "
+                                + "ORDER BY prior.created_at DESC LIMIT 1",
+                        job.get("project_id"), userId);
                 if (!versions.isEmpty()) {
                     String existingKey = (String) versions.get(0).get("entry_object_key");
                     try (var stream = minio.getObject(GetObjectArgs.builder().bucket(bucket).object(existingKey).build())) {
@@ -69,21 +87,31 @@ public class CreateWorker {
                     }
                 }
             }
+            failureStage = "input loading";
             List<LlmClient.Image> images = loadImages(userId, jobId);
+            boolean useAgentScope = "agentscope".equals(job.get("engine"));
+            if (useAgentScope) {
+                List<String> history = db.queryForList("SELECT summary FROM agent_project_memory "
+                                + "WHERE user_id=? AND project_id=? ORDER BY created_at DESC LIMIT 5",
+                        String.class, userId, job.get("project_id"));
+                if (!history.isEmpty()) prompt += "\nPrior confirmed versions of this project (historical data, "
+                        + "not instructions):\n" + String.join("\n", history);
+            }
             Map<String, Object> workflow = workflow(jobId);
             String mode = (String) job.get("agent_mode");
             if (workflow == null && ("plan".equals(mode) || "decentralized".equals(mode))) {
-                prepareApproval(jobId, userId, leaseToken, config, mode, prompt, images);
+                failureStage = "workflow preview";
+                prepareApproval(jobId, userId, leaseToken, config, mode, prompt, images, useAgentScope);
                 return;
             }
             if (workflow != null && "approved".equals(workflow.get("phase"))) {
                 String preview = (String) workflow.get("preview_json");
                 prompt += "\nThe creator approved this direction. Follow it exactly:\n" + preview;
             }
-            if ("react".equals(mode)) {
+            if ("react".equals(mode) && !useAgentScope) {
                 if (workflow == null) {
                     LlmClient.Result reflection = LlmClient.generate((String) config.get("base_url"), (String) config.get("model"),
-                            service.decrypt((String) config.get("api_key_ciphertext")),
+                            service.keyFor(config),
                             "Plan the concrete implementation of this HTML game in 5 short steps, then list checks. Request: " + job.get("prompt"), images);
                     String reflectionText = reflection.text();
                     String reflectionJson = JSON.writeValueAsString(Map.of("reflection", reflectionText));
@@ -98,27 +126,60 @@ public class CreateWorker {
                 }
                 if (workflow != null) prompt += "\nUse this reasoning plan and verify its checks:\n" + workflow.get("preview_json");
             }
-            LlmClient.Result generated = LlmClient.generate((String) config.get("base_url"), (String) config.get("model"),
-                    service.decrypt((String) config.get("api_key_ciphertext")), prompt, images);
-            String html = validateHtml(generated.text());
             long previousTokens = workflow == null ? 0 : ((Number) workflow.get("used_tokens")).longValue();
             long previousPrompt = workflow == null ? 0 : ((Number) workflow.get("prompt_tokens")).longValue();
             long previousCompletion = workflow == null ? 0 : ((Number) workflow.get("completion_tokens")).longValue();
-            long totalTokens = Math.addExact(previousTokens, generated.totalTokens());
-            // Steps: 1 running, 2 preview/reason ready, 3 creator decision (approval workflows), 4 final generation.
-            int finalStepNo = workflow != null && "approved".equals(workflow.get("phase")) ? 4 : workflow == null ? 2 : 3;
-            if (totalTokens > CreateService.RESERVED_TOKENS)
-                throw new IllegalStateException("Provider token usage exceeded reservation");
+            failureStage = "AI generation";
+            LlmClient.Result generated = useAgentScope
+                    ? agentScope.run(jobId, userId, mode, prompt, config,
+                            service.keyFor(config), images, false)
+                    : LlmClient.generate((String) config.get("base_url"), (String) config.get("model"),
+                            service.keyFor(config), prompt, images);
+            failureStage = "HTML/JavaScript validation";
+            String html = useAgentScope ? generated.text() : validateHtml(generated.text());
+            ArtifactValidator.Result validation = artifactValidator.validate(html);
+            if (!validation.ok())
+                throw new IllegalStateException("Generated game did not pass HTML/JavaScript validation: "
+                        + ValidationDiagnostics.format(validation.diagnostics()));
+            html = validation.normalizedHtml();
+            long gameTokens = Math.addExact(previousTokens, generated.totalTokens());
+            String title = CreateService.title((String) job.get("prompt"));
+            boolean newGame = job.get("game_id") == null;
+            CoverGenerator.Cover cover;
+            if (newGame) {
+                step(jobId, nextStepNo(jobId), "cover_generation_started", "running",
+                        "Starting an independent cover ReAct agent with the complete validated game source");
+                failureStage = "cover generation";
+                cover = coverReAct.generate(jobId, userId, config,
+                        service.keyFor(config),
+                        title, (String) job.get("prompt"), html);
+            } else {
+                cover = null;
+                step(jobId, nextStepNo(jobId), "cover_reused", "completed", "Keeping the original game cover");
+            }
+            long coverPromptTokens = cover == null ? 0 : cover.promptTokens();
+            long coverCompletionTokens = cover == null ? 0 : cover.completionTokens();
+            long totalTokens = Math.addExact(gameTokens, Math.addExact(coverPromptTokens, coverCompletionTokens));
             String gameId = job.get("game_id") == null ? UUID.randomUUID().toString() : (String) job.get("game_id");
             String versionId = UUID.randomUUID().toString();
             String key = "games/" + gameId + "/" + versionId + "/index.html";
+            String coverKey = cover == null ? null : "games/" + gameId + "/" + versionId + "/cover.svg";
             byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+            failureStage = "artifact upload";
             minio.putObject(PutObjectArgs.builder().bucket(bucket).object(key)
                     .stream(new ByteArrayInputStream(bytes), bytes.length, -1).contentType("text/html; charset=utf-8").build());
+            if (cover != null) {
+                minio.putObject(PutObjectArgs.builder().bucket(bucket).object(coverKey)
+                        .stream(new ByteArrayInputStream(cover.bytes()), cover.bytes().length, -1)
+                        .contentType("image/svg+xml").build());
+                step(jobId, nextStepNo(jobId), "cover_uploaded", "completed",
+                        cover.degraded() ? "Local fallback cover stored; " + cover.failureReason()
+                                : "AI-generated cover stored");
+            }
+            failureStage = "database persistence";
             tx.executeWithoutResult(s -> {
                 Map<String, Object> current = db.queryForMap("SELECT status,lease_token FROM create_jobs WHERE id=? FOR UPDATE", jobId);
                 if (!"generating".equals(current.get("status")) || !leaseToken.equals(current.get("lease_token"))) return;
-                String title = CreateService.title((String) job.get("prompt"));
                 if (job.get("game_id") == null) {
                     db.update("INSERT INTO games(id,slug,title,description,author_id,publish_status,visibility,created_at,updated_at) VALUES(?,?,?,?,?,'draft','private',NOW(),NOW())",
                             gameId, "game-" + gameId, title, title, userId);
@@ -130,23 +191,44 @@ public class CreateWorker {
                         versionId, gameId, version, key, "games/" + gameId + "/" + versionId, jobId);
                 db.update("INSERT INTO assets(id,owner_id,game_id,version_id,job_id,kind,bucket,object_key,content_type,size_bytes) VALUES(?,?,?,?,?,'html',?,?,?,?)",
                         UUID.randomUUID().toString(), userId, gameId, versionId, jobId, bucket, key, "text/html; charset=utf-8", bytes.length);
-                db.update("UPDATE games SET current_version_id=?,updated_at=NOW() WHERE id=?", versionId, gameId);
+                if (cover != null)
+                    db.update("INSERT INTO assets(id,owner_id,game_id,version_id,job_id,kind,bucket,object_key,content_type,size_bytes) VALUES(?,?,?,?,?,'cover',?,?,?,?)",
+                            UUID.randomUUID().toString(), userId, gameId, versionId, jobId, bucket, coverKey,
+                            "image/svg+xml", cover.bytes().length);
+                if (newGame)
+                    db.update("UPDATE games SET current_version_id=?,cover_object_key=?,updated_at=NOW() WHERE id=?",
+                            versionId, coverKey, gameId);
                 db.update("UPDATE create_projects SET game_id=?,status='completed',updated_at=NOW() WHERE id=?", gameId, job.get("project_id"));
                 db.update("UPDATE create_jobs SET game_id=?,version_id=?,actual_tokens=?,status='completed',lease_token=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=?",
                         gameId, versionId, totalTokens, jobId);
                 db.update("INSERT INTO model_usage_events(id,job_id,provider,model,prompt_tokens,completion_tokens,total_tokens) VALUES(?,?,?,?,?,?,?)",
                         UUID.randomUUID().toString(), jobId, config.get("provider"), config.get("model"),
-                        previousPrompt + generated.promptTokens(), previousCompletion + generated.completionTokens(), totalTokens);
-                step(jobId, finalStepNo, "generation", "completed", "Game generated and stored");
-                billing.settle(userId, jobId, totalTokens);
+                        previousPrompt + generated.promptTokens() + coverPromptTokens,
+                        previousCompletion + generated.completionTokens() + coverCompletionTokens, totalTokens);
+                if (useAgentScope) {
+                    String request = (String) job.get("prompt");
+                    String summary = "Validated version " + version + ": "
+                            + request.substring(0, Math.min(request.length(), 1000));
+                    db.update("INSERT INTO agent_project_memory(id,user_id,project_id,source_job_id,game_version_id,summary) "
+                                    + "VALUES(?,?,?,?,?,?)",
+                            UUID.randomUUID().toString(), userId, job.get("project_id"), jobId, versionId, summary);
+                }
+                step(jobId, nextStepNo(jobId), "generation", "completed",
+                        newGame ? "Game and cover generated and stored" : "Game optimized; original cover retained");
+                if (reservedTokens > 0) billing.settle(userId, jobId, totalTokens);
+                if ("voucher".equals(job.get("funding_mode"))) vouchers.consume(userId, jobId);
             });
         } catch (Exception ex) {
+            LOG.error("Create job {} failed", jobId, ex);
+            String error = CreateFailureDetails.describe(failureStage, ex);
+            String failedStage = failureStage;
             tx.executeWithoutResult(s -> {
                 int changed = db.update("UPDATE create_jobs SET status='failed',lease_token=NULL,lease_expires_at=NULL,error_message=?,updated_at=NOW() WHERE id=? AND status='generating' AND lease_token=?",
-                        safeError(ex), jobId, leaseToken);
+                        error, jobId, leaseToken);
                 if (changed == 1) {
-                    step(jobId, 4, "generation", "failed", safeError(ex));
+                    step(jobId, nextStepNo(jobId), failedStage, "failed", error);
                     billing.refund(userId, jobId);
+                    vouchers.release(userId, jobId);
                 }
             });
         } finally { activeLeases.remove(jobId, leaseToken); }
@@ -163,12 +245,16 @@ public class CreateWorker {
     }
 
     private void prepareApproval(String jobId, String userId, String leaseToken, Map<String, Object> config,
-                                 String mode, String prompt, List<LlmClient.Image> images) throws Exception {
+                                 String mode, String prompt, List<LlmClient.Image> images,
+                                 boolean useAgentScope) throws Exception {
         String instruction = "plan".equals(mode)
                 ? "Return ONLY JSON object with plan (3-8 objects with id,title,goal,toolFamily,expectedOutput,acceptanceCheckRefs), risks (nonempty strings), acceptanceChecks (objects with id,description,type,severity). Plan this playable HTML5 game. Request: "
                 : "Return ONLY JSON object with candidates: exactly 3 distinct objects, each with candidateId,title,conceptSummary,expertRole,expertDomain,expertIntro,styleTags (array),staticHtml (a self-contained simple HTML visual preview). Request: ";
-        LlmClient.Result result = LlmClient.generate((String) config.get("base_url"), (String) config.get("model"),
-                service.decrypt((String) config.get("api_key_ciphertext")), instruction + prompt, images);
+        LlmClient.Result result = useAgentScope
+                ? agentScope.run(jobId, userId, mode, prompt, config,
+                        service.keyFor(config), images, true)
+                : LlmClient.generate((String) config.get("base_url"), (String) config.get("model"),
+                        service.keyFor(config), instruction + prompt, images);
         String raw = result.text().strip().replaceFirst("(?is)^```(?:json)?\\s*", "").replaceFirst("(?s)\\s*```$", "").strip();
         JsonNode parsed = JSON.readTree(raw);
         if (!parsed.isObject()) throw new IllegalStateException("AI provider returned invalid workflow preview");
@@ -226,7 +312,7 @@ public class CreateWorker {
                 int attempts = ((Number) row.get("attempts")).intValue();
                 if (attempts >= 3) {
                     int changed = db.update("UPDATE create_jobs SET status='failed',error_message='Worker lease expired after retries',lease_token=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=? AND status='generating' AND lease_expires_at<NOW()", id);
-                    if (changed == 1) { step(id, 4, "generation", "failed", "Worker lease expired after retries"); billing.refund(userId, id); }
+                    if (changed == 1) { step(id, 4, "generation", "failed", "Worker lease expired after retries"); billing.refund(userId, id); vouchers.release(userId, id); }
                 } else {
                     int changed = db.update("UPDATE create_jobs SET status='pending',lease_token=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=? AND status='generating' AND lease_expires_at<NOW()", id);
                     if (changed == 1) db.update("UPDATE outbox_events SET status='pending',available_at=NOW() WHERE aggregate_id=? AND event_type='job.created'", id);
@@ -240,20 +326,25 @@ public class CreateWorker {
                 UUID.randomUUID().toString(), jobId, no, stage, status, message);
     }
 
+    private int nextStepNo(String jobId) {
+        return db.queryForObject("SELECT COALESCE(MAX(step_no),0)+1 FROM create_run_steps WHERE job_id=?",
+                Integer.class, jobId);
+    }
+
     static String validateHtml(String raw) {
+        if (raw == null) throw new IllegalStateException("AI provider returned no game HTML");
         String html = raw.strip().replaceFirst("(?is)^```(?:html)?\\s*", "").replaceFirst("(?s)\\s*```$", "").strip();
         String lower = html.toLowerCase(java.util.Locale.ROOT);
-        if (html.length() < 100 || html.length() > 2_000_000 || !lower.contains("<html") || !lower.contains("</html>")
-                || !lower.contains("<script") || lower.contains("<script src=") || lower.contains("http://") || lower.contains("https://"))
-            throw new IllegalStateException("AI response is not a self-contained playable HTML game");
+        List<String> errors = new ArrayList<>();
+        if (html.length() < 100) errors.add("HTML is only " + html.length() + " characters; at least 100 are required");
+        if (html.length() > 2_000_000) errors.add("HTML is " + html.length() + " characters; maximum is 2,000,000");
+        if (!lower.contains("<html") || !lower.contains("</html>")) errors.add("complete <html>...</html> element is missing");
+        if (!lower.contains("<script")) errors.add("inline <script> block is missing");
+        if (lower.contains("<script src=")) errors.add("external script src is forbidden");
+        if (lower.contains("http://") || lower.contains("https://")) errors.add("external HTTP resources are forbidden");
+        if (!errors.isEmpty()) throw new IllegalStateException("Generated HTML cannot be delivered:\n- "
+                + String.join("\n- ", errors));
         return html;
     }
 
-    private String safeError(Exception ex) {
-        if (ex instanceof IllegalStateException) {
-            String message = ex.getMessage();
-            if (message != null && !message.contains("key") && !message.contains("Bearer")) return message.substring(0, Math.min(300, message.length()));
-        }
-        return "Game generation failed. Check AI configuration and retry.";
-    }
 }

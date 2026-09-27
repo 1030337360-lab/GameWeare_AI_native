@@ -1,5 +1,7 @@
 # Gameweare MVP 企业级化改造审查报告与计划
 
+> **历史审查材料**：本文记录迁移前 FastAPI/PostgreSQL 版本的风险与当时的建议，不代表当前 Java 实现状态。现行建设状态见 [`.plan/task.md`](../.plan/task.md)，系统设计见 [`system-design.md`](system-design.md)。
+
 > 范围说明：本次为只读审查，未修改任何文件。以下结论基于对 `apps/api`、`apps/web`、`docker-compose.yml`、Dockerfile、测试目录与 `docs/` 的通读。
 
 ## 一、项目现状速览

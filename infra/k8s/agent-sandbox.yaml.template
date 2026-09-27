@@ -1,0 +1,152 @@
+# Requires the pinned agent-sandbox controller and extension CRDs.
+# Substitute AGENT_RUNTIME_IMAGE with an immutable image digest before applying.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: create-runners
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gameweare-sandbox
+  namespace: create-runners
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gameweare-agent-client
+  namespace: create-runners
+rules:
+  - apiGroups: [extensions.agents.x-k8s.io]
+    resources: [sandboxclaims]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods, services]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/portforward]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gameweare-agent-client
+  namespace: create-runners
+subjects:
+  - kind: ServiceAccount
+    name: gameweare-api
+    namespace: gameweare
+roleRef:
+  kind: Role
+  name: gameweare-agent-client
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: create-quota
+  namespace: create-runners
+spec:
+  hard:
+    pods: "30"
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: gameweare-create-template
+  namespace: create-runners
+spec:
+  envVarsInjectionPolicy: Disallowed
+  service: true
+  podTemplate:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: ${SANDBOX_RUNTIME_CLASS}
+      serviceAccountName: gameweare-sandbox
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runtime
+          image: ${AGENT_RUNTIME_IMAGE}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8888
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8888
+            periodSeconds: 2
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+              ephemeral-storage: 2Gi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+  networkPolicyManagement: Managed
+  networkPolicy:
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: gameweare
+            podSelector:
+              matchLabels:
+                app: gameweare-api
+        ports:
+          - protocol: TCP
+            port: 8888
+    egress: []
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: gameweare-create
+  namespace: create-runners
+spec:
+  replicas: 2
+  sandboxTemplateRef:
+    name: gameweare-create-template
+  updateStrategy:
+    type: OnReplenish

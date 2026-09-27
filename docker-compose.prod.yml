@@ -1,0 +1,117 @@
+name: gameweare
+
+# Supply values from a deployment secret store or an ignored env file.
+# This stack expects a TLS reverse proxy for WEB_ORIGIN and API_PUBLIC_URL.
+services:
+  api:
+    build: ./apps/api-java
+    image: gameweare-java-api:prod
+    depends_on:
+      mysql: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      MYSQL_URL: jdbc:mysql://mysql:3306/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: gameweare
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+      REDIS_HOST: redis
+      OFFICIAL_LLM_BASE_URL: ${OFFICIAL_LLM_BASE_URL:-}
+      OFFICIAL_LLM_MODEL: ${OFFICIAL_LLM_MODEL:-}
+      OFFICIAL_LLM_API_KEY: ${OFFICIAL_LLM_API_KEY:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: gameweare-games
+      MINIO_PUBLIC_BASE_URL: ${MINIO_PUBLIC_BASE_URL:?MINIO_PUBLIC_BASE_URL is required}
+      WEB_ORIGIN: ${WEB_ORIGIN:?WEB_ORIGIN is required}
+      AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:?AI_CONFIG_SECRET is required}
+      LLM_ALLOWED_HOSTS: ${LLM_ALLOWED_HOSTS:?LLM_ALLOWED_HOSTS is required}
+      LLM_ALLOW_PRIVATE_ENDPOINTS: "false"
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+    ports: ["127.0.0.1:${API_LOOPBACK_PORT:-8080}:8080"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        VITE_API_BASE_URL: ${API_PUBLIC_URL:?API_PUBLIC_URL is required}
+    depends_on:
+      api: {condition: service_healthy}
+    ports: ["127.0.0.1:${WEB_LOOPBACK_PORT:-1314}:1314"]
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: gameweare
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    volumes: ["mysql_data:/var/lib/mysql"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u gameweare -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: gameweare
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+    volumes: ["rabbitmq_data:/var/lib/rabbitmq"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes: ["redis_data:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+    volumes: ["minio_data:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
+  redis_data:
+  minio_data:

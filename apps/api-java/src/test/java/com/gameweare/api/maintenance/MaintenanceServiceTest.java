@@ -29,6 +29,18 @@ class MaintenanceServiceTest {
     }
 
     @Test
+    void normalUserCannotReadAnotherUsersExecutionTrace() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(anyString(), eq(String.class), eq("user-id"))).thenReturn(List.of("user"));
+        MaintenanceService service = new MaintenanceService(jdbc, mock(MinioClient.class), mock(CreateService.class));
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.jobTrace("user-id", "someone-elses-job"));
+
+        assertEquals(HttpStatus.FORBIDDEN, error.getStatusCode());
+    }
+
+    @Test
     void maintainerCannotSetInvalidVisibility() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForList(anyString(), eq(String.class), eq("maintainer-id"))).thenReturn(List.of("maintainer"));

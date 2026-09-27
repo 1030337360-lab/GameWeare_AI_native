@@ -145,7 +145,9 @@ class AuthServiceTest {
         when(redis.hasKey("auth:revoked:" + hash)).thenReturn(false);
         when(redis.opsForValue()).thenReturn(values);
         when(values.get("auth:session:" + hash)).thenReturn(String.join(":",
-                encode("u1"), encode("user@example.com"), encode("User"), encode(""), encode("user"), "1700000000000"));
+                encode("u1"), encode("user@example.com"), encode("User"), encode(""), encode("user"), "1700000000000",
+                Long.toString(Instant.now().plus(Duration.ofDays(2)).toEpochMilli()),
+                Long.toString(Instant.now().toEpochMilli())));
 
         AuthService.UserProfile out = service.findUserByToken("token");
 
@@ -169,6 +171,7 @@ class AuthServiceTest {
         when(rs.getString("role")).thenReturn("user");
         when(rs.getTimestamp("last_login_at")).thenReturn(Timestamp.from(Instant.now()));
         when(rs.getTimestamp("expires_at")).thenReturn(Timestamp.from(Instant.now().plus(Duration.ofHours(1))));
+        when(rs.getTimestamp("created_at")).thenReturn(Timestamp.from(Instant.now()));
         when(jdbc.query(contains("user_sessions"), any(RowMapper.class), any(Object[].class)))
                 .thenAnswer(invocation -> List.of(((RowMapper<Object>) invocation.getArgument(1)).mapRow(rs, 0)));
 
