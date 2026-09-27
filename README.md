@@ -32,7 +32,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-前端：<http://localhost:1314>；API 健康检查：<http://localhost:8080/actuator/health>。MySQL、Redis、RabbitMQ、MinIO 分别由 Compose 启动。首次启动会执行 Flyway 迁移。开发配置中的默认密码只适用于本机。
+前端：<http://localhost:1314>；API 健康检查：<http://localhost:8080/actuator/health>。MySQL、Redis、RabbitMQ、MinIO 分别由 Compose 启动。首次启动会执行 Flyway 迁移，并把后端内部的 Java 面试知识闯关注册为首页可玩的内置游戏；重复启动不会重复创建。开发配置中的默认密码只适用于本机。
 
 创建游戏前，可在“创作”页配置自己的模型地址、名称和 API Key。官方生成券还需服务端配置 `OFFICIAL_LLM_BASE_URL`、`OFFICIAL_LLM_MODEL`、`OFFICIAL_LLM_API_KEY`。新建生成任务的模型额度由服务商 API 判断，项目不以旧版本地 Token 余额拒绝任务。
 

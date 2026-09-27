@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import javax.sql.DataSource;
 
 @Configuration
@@ -36,6 +37,7 @@ public class InfrastructureConfig {
     }
 
     @Bean
+    @Order(-100)
     CommandLineRunner ensureGameBucket(MinioClient minio, @Value("${gameweare.minio.bucket}") String bucket) {
         return args -> {
             if (!minio.bucketExists(BucketExistsArgs.builder().bucket(bucket).build())) {

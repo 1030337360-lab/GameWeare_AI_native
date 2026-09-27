@@ -42,6 +42,7 @@ flowchart LR
 ## 部署与边界
 
 - [开发 Compose](../docker-compose.yml) 启动前后端和四个依赖服务；[双实例覆盖配置](../docker-compose.multi-instance.yml) 用于并发验收；[生产配置](../docker-compose.prod.yml) 要求显式密钥。
+- 首次启动时，[内置游戏注册器](../apps/api-java/src/main/java/com/gameweare/api/catalog/BuiltInGameSeeder.java) 将 JAR 内的 [Java 面试闯关资源](../apps/api-java/src/main/resources/seed/java-interview-quiz) 校验后存入 MinIO，并在 MySQL 发布为普通游戏。固定 slug 和主键使重启、双实例启动保持幂等；资源不作为仓库顶层独立页面发布。
 - [CI](../.github/workflows/ci.yml) 构建 Java 与前端，并运行隔离环境的冒烟、双实例和秒杀验证。CI 通过不等于真实模型、Google OAuth、Kubernetes 或持续压测通过。
 - 生成的 HTML 是不可信内容：语法与资源规则由后端校验，浏览器再用 sandbox iframe 和 CSP 限制执行；这些检查不能证明玩法质量或完全排除恶意内容。
 - 真实 Kubernetes 沙箱和硬网络出口限制仍需在目标集群验收。现有本机 Docker 沙箱只覆盖本地开发路径。

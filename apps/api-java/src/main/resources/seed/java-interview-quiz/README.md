@@ -1,4 +1,6 @@
-# Java 面试词霸题库
+# 内置 Java 面试知识闯关
+
+此目录是 Spring Boot JAR 的内部资源。Docker Compose 首次启动时，后端把 `index.html` 注册为公开可玩的内置游戏 `java-interview-quiz`；仓库根目录不再单独暴露题库内容，也无需部署额外的静态站点。已有用户游戏不会被替换。
 
 - `base-v3.html`：修复了初始页面不可见问题后的原始 16 题游戏。
 - `additional-questions.json`：参考用户提供的 Java SE、集合、线程池、AQS、锁与反射等资料整理的 64 道新题。重复的线程池附件只采纳一次；题目按 Java 8 语境核对，避免把讲义中的经验说法当成无条件规则。

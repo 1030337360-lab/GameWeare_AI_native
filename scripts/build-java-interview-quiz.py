@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTENT = ROOT / "content" / "java-interview-quiz"
+CONTENT = ROOT / "apps" / "api-java" / "src" / "main" / "resources" / "seed" / "java-interview-quiz"
 base = (CONTENT / "base-v3.html").read_text(encoding="utf-8")
 questions = json.loads((CONTENT / "additional-questions.json").read_text(encoding="utf-8"))
 topics = ["基础与集合", "反射与代理", "异常与拷贝", "字符串与Java8", "并发与JMM", "线程池", "锁与AQS", "JVM与IO"]
