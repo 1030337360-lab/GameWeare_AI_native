@@ -133,7 +133,7 @@ function GameCard({ game }: { game: Game }) {
         <span className="cover-open"><ArrowUpRight size={19} /></span>
       </div>
       <div className="catalog-card-content">
-        <div><h3>{game.title}</h3><p>作者：{game.creatorName || "Gameweare 创作者"}</p></div>
+        <div><h3>{game.title}</h3><p>作者：{game.creatorName || "GameWeare 创作者"}</p></div>
         <span className="catalog-plays"><Play size={13} fill="currentColor" /> {formatPlays(game.plays)}</span>
       </div>
     </Link>

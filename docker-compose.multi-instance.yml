@@ -5,7 +5,7 @@ services:
       AGENT_FILESYSTEM: local
 
   api-replica:
-    image: gameweare-java-api:local
+    image: gameweare-backend-api:local
     depends_on:
       mysql: {condition: service_healthy}
       rabbitmq: {condition: service_healthy}

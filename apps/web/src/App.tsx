@@ -103,8 +103,8 @@ function AppRoutes() {
       </Routes>
       </div>
       <footer className="site-footer">
-        <span>© {new Date().getFullYear()} Gameweare <span className="footer-dot">✦</span> Made for play.</span>
-        <div><Link to="/">Explore</Link><Link to={token ? "/create" : "/auth/login?next=/create"}>Create</Link><Link to={token ? "/rewards" : "/auth/login?next=/rewards"}>Rewards</Link></div>
+        <span>© {new Date().getFullYear()} GameWeare <span className="footer-dot">✦</span> AI 游戏创作与游玩平台</span>
+        <div><Link to="/">探索游戏</Link><Link to={token ? "/create" : "/auth/login?next=/create"}>创作游戏</Link><Link to={token ? "/rewards" : "/auth/login?next=/rewards"}>奖励中心</Link></div>
       </footer>
     </>
   );

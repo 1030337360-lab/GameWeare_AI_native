@@ -14,9 +14,9 @@ export default function Header() {
     <>
       <header className="site-header">
         <div className="site-header-inner">
-          <Link className="site-brand" to="/" aria-label="Gameweare home">
+          <Link className="site-brand" to="/" aria-label="GameWeare 首页">
             <span className="brand-mark"><Gamepad2 size={21} strokeWidth={2.4} /></span>
-            <span>game<span className="brand-accent">weare</span></span>
+            <span>Game<span className="brand-accent">Weare</span></span>
             <span className="brand-beta">BETA</span>
           </Link>
 

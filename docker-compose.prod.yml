@@ -5,7 +5,7 @@ name: gameweare
 services:
   api:
     build: ./apps/api-java
-    image: gameweare-java-api:prod
+    image: gameweare-backend-api:prod
     depends_on:
       mysql: {condition: service_healthy}
       rabbitmq: {condition: service_healthy}
@@ -49,6 +49,7 @@ services:
       context: ./apps/web
       args:
         VITE_API_BASE_URL: ${API_PUBLIC_URL:?API_PUBLIC_URL is required}
+    image: gameweare-frontend:prod
     depends_on:
       api: {condition: service_healthy}
     ports: ["127.0.0.1:${WEB_LOOPBACK_PORT:-1314}:1314"]

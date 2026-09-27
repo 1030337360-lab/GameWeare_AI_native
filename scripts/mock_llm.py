@@ -132,7 +132,7 @@ def handle_chat_completions(body):
                             pass
         return ids
 
-    if "Gameweare cover artist" in flat:
+    if "GameWeare cover artist" in flat:
         names = tool_names()
         writes = names.count("write_file")
         validations = names.count("validate_cover_svg")
@@ -229,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.endswith("/responses"):
             self._reply({"error": "unsupported path"}, 404)
             return
-        if "Gameweare cover artist" in raw:
+        if "GameWeare cover artist" in raw:
             text = COVER_SVG
         elif "ONLY JSON object with plan" in raw:
             text = PLAN

@@ -1,6 +1,6 @@
-# Gameweare-MVP Week 1 改造计划
+# GameWeare 早期企业级化改造第一周计划
 
-> 基于《Gameweare MVP 企业级化改造审查报告与计划.md》的阶段 1（安全与可靠性基线），拆解为 7 天可执行任务。
+> 基于 [早期企业级化改造审查报告与计划](legacy-enterprise-hardening-review.md) 的阶段 1（安全与可靠性基线），拆解为 7 天可执行任务。
 
 ---
 

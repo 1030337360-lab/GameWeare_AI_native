@@ -1,6 +1,6 @@
 # GameWeare Java 后端建设计划与复核
 
-本计划对应本地仓库 `E:\yahaha-mvp` 当前的 GameWeare 代码；参考仓库仍是 `charlie11sun-netizen/yahaha`，两者不是同一个项目。`features.json` 中的 `passes=true` 只表示已有实现与相应验证，不能等同于生产可用。
+本计划对应当前 GameWeare 仓库；参考仓库仍是 `charlie11sun-netizen/yahaha`，两者不是同一个项目。`features.json` 中的 `passes=true` 只表示已有实现与相应验证，不能等同于生产可用。
 
 ## 已建设范围
 

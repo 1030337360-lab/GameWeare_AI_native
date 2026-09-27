@@ -73,7 +73,7 @@ final class CoverReActEngine {
                         .toolkit(toolkit).enableTaskList(true)
                         .distributedStore(MysqlDistributedStore.create(dataSource))
                         .maxIters(Integer.MAX_VALUE).middleware(meter)
-                        .sysPrompt("You are the Gameweare cover artist. Use a ReAct loop: plan with todo_write, "
+                        .sysPrompt("You are the GameWeare cover artist. Use a ReAct loop: plan with todo_write, "
                                 + "write a new cover.svg, call validate_cover_svg, observe its exact diagnostics, "
                                 + "repair the existing file with edit_file and validate again until PASS, "
                                 + "then call deliver_artifact "

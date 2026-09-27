@@ -25,12 +25,12 @@ try {
     try { $apiAlreadyRunning = (Invoke-RestMethod -Uri 'http://localhost:8080/health' -TimeoutSec 2).status -eq 'ok' }
     catch { $apiAlreadyRunning = $false }
     if (-not $apiAlreadyRunning) {
-        docker build --progress=quiet --target build -t gameweare-api-build:local apps/api-java
+        docker build --progress=quiet --target build -t gameweare-backend-build:local apps/api-java
         if ($LASTEXITCODE -ne 0) { throw 'API build failed' }
-        $containerId = docker create gameweare-api-build:local
+        $containerId = docker create gameweare-backend-build:local
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the API build' }
         try {
-            docker cp "${containerId}:/app/target/gameweare-api-0.1.0-SNAPSHOT.jar" (Join-Path $runtime 'gameweare-api.jar')
+            docker cp "${containerId}:/app/target/gameweare-backend-api-0.1.0-SNAPSHOT.jar" (Join-Path $runtime 'gameweare-backend-api.jar')
             if ($LASTEXITCODE -ne 0) { throw 'Could not extract the API jar' }
         } finally { docker rm $containerId | Out-Null }
     }
@@ -55,7 +55,7 @@ try {
         $javaExe = (Get-Command java).Source
         $apiArgs = @{
             FilePath = $javaExe
-            ArgumentList = @('-jar', (Join-Path $runtime 'gameweare-api.jar'))
+            ArgumentList = @('-jar', (Join-Path $runtime 'gameweare-backend-api.jar'))
             WorkingDirectory = $root
             RedirectStandardOutput = (Join-Path $runtime 'api.out.log')
             RedirectStandardError = (Join-Path $runtime 'api.err.log')

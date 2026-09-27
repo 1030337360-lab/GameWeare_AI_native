@@ -1,12 +1,15 @@
-# Gameweare / GameWeare AI Native
+# GameWeare — AI 游戏创作与游玩平台
 
 本仓库是 [1030337360-lab/GameWeare_AI_native](https://github.com/1030337360-lab/GameWeare_AI_native) 的本地项目。此前用于对照的参考仓库是 [charlie11sun-netizen/yahaha](https://github.com/charlie11sun-netizen/yahaha)，两者不是同一个项目。
+
+**命名约定：**产品统一称为 **GameWeare**；仓库是 AI 游戏创作与游玩平台。`apps/web` 是玩家与创作者使用的前端，`apps/api-java` 是 Spring Boot 后端 API，`apps/agent-sandbox-runtime` 是每次生成任务使用的隔离运行时。Docker Compose 的项目标识暂保留 `gameweare-mvp`，以继续使用现有 MySQL、Redis、RabbitMQ 和 MinIO 数据卷；它不是产品名称。
 
 ## 目录与架构
 
 - `apps/web`：React + Vite 前端。
 - `apps/api-java`：Java 17 + Spring Boot 4 后端。按 `auth`、`billing`、`catalog`、`play`、`storage`、`create`、`maintenance`、`profile` 业务模块组织。
 - `archive/python-api`：原 FastAPI 后端完整归档，仅供对照与迁移，不参与当前启动。
+- `archive/frontend-original-main.tsx`：早期前端入口备份，不参与当前构建。
 - `apps/api-java/src/main/resources/db/migration`：MySQL Flyway 版本化表结构。
 - `docker-compose.yml`：MySQL、Redis、RabbitMQ、MinIO 与应用服务。
 - `docker-compose.prod.yml`：生产覆盖配置，要求显式密钥与 AI 域名白名单。

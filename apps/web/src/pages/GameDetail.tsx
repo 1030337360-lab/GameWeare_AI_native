@@ -87,7 +87,7 @@ export default function GameDetail({ games, loading }: GameDetailProps) {
         <div className="game-info">
           <span className="section-kicker">READY TO PLAY</span>
           <h1>{game.title}</h1>
-          <p>Created by <strong>{game.creatorName || "Gameweare creator"}</strong></p>
+          <p>创作者：<strong>{game.creatorName || "GameWeare 创作者"}</strong></p>
           <div className="stats">
             <span>{formatPlays(game.plays)} plays</span>
             <span>{formatPlays(game.likes)} likes</span>

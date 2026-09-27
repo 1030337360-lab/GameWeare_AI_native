@@ -1,4 +1,4 @@
-# Gameweare MVP 交付说明
+# GameWeare 项目交付说明
 
 ## 1. 源码仓库
 
@@ -183,7 +183,7 @@ curl http://localhost:8080/health
 
 ```yaml
 api:
-  image: ghcr.io/1030337360-lab/gameweare-api:latest
+  image: ghcr.io/1030337360-lab/gameweare-backend-api:latest
 web:
   image: ghcr.io/1030337360-lab/gameweare-web:latest
 ```
@@ -262,7 +262,7 @@ web:
 
 ### 6.1 Architecture Overview
 
-Gameweare MVP 是一个 AI 原生互动游戏平台，核心目标是让用户通过 Prompt 和可选图片输入创建、优化、发布可玩的 HTML5 小游戏。
+GameWeare 是一个 AI 游戏创作与游玩平台，核心目标是让用户通过提示词和可选图片输入创建、优化、发布可玩的 HTML5 小游戏。
 
 系统采用前后端分离架构：
 

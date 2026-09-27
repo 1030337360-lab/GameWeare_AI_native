@@ -3,7 +3,7 @@ name: gameweare-mvp
 services:
   api:
     build: ./apps/api-java
-    image: gameweare-java-api:local
+    image: gameweare-backend-api:local
     depends_on:
       mysql: {condition: service_healthy}
       rabbitmq: {condition: service_healthy}
@@ -43,6 +43,7 @@ services:
       context: ./apps/web
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+    image: gameweare-frontend:local
     depends_on:
       api: {condition: service_healthy}
     ports: ["1314:1314"]
