@@ -96,6 +96,7 @@ export type CreateJob = {
   id: string;
   status: string;
   prompt: string;
+  displayTitle?: string | null;
   errorMessage?: string | null;
   createdAt: string;
   logs: AgentLog[];
@@ -117,7 +118,7 @@ export type CreateJob = {
   voucherId?: string | null;
 };
 
-export type CreateTaskSummary = Pick<CreateJob, "id" | "prompt" | "status" | "agentMode" | "createType" | "projectId" | "createdAt">;
+export type CreateTaskSummary = Pick<CreateJob, "id" | "prompt" | "status" | "agentMode" | "createType" | "projectId" | "createdAt"> & { displayTitle?: string | null };
 
 export type CreateProjectPreview = {
   projectId: string;

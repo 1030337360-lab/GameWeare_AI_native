@@ -189,7 +189,7 @@ public class CreateService {
     }
 
     public Map<String, Object> job(String userId, String id) {
-        Map<String, Object> row = one("SELECT * FROM create_jobs WHERE id=? AND user_id=?", id, userId);
+        Map<String, Object> row = one("SELECT * FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL", id, userId);
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", id);
@@ -197,6 +197,7 @@ public class CreateService {
         result.put("voucherId", row.get("voucher_id"));
         result.put("status", row.get("status"));
         result.put("prompt", row.get("prompt"));
+        result.put("displayTitle", db.queryForObject("SELECT COALESCE(g.title,p.title) FROM create_projects p LEFT JOIN games g ON g.id=p.game_id WHERE p.id=?", String.class, row.get("project_id")));
         Object createdAt = row.get("created_at");
         result.put("createdAt", createdAt instanceof LocalDateTime local ? Timestamp.valueOf(local) : createdAt);
         result.put("agentMode", row.get("agent_mode"));
@@ -271,11 +272,12 @@ public class CreateService {
     }
 
     public List<Map<String, Object>> jobs(String userId) {
-        return db.query("SELECT id,prompt,status,agent_mode,create_type,project_id,created_at FROM create_jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+        return db.query("SELECT j.id,j.prompt,j.status,j.agent_mode,j.create_type,j.project_id,j.created_at,COALESCE(g.title,p.title) AS display_title FROM create_jobs j JOIN create_projects p ON p.id=j.project_id LEFT JOIN games g ON g.id=p.game_id WHERE j.user_id=? AND j.deleted_at IS NULL ORDER BY j.created_at DESC LIMIT 100",
                 (rs, ignored) -> {
                     Map<String, Object> item = new LinkedHashMap<>();
                     item.put("id", rs.getString("id"));
                     item.put("prompt", rs.getString("prompt"));
+                    item.put("displayTitle", rs.getString("display_title"));
                     item.put("status", rs.getString("status"));
                     item.put("agentMode", rs.getString("agent_mode"));
                     item.put("createType", rs.getString("create_type"));
@@ -286,8 +288,26 @@ public class CreateService {
     }
 
     @Transactional
+    public Map<String, Object> deleteJob(String userId, String id) {
+        Map<String, Object> row = one("SELECT status,agent_mode,project_id FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE", id, userId);
+        if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found");
+        if ("planning".equals(row.get("status")) && "plan".equals(row.get("agent_mode"))) {
+            planDecision(userId, id, "reject");
+        } else if ("reviewing".equals(row.get("status")) && "decentralized".equals(row.get("agent_mode"))) {
+            confirmCandidate(userId, id, "reject");
+        } else if (!List.of("completed", "failed", "canceled", "cancelled").contains(row.get("status"))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Only finished tasks can be deleted");
+        }
+        db.update("UPDATE create_jobs SET deleted_at=NOW(6),updated_at=NOW(6) WHERE id=? AND user_id=? AND deleted_at IS NULL", id, userId);
+        String projectId = (String) row.get("project_id");
+        Integer visible = db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE project_id=? AND deleted_at IS NULL", Integer.class, projectId);
+        db.update("UPDATE create_projects SET status='archived',updated_at=NOW() WHERE id=? AND user_id=? AND game_id IS NULL AND ?=0", projectId, userId, visible);
+        return Map.of("jobId", id, "deleted", true);
+    }
+
+    @Transactional
     public Map<String, Object> publish(String userId, String id) {
-        Map<String, Object> row = one("SELECT game_id,version_id,project_id,status,agent_mode,create_type FROM create_jobs WHERE id=? AND user_id=?", id, userId);
+        Map<String, Object> row = one("SELECT game_id,version_id,project_id,status,agent_mode,create_type FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL", id, userId);
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found");
         if (!"completed".equals(row.get("status")) || row.get("game_id") == null)
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation has not completed");
@@ -328,7 +348,7 @@ public class CreateService {
     }
 
     public List<Map<String, Object>> projects(String userId) {
-        return db.query("SELECT * FROM create_projects WHERE user_id=? ORDER BY created_at DESC LIMIT 100", (rs, n) -> projectMap(rs.getString("id"), rs.getString("title"), rs.getString("status"), rs.getString("game_id"), rs.getTimestamp("created_at"), rs.getTimestamp("updated_at")), userId);
+        return db.query("SELECT * FROM create_projects WHERE user_id=? AND status<>'archived' ORDER BY created_at DESC LIMIT 100", (rs, n) -> projectMap(rs.getString("id"), rs.getString("title"), rs.getString("status"), rs.getString("game_id"), rs.getTimestamp("created_at"), rs.getTimestamp("updated_at")), userId);
     }
 
     public Map<String, Object> project(String userId, String id) {
@@ -369,7 +389,7 @@ public class CreateService {
 
     public Map<String, Object> recentGame(String userId) {
         Map<String, Object> row = one("SELECT j.id job_id,g.id game_id,g.slug,g.title FROM create_jobs j JOIN games g ON g.id=j.game_id "
-                + "WHERE j.user_id=? AND j.status='completed' ORDER BY j.created_at DESC LIMIT 1", userId);
+                + "WHERE j.user_id=? AND j.status='completed' AND j.deleted_at IS NULL ORDER BY j.created_at DESC LIMIT 1", userId);
         if (row == null) return null;
         return Map.of("gameId", row.get("game_id"), "gameSlug", row.get("slug"), "title", row.get("title"),
                 "playUrl", "/play/" + row.get("slug"), "jobId", row.get("job_id"));
@@ -380,14 +400,14 @@ public class CreateService {
         value.put("projectId", id); value.put("title", title); value.put("status", status);
         value.put("gameId", gameId); value.put("createdAt", created); value.put("updatedAt", updated);
         if (gameId != null) {
-            Map<String, Object> game = one("SELECT slug,publish_status,visibility FROM games WHERE id=?", gameId);
-            if (game != null) { value.put("gameSlug", game.get("slug")); value.put("publishStatus", game.get("publish_status")); value.put("visibility", game.get("visibility")); }
+            Map<String, Object> game = one("SELECT slug,title,publish_status,visibility FROM games WHERE id=?", gameId);
+            if (game != null) { value.put("title", game.get("title")); value.put("gameSlug", game.get("slug")); value.put("publishStatus", game.get("publish_status")); value.put("visibility", game.get("visibility")); }
         }
         return value;
     }
 
     public List<Map<String, Object>> steps(String userId, String jobId, int afterStep) {
-        if (db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE id=? AND user_id=?", Integer.class, jobId, userId) == 0)
+        if (db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL", Integer.class, jobId, userId) == 0)
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found");
         return db.query("SELECT step_no,stage,status,message,created_at FROM create_run_steps WHERE job_id=? AND step_no>? ORDER BY step_no",
                 (rs, n) -> Map.of("runId", jobId, "stepNo", rs.getInt("step_no"), "stage", rs.getString("stage"), "status", rs.getString("status"), "message", rs.getString("message"), "createdAt", rs.getTimestamp("created_at")), jobId, afterStep);
@@ -484,7 +504,7 @@ public class CreateService {
     }
 
     private Map<String, Object> requireMode(String userId, String id, String mode) {
-        Map<String, Object> row = one("SELECT agent_mode,status,project_id,create_type,game_id FROM create_jobs WHERE id=? AND user_id=?", id, userId);
+        Map<String, Object> row = one("SELECT agent_mode,status,project_id,create_type,game_id FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL", id, userId);
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found");
         if (!mode.equals(row.get("agent_mode")))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Run is not a " + mode + " strategy run");

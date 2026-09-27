@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, ChevronRight, Clock3, GripVertical, Plus, Sparkles, Play, Settings } from "lucide-react";
+import { ArrowLeft, ChevronRight, Clock3, GripVertical, Plus, Sparkles, Play, Settings, Trash2 } from "lucide-react";
 import { API_BASE_URL } from "../utils/constants";
 import { readApiError } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
@@ -35,26 +35,27 @@ function isDecentralizedPreview(value: unknown): value is DecentralizedPreviewRe
 const ACTIVE_STATUSES = new Set(["pending", "generating"]);
 
 function taskStatus(status: string, publishStatus?: string | null) {
-  if (publishStatus === "published") return { label: "Published", tone: "complete" };
-  if (status === "completed") return { label: "Ready", tone: "complete" };
-  if (status === "planning" || status === "reviewing") return { label: "Needs review", tone: "review" };
-  if (status === "failed") return { label: "Failed", tone: "failed" };
-  if (status === "canceled" || status === "cancelled") return { label: "Canceled", tone: "muted" };
-  return { label: status === "pending" ? "Queued" : "Creating", tone: "active" };
+  if (publishStatus === "published") return { label: "已发布", tone: "complete" };
+  if (status === "completed") return { label: "已完成", tone: "complete" };
+  if (status === "planning" || status === "reviewing") return { label: "待确认", tone: "review" };
+  if (status === "failed") return { label: "生成失败", tone: "failed" };
+  if (status === "canceled" || status === "cancelled") return { label: "已取消", tone: "muted" };
+  return { label: status === "pending" ? "排队中" : "生成中", tone: "active" };
 }
 
 function taskTitle(prompt: string) {
-  return prompt.trim().replace(/\s+/g, " ") || "Untitled game";
+  const cleaned = prompt.trim().replace(/\s+/g, " ");
+  return cleaned.length > 55 ? `${cleaned.slice(0, 55)}…` : cleaned || "未命名游戏";
 }
 
 function taskTime(value: string) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Recently" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+  return Number.isNaN(date.getTime()) ? "刚刚" : new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function Create() {
   const [message, setMessage] = React.useState("");
-  const [status, setStatus] = React.useState("Checking Create configuration...");
+  const [status, setStatus] = React.useState("正在检查创作配置...");
   const [aiConfig, setAiConfig] = React.useState<AIConfigState | null>(null);
   const [fundingMode, setFundingMode] = React.useState<"byok" | "voucher">("byok");
   const [vouchers, setVouchers] = React.useState<{ id: string; status: string; expiresAt: string }[]>([]);
@@ -134,7 +135,7 @@ function Create() {
       setAiConfig(payload);
       if (payload.baseUrl) setBaseUrl(payload.baseUrl);
       if (payload.model) setModel(payload.model);
-      setStatus(payload.configured ? "Saved AI configuration is ready. Create generation is enabled." : "Add your AI configuration before creating.");
+      setStatus(payload.configured ? "模型配置已就绪，可以开始创作。" : "请先填写模型配置再开始创作。");
       setEditingConfig(!payload.configured);
     }
     const recentResponse = await apiFetch("/create/recent-game");
@@ -293,8 +294,8 @@ function Create() {
       const payload = (await response.json()) as CreateJob;
       if (selectedJobRef.current === jobId) {
         setJob(payload);
-        if (payload.status === "completed") setStatus("Game is ready for review or publishing.");
-        else if (payload.status === "failed") setStatus(payload.errorMessage || "Game generation failed.");
+        if (payload.status === "completed") setStatus("游戏已生成，可以预览或发布。");
+        else if (payload.status === "failed") setStatus(payload.errorMessage || "游戏生成失败。");
       }
       await Promise.all([loadTaskHistory(), loadProjects()]);
       return payload;
@@ -388,7 +389,7 @@ function Create() {
     setPlanPreview(null);
     setDecentralizedPreview(null);
     setStreaming(false);
-    setStatus("Describe a game idea to start a new task.");
+    setStatus("描述你的游戏想法，开始新任务。");
     if (nextProjectId) {
       setCreateType("opt");
       setProjectId(nextProjectId);
@@ -419,14 +420,14 @@ function Create() {
     setPlanPreview(null);
     setDecentralizedPreview(null);
     setStreaming(false);
-    setStatus("Loading task details...");
+    setStatus("正在加载任务详情...");
     try {
       const response = await apiFetch(`/create/jobs/${taskId}`);
-      if (!response.ok) throw new Error("Task details could not be loaded.");
+      if (!response.ok) throw new Error("任务详情加载失败。");
       const payload = (await response.json()) as CreateJob;
       if (selectedJobRef.current !== taskId) return;
       setJob(payload);
-      setStatus(payload.status === "completed" ? "Game is ready for review or publishing." : payload.status === "failed" ? payload.errorMessage || "Game generation failed." : `Task is ${taskStatus(payload.status).label.toLowerCase()}.`);
+      setStatus(payload.status === "completed" ? "游戏已生成，可以预览或发布。" : payload.status === "failed" ? payload.errorMessage || "游戏生成失败。" : `Task is ${taskStatus(payload.status).label.toLowerCase()}.`);
       if (payload.runId) {
         const stepsResponse = await apiFetch(`/create/runs/${payload.runId}/steps`);
         if (stepsResponse.ok && selectedJobRef.current === taskId) setRunSteps((await stepsResponse.json()) as CreateRunStep[]);
@@ -435,7 +436,21 @@ function Create() {
         if (ACTIVE_STATUSES.has(payload.status) && selectedJobRef.current === taskId) void connectRunEvents(payload.runId, payload.id);
       }
     } catch (error) {
-      if (selectedJobRef.current === taskId) setStatus(error instanceof Error ? error.message : "Task could not be loaded.");
+      if (selectedJobRef.current === taskId) setStatus(error instanceof Error ? error.message : "任务加载失败。");
+    }
+  }
+
+  async function deleteTask(item: CreateTaskSummary) {
+    if (!window.confirm(`从任务记录中删除「${taskTitle(item.displayTitle || item.prompt)}」及其轨迹？已发布的游戏会保留。`)) return;
+    try {
+      const response = await apiFetch(`/create/jobs/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error((await readApiError(response)).message || "删除失败");
+      setTaskHistory((current) => current.filter((entry) => entry.id !== item.id));
+      if (selectedJobRef.current === item.id) startNewTask();
+      void loadProjects();
+      setStatus("任务记录和轨迹已从工作区移除。已发布的游戏仍可游玩。");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "删除失败，请稍后重试");
     }
   }
 
@@ -510,7 +525,7 @@ function Create() {
     return uploaded;
   }
 
-  async function cleanupUploadedImages(inputAssets: CreateInputAsset[]) {
+  async function cleanup已上传Images(inputAssets: CreateInputAsset[]) {
     if (inputAssets.length === 0) return;
     await Promise.allSettled(inputAssets.map((asset) => apiFetch(`/uploads/${asset.assetId}`, { method: "DELETE" })));
     setPendingImages((current) => current.map((image) => ({ ...image, uploaded: undefined })));
@@ -553,7 +568,7 @@ function Create() {
     });
     if (!response.ok) {
       const error = await readApiError(response);
-      await cleanupUploadedImages(inputAssets);
+      await cleanup已上传Images(inputAssets);
       if (error.detail && typeof error.detail === "object" && (error.detail as Record<string, unknown>).code === "LLM_CONFIG_INVALID" && (error.detail as Record<string, unknown>).llm) {
         setLlmTest((error.detail as Record<string, unknown>).llm as LLMTestResult);
         setEditingConfig(true);
@@ -582,7 +597,7 @@ function Create() {
       void connectRunEvents(payload.runId, payload.id);
     }
     } catch (error) {
-      await cleanupUploadedImages(inputAssets);
+      await cleanup已上传Images(inputAssets);
       setStatus(error instanceof Error ? error.message : "Could not start the task. Please try again.");
     } finally {
       setBusy(false);
@@ -633,7 +648,7 @@ function Create() {
     const nextProjectId = job?.projectId ?? projectId;
     if (!nextProjectId) return;
     startNewTask(nextProjectId);
-    setStatus("Continue optimize selected. Add the next request for this project.");
+    setStatus("继续优化 selected. Add the next request for this project.");
     void loadProjectPreview(nextProjectId);
     focusComposer();
   }
@@ -753,34 +768,37 @@ function Create() {
     <main className="create-layout">
       <header className="create-page-heading">
         <div>
-          <p className="eyebrow">Game studio / Create</p>
-          <h1>Make something playable.</h1>
-          <p>Start an idea, then follow its progress from your task history.</p>
+          <p className="eyebrow">游戏工作室 / 创建</p>
+          <h1>让灵感成为游戏。</h1>
+          <p>写下玩法想法，在左侧任务记录中随时查看进度与成果。</p>
         </div>
-        <span className="create-page-mark"><Sparkles size={17} /> CREATION SPACE</span>
+        <span className="create-page-mark"><Sparkles size={17} /> 创作空间</span>
       </header>
       <div className="create-workspace" ref={workspaceRef} style={{ "--task-sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
-        <aside className="create-sidebar" aria-label="Creation tasks">
+        <aside className="create-sidebar" aria-label="创建任务">
           <div className="create-sidebar-top">
-            <div><span className="create-overline">YOUR WORKSPACE</span><h2>Tasks <small>{taskHistory.length}</small></h2></div>
-            <button type="button" className="create-new-icon" onClick={() => startNewTask()} aria-label="New task"><Plus size={19} /></button>
+            <div><span className="create-overline">我的工作区</span><h2>任务记录 <small>{taskHistory.length}</small></h2></div>
+            <button type="button" className="create-new-icon" onClick={() => startNewTask()} aria-label="新建任务"><Plus size={19} /></button>
           </div>
           <button type="button" className={`create-new-task ${selectedJobId === null ? "selected" : ""}`} onClick={() => startNewTask()}>
-            <span className="create-new-task-symbol"><Plus size={17} /></span><span>New creation<strong>Start with an idea</strong></span><ChevronRight size={15} />
+            <span className="create-new-task-symbol"><Plus size={17} /></span><span>新建游戏<strong>从一个想法开始</strong></span><ChevronRight size={15} />
           </button>
-          <div className="create-sidebar-label"><span>RECENT TASKS</span><span>{taskHistory.length > 0 ? "Latest first" : ""}</span></div>
+          <div className="create-sidebar-label"><span>最近任务</span><span>{taskHistory.length > 0 ? "按时间排序" : ""}</span></div>
           <div className="create-task-list">
-            {taskHistory.length === 0 && <p className="create-task-empty">{historyError ? "Task history is unavailable. Try refreshing the page." : "Your game ideas will appear here after you create them."}</p>}
+            {taskHistory.length === 0 && <p className="create-task-empty">{historyError ? "任务记录暂时无法加载，请刷新页面。" : "开始创建后，你的游戏任务会显示在这里。"}</p>}
             {taskHistory.map((item) => {
               const state = taskStatus(item.status);
-              return <button type="button" id={`create-task-${item.id}`} key={item.id} className={`create-task-item ${selectedJobId === item.id ? "selected" : ""}`} onClick={() => void openTask(item.id)} aria-current={selectedJobId === item.id ? "true" : undefined}>
+              return <div id={`create-task-${item.id}`} key={item.id} className={`create-task-row ${selectedJobId === item.id ? "selected" : ""}`}>
+                <button type="button" className="create-task-item" onClick={() => void openTask(item.id)} aria-current={selectedJobId === item.id ? "true" : undefined}>
                 <span className="create-task-item-top"><span className={`create-task-dot ${state.tone}`} /><span className={`create-task-state ${state.tone}`}>{state.label}</span><time>{taskTime(item.createdAt)}</time></span>
-                <strong>{taskTitle(item.prompt)}</strong>
-                <span className="create-task-item-foot">{item.createType === "opt" ? "Continue" : "New game"} <span>·</span> {item.agentMode || "chat"}</span>
-              </button>;
+                <strong>{taskTitle(item.displayTitle || item.prompt)}</strong>
+                <span className="create-task-item-foot">{item.createType === "opt" ? "继续优化" : "新建游戏"} <span>·</span> {({ chat: "对话", react: "推理行动", plan: "规划", decentralized: "多智能体", refine: "精修" } as Record<string, string>)[item.agentMode ?? ""] ?? "创作"}</span>
+                </button>
+                {!["pending", "generating"].includes(item.status) && <button type="button" className="create-task-delete" aria-label={`删除任务：${taskTitle(item.displayTitle || item.prompt)}`} title="删除任务和轨迹" onClick={() => void deleteTask(item)}><Trash2 size={15} /></button>}
+              </div>;
             })}
           </div>
-          <div className="create-sidebar-foot"><span className="create-sidebar-spark">✦</span> Every idea has a place to grow.</div>
+          <div className="create-sidebar-foot"><span className="create-sidebar-spark">✦</span> 每个想法都值得被认真创造。</div>
         </aside>
         <div className="create-resize-handle" role="separator" aria-label="Resize task list" aria-orientation="vertical" aria-valuemin={228} aria-valuemax={420} aria-valuenow={sidebarWidth} tabIndex={0} onPointerDown={beginResize} onKeyDown={(event) => {
           if (event.key === "ArrowLeft") { event.preventDefault(); setSidebarWidth((width) => Math.max(228, width - 20)); }
@@ -789,29 +807,30 @@ function Create() {
         <div className="create-detail">
       {selectedJobId ? (
         <section className="create-focus-card" aria-live="polite">
-          <div className="create-focus-top"><span className="create-overline">TASK WORKSPACE</span><button type="button" onClick={() => startNewTask()}><ArrowLeft size={15} /> New task</button></div>
+          <div className="create-focus-top"><span className="create-overline">任务工作区</span><button type="button" onClick={() => startNewTask()}><ArrowLeft size={15} /> 新建任务</button></div>
           <div className="create-focus-main">
             <div className="create-focus-symbol"><Sparkles size={28} /></div>
-            <div className="create-focus-copy"><span>GAME CREATION</span><h2>{taskTitle(job?.prompt ?? taskHistory.find((item) => item.id === selectedJobId)?.prompt ?? "Loading task...")}</h2><p><Clock3 size={14} /> {taskTime(job?.createdAt ?? taskHistory.find((item) => item.id === selectedJobId)?.createdAt ?? "")}</p></div>
+            <div className="create-focus-copy"><span>游戏创作</span><h2>{taskTitle(job?.displayTitle ?? taskHistory.find((item) => item.id === selectedJobId)?.displayTitle ?? job?.prompt ?? "加载任务中...")}</h2><p><Clock3 size={14} /> {taskTime(job?.createdAt ?? taskHistory.find((item) => item.id === selectedJobId)?.createdAt ?? "")}</p></div>
             <span className={`create-focus-status ${taskStatus(job?.status ?? taskHistory.find((item) => item.id === selectedJobId)?.status ?? "pending", job?.publishStatus).tone}`}><span />{taskStatus(job?.status ?? taskHistory.find((item) => item.id === selectedJobId)?.status ?? "pending", job?.publishStatus).label}</span>
           </div>
           <div className="create-progress-track" aria-hidden="true"><span className="done" /><span className={runSteps.length > 0 ? "done" : ""} /><span className={job?.status === "completed" ? "done" : ""} /><span className={job?.publishStatus === "published" ? "done" : ""} /></div>
-          <div className="create-progress-labels"><span>Queued</span><span>Generating</span><span>Ready</span><span>Published</span></div>
+          <div className="create-progress-labels"><span>等待</span><span>生成</span><span>完成</span><span>发布</span></div>
+          {job?.prompt && <details className="create-prompt-details"><summary>查看完整创作要求</summary><p>{job.prompt}</p></details>}
         </section>
-      ) : <div className="create-compose-heading"><span className="create-overline">NEW CREATION</span><h2>Describe your next game</h2><p>Give the studio a concept, mechanic, or mood to build from.</p></div>}
+      ) : <div className="create-compose-heading"><span className="create-overline">开始创作</span><h2>描述你想玩的游戏</h2><p>告诉我们玩法、氛围或故事设定。</p></div>}
       {!selectedJobId && <>
       {aiConfig && (!aiConfig.configured || editingConfig) && (
         <form className="prompt-panel" onSubmit={saveConfig}>
           <label>
-            <span>base_url</span>
+            <span>模型接口地址</span>
             <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} required />
           </label>
           <label>
-            <span>model</span>
+            <span>模型名称</span>
             <input value={model} onChange={(event) => setModel(event.target.value)} required />
           </label>
           <label>
-            <span>api_key</span>
+            <span>API 密钥</span>
             <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" required />
           </label>
           {llmTest && (
@@ -835,7 +854,7 @@ function Create() {
                   setEditingConfig(false);
                   setApiKey("");
                   setLlmTest(null);
-                  setStatus("Saved AI configuration is ready. Create generation is enabled.");
+                  setStatus("模型配置已就绪，可以开始创作。");
                 }}
               >
                 Cancel
@@ -846,7 +865,7 @@ function Create() {
       )}
       {aiConfig?.configured && !editingConfig && (
         <section className="status-panel">
-          <span>Saved AI configuration is ready. Secret values are kept on the backend.</span>
+          <span>模型配置已保存，密钥由后端安全保管。</span>
           <button
             type="button"
             className="inline-action"
@@ -858,7 +877,7 @@ function Create() {
             }}
           >
             <Settings size={16} />
-            Reconfigure
+            修改配置
           </button>
         </section>
       )}
@@ -870,10 +889,10 @@ function Create() {
       {recentGame && (
         <section className="result-panel">
           <div>
-            <span>Recent game</span>
+            <span>最近创作</span>
             <strong>{recentGame.title}</strong>
           </div>
-          <Link to={recentGame.playUrl} className="secondary-action">Play recent</Link>
+          <Link to={recentGame.playUrl} className="secondary-action">开始游玩</Link>
         </section>
       )}
       <form className="prompt-panel" onSubmit={submitJob} ref={composerRef}>
@@ -894,7 +913,7 @@ function Create() {
               setProjectPreview(null);
             }}
           >
-            Initial create
+            新建游戏
           </button>
           <button
             type="button"
@@ -906,12 +925,12 @@ function Create() {
             }}
             disabled={optimizableProjects.length === 0}
           >
-            Continue optimize
+            继续优化
           </button>
         </div>
         {createType === "opt" && (
           <label>
-            <span>project_id</span>
+            <span>选择要优化的游戏</span>
             <select
               value={projectId}
               onChange={(event) => {
@@ -922,7 +941,7 @@ function Create() {
             >
               {optimizableProjects.map((project) => (
                 <option key={project.projectId} value={project.projectId}>
-                  {project.title} · {project.publishStatus ?? "no draft"}{project.currentVersionNo ? ` · v${project.currentVersionNo}` : ""} · {project.projectId}
+                  {taskTitle(project.title)} · {project.publishStatus === "published" ? "已发布" : "草稿"}{project.currentVersionNo ? ` · 第 ${project.currentVersionNo} 版` : ""}
                 </option>
               ))}
             </select>
@@ -932,11 +951,11 @@ function Create() {
           <section className="refine-preview-panel">
             <div className="plan-review-header">
               <div>
-                <span>Current version preview</span>
-                <strong>{projectPreview ? `${projectPreview.title} · v${projectPreview.versionNo}` : "Select a project with an existing game"}</strong>
+                <span>当前版本预览</span>
+                <strong>{projectPreview ? `${projectPreview.title} · v${projectPreview.versionNo}` : "请选择已有游戏"}</strong>
               </div>
               <button type="button" className="inline-action" disabled={previewBusy || !projectId} onClick={() => void loadProjectPreview(projectId)}>
-                {previewBusy ? "Loading..." : "Refresh preview"}
+                {previewBusy ? "加载中..." : "刷新预览"}
               </button>
             </div>
             {projectPreview ? (
@@ -949,17 +968,17 @@ function Create() {
                 />
               </div>
             ) : (
-              <p className="muted-copy">Create and save a draft first, then continue optimization from the latest version.</p>
+              <p className="muted-copy">先创建并保存游戏，再基于最新版本继续优化。</p>
             )}
-            <small>This is a playable creator preview, including unpublished drafts. Click inside the frame before using keyboard controls.</small>
+            <small>这里可以试玩尚未发布的版本。使用键盘前请先点击游戏画面。</small>
           </section>
         )}
         <fieldset className="create-mode-picker">
-          <legend>Creation mode</legend>
+          <legend>创作模式</legend>
           <div className="create-mode-options">
             {(createType === "opt" ? OPT_AGENT_MODES : INIT_AGENT_MODES).map((mode) => (
               <button key={mode} type="button" className={agentMode === mode ? "selected" : undefined}
-                aria-pressed={agentMode === mode} onClick={() => setAgentMode(mode)}>{mode}</button>
+                aria-pressed={agentMode === mode} onClick={() => setAgentMode(mode)}>{({ chat: "对话", react: "推理行动", plan: "规划", decentralized: "多智能体", refine: "精修" } as Record<string, string>)[mode] ?? mode}</button>
             ))}
           </div>
         </fieldset>
@@ -970,9 +989,9 @@ function Create() {
                 <div className="image-preview" key={image.id}>
                   <img src={image.previewUrl} alt={image.file.name} />
                   <button type="button" onClick={() => removeImage(image.id)} disabled={busy || streaming}>
-                    Remove
+                    移除
                   </button>
-                  {image.uploaded && <span>Uploaded</span>}
+                  {image.uploaded && <span>已上传</span>}
                 </div>
               ))}
             </div>
@@ -980,15 +999,15 @@ function Create() {
           <textarea
             value={message}
             onChange={(event) => setMessage(event.target.value)}
-            placeholder="A neon puzzle game where players connect constellations..."
+            placeholder="例如：制作一款通过连接星座解谜的霓虹风格游戏..."
             maxLength={4000}
             required
             disabled={!fundingReady || busy}
           />
-          <label className="create-image-attach">Reference images (up to 3)<input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => { addImages(event.target.files); event.target.value = ""; }} disabled={busy || streaming || pendingImages.length >= 3} /></label>
+          <label className="create-image-attach">参考图片（最多 3 张）<input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(event) => { addImages(event.target.files); event.target.value = ""; }} disabled={busy || streaming || pendingImages.length >= 3} /></label>
           <div className="composer-actions">
             <button type="submit" disabled={!message.trim() || !fundingReady || busy || streaming}>
-              {streaming ? "Creating..." : "Create game"}
+              {streaming ? "生成中..." : "创建游戏"}
             </button>
           </div>
         </div>
@@ -1012,7 +1031,7 @@ function Create() {
             disabled={busy || decentralizedBusy}
             onClick={() => void loadDecentralizedPreviews(job.runId!)}
           >
-            Refresh previews
+            刷新预览s
           </button>
         </section>
       )}
@@ -1126,7 +1145,7 @@ function Create() {
             </div>
             <div className="result-actions">
               {job.runId && <button type="button" className="secondary-action" disabled={busy} onClick={loadRunSteps}>Run steps</button>}
-              {job.status === "completed" && <button type="button" className="secondary-action" disabled={busy} onClick={continueCurrentProject}>Continue optimize</button>}
+              {job.status === "completed" && <button type="button" className="secondary-action" disabled={busy} onClick={continueCurrentProject}>继续优化</button>}
               {job.status === "completed" && job.publishStatus === "draft" && <button type="button" className="primary-action" disabled={busy} onClick={() => void publishDraft()}>Publish</button>}
               {job.playUrl && job.publishStatus === "published" && <Link to={job.playUrl} className="primary-action"><Play size={18} />Play now</Link>}
             </div>
@@ -1148,7 +1167,7 @@ function Create() {
                   : metrics.outputTokens;
                 return (
                   <div key={step.stepNo}>
-                    <span>#{step.stepNo} {runStageLabel(step.stage)} · {step.status}</span>
+                    <span>第 {step.stepNo} 步 · {runStageLabel(step.stage)} · {taskStatus(step.status).label}</span>
                     {step.inputSummary && <p>{step.inputSummary}</p>}
                     {(step.stage === "llm_call" || step.stage === "cover_llm_call") && (
                       <small>

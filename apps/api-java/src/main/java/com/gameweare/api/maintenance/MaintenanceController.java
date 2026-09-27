@@ -105,11 +105,11 @@ class MaintenanceService {
     public Map<String, Object> overview(String actor) {
         authorize(actor);
         Map<String, Long> counts = new LinkedHashMap<>();
-        for (var row : jdbc.queryForList("SELECT status,COUNT(*) AS n FROM create_jobs GROUP BY status"))
+        for (var row : jdbc.queryForList("SELECT status,COUNT(*) AS n FROM create_jobs WHERE deleted_at IS NULL GROUP BY status"))
             counts.put(row.get("status").toString(), ((Number) row.get("n")).longValue());
         var assets = jdbc.queryForMap("SELECT COUNT(*) AS n,COALESCE(SUM(size_bytes),0) AS bytes FROM assets");
         return Map.of("jobCounts", counts,
-                "failedJobsLast24h", count("SELECT COUNT(*) FROM create_jobs WHERE status='failed' AND updated_at>=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 24 HOUR)"),
+                "failedJobsLast24h", count("SELECT COUNT(*) FROM create_jobs WHERE status='failed' AND deleted_at IS NULL AND updated_at>=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 24 HOUR)"),
                 "pendingReviews", count("SELECT COUNT(*) FROM moderation_reviews WHERE status='pending'"),
                 "publicGames", count("SELECT COUNT(*) FROM games WHERE publish_status='published' AND visibility='public'"),
                 "assetsTotal", ((Number) assets.get("n")).longValue(), "assetsBytes", ((Number) assets.get("bytes")).longValue(),
@@ -120,12 +120,15 @@ class MaintenanceService {
         authorize(actor);
         String sql = """
             SELECT j.id,j.status,j.error_message,j.prompt,j.user_id,u.email AS creator_email,g.slug AS game_slug,
+                   COALESCE(g.title,p.title) AS display_title,
                    j.created_at,j.updated_at,
                    (SELECT s.stage FROM create_run_steps s WHERE s.job_id=j.id ORDER BY s.step_no DESC LIMIT 1) AS current_stage
-            FROM create_jobs j JOIN users u ON u.id=j.user_id LEFT JOIN games g ON g.id=j.game_id
+            FROM create_jobs j JOIN users u ON u.id=j.user_id JOIN create_projects p ON p.id=j.project_id
+            LEFT JOIN games g ON g.id=p.game_id
+            WHERE j.deleted_at IS NULL
             """;
         List<Object> args = new ArrayList<>();
-        if (status != null && !status.isBlank()) { sql += " WHERE j.status=?"; args.add(status); }
+        if (status != null && !status.isBlank()) { sql += " AND j.status=?"; args.add(status); }
         sql += " ORDER BY j.created_at DESC LIMIT ?"; args.add(limit(limit));
         return jdbc.query(sql, (rs,n) -> {
             Map<String,Object> m = new LinkedHashMap<>();
@@ -133,6 +136,7 @@ class MaintenanceService {
             m.put("currentStage",rs.getString("current_stage")); m.put("errorCode",null);
             m.put("errorMessage",rs.getString("error_message"));
             m.put("promptSummary",sanitize(rs.getString("prompt"),220));
+            m.put("displayTitle",rs.getString("display_title"));
             m.put("creatorId",rs.getString("user_id")); m.put("creatorEmail",rs.getString("creator_email"));
             m.put("gameSlug",rs.getString("game_slug")); m.put("createdAt",rs.getTimestamp("created_at"));
             m.put("updatedAt",rs.getTimestamp("updated_at")); return m;
@@ -147,7 +151,7 @@ class MaintenanceService {
                    j.error_message,j.reserved_tokens,j.actual_tokens,j.attempts,j.created_at,j.updated_at,
                    u.email AS creator_email,g.slug AS game_slug,g.publish_status
             FROM create_jobs j JOIN users u ON u.id=j.user_id LEFT JOIN games g ON g.id=j.game_id
-            WHERE j.id=?
+            WHERE j.id=? AND j.deleted_at IS NULL
             """, id);
         if (jobs.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found");
         var j = jobs.get(0);
@@ -213,7 +217,7 @@ class MaintenanceService {
             SELECT j.id,j.project_id,p.title AS project_title,j.create_type,j.agent_mode,j.status,j.error_message,
                    j.prompt,j.created_at,j.updated_at,u.email,g.slug AS game_slug
             FROM create_jobs j JOIN create_projects p ON p.id=j.project_id JOIN users u ON u.id=j.user_id
-            LEFT JOIN games g ON g.id=j.game_id WHERE j.status='failed'
+            LEFT JOIN games g ON g.id=j.game_id WHERE j.status='failed' AND j.deleted_at IS NULL
             ORDER BY j.updated_at DESC LIMIT ?
             """, limit(limit))) {
             String id = j.get("id").toString();
@@ -239,14 +243,14 @@ class MaintenanceService {
     @Transactional
     public Map<String,Object> reviewJob(String actor, String id, String reason) {
         authorize(actor);
-        if (count("SELECT COUNT(*) FROM create_jobs WHERE id=?",id)==0) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Job not found");
+        if (count("SELECT COUNT(*) FROM create_jobs WHERE id=? AND deleted_at IS NULL",id)==0) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Job not found");
         return review(actor,"job",id,"reviewed",reason);
     }
 
     @Transactional
     public Map<String,Object> retry(String actor, String id) {
         authorize(actor);
-        var rows = jdbc.queryForList("SELECT user_id,project_id,prompt,agent_mode,create_type FROM create_jobs WHERE id=? AND status='failed'",id);
+        var rows = jdbc.queryForList("SELECT user_id,project_id,prompt,agent_mode,create_type FROM create_jobs WHERE id=? AND status='failed' AND deleted_at IS NULL",id);
         if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.CONFLICT,"Only failed jobs can be retried");
         var j=rows.get(0);
         var request = new CreateController.JobRequest(j.get("prompt").toString(),List.of(),List.of(),
@@ -375,9 +379,10 @@ class MaintenanceService {
                    SUM(c.state='unknown') AS unknown_calls,
                    COALESCE(SUM(CASE WHEN c.state='completed' THEN c.prompt_tokens+c.completion_tokens END),0) AS recorded_tokens
             FROM agent_model_calls c JOIN create_jobs j ON j.id=c.job_id
+            WHERE j.deleted_at IS NULL
             """;
         List<Object> args=new ArrayList<>();
-        if(jobId!=null&&!jobId.isBlank()){sql+=" WHERE c.job_id=?";args.add(jobId);}
+        if(jobId!=null&&!jobId.isBlank()){sql+=" AND c.job_id=?";args.add(jobId);}
         sql+=" GROUP BY c.job_id,j.status,j.engine,c.model ORDER BY unknown_calls DESC,completed_calls DESC LIMIT ?";args.add(limit(limit));
         return jdbc.query(sql,(rs,n)->{
             Map<String,Object> m=new LinkedHashMap<>();

@@ -48,21 +48,21 @@ export default function Home({ games, featuredGame, availableTags, search, selec
 
   return (
     <main className="home">
-      <section className="home-hero" aria-label="Featured game">
+      <section className="home-hero" aria-label="精选游戏">
         <div className="hero-copy">
-          <div className="hero-kicker"><span className="live-indicator" /> A NEW SPACE FOR PLAY</div>
-          <h1>{featuredGame ? <>Find your next <em>obsession.</em></> : <>Ideas become <em>playable.</em></>}</h1>
+          <div className="hero-kicker"><span className="live-indicator" /> 发现好游戏</div>
+          <h1>{featuredGame ? <>发现<em>好游戏。</em></> : <>让想法<em>成为游戏。</em></>}</h1>
           <p>{featuredGame
-            ? "Discover remarkable games from a growing community of creators. Jump in, find a favorite, and make something of your own."
-            : "A home for games made by people with ideas. Explore new worlds, then create one of your own."}</p>
+            ? "探索创作者的作品，找到喜欢的玩法，也可以动手创造属于自己的游戏。"
+            : "在这里探索新玩法，分享自己的游戏创意。"}</p>
           <div className="hero-actions">
             <Link className="hero-primary" to={featuredGame ? `/play/${featuredGame.id}` : createTarget}>
               {featuredGame ? <Play size={17} fill="currentColor" /> : <Sparkles size={18} />}
-              {featuredGame ? "Play featured game" : "Create a game"}<ArrowRight size={17} />
+              {featuredGame ? "游玩精选游戏" : "创作游戏"}<ArrowRight size={17} />
             </Link>
-            <a className="hero-secondary" href="#discover">Explore games <ArrowUpRight size={17} /></a>
+            <a className="hero-secondary" href="#discover">浏览游戏 <ArrowUpRight size={17} /></a>
           </div>
-          <div className="hero-footnote"><Gamepad2 size={16} /> Explore. Create. Play again.</div>
+          <div className="hero-footnote"><Gamepad2 size={16} /> 探索、创作、再玩一局。</div>
         </div>
         <div className="hero-art" aria-hidden="true">
           {featuredGame?.thumbnailUrl ? <img src={featuredGame.thumbnailUrl} alt="" /> : (
@@ -73,24 +73,24 @@ export default function Home({ games, featuredGame, availableTags, search, selec
               <span className="world-cross cross-one">+</span><span className="world-cross cross-two">+</span>
             </div>
           )}
-          <div className="hero-art-label"><span>01 / INFINITE POSSIBILITIES</span><span>GAMEWEARE ✦</span></div>
+          <div className="hero-art-label"><span>01 / 无限可能</span><span>GAMEWEARE ✦</span></div>
         </div>
       </section>
 
-      {trending.length > 0 && <section className="trending-strip" aria-label="热门游戏"><span className="section-kicker">TRENDING NOW</span><div>{trending.map((item, index) => <Link key={item.id} to={`/games/${item.id}`}><b>{String(index + 1).padStart(2, "0")}</b><span>{item.title}<small>{item.author} · {formatPlays(item.plays)} plays</small></span><ArrowRight size={16} /></Link>)}</div></section>}
+      {trending.length > 0 && <section className="trending-strip" aria-label="热门游戏"><span className="section-kicker">热门游戏</span><div>{trending.map((item, index) => <Link key={item.id} to={`/games/${item.id}`}><b>{String(index + 1).padStart(2, "0")}</b><span>{item.title}<small>{item.author} · {formatPlays(item.plays)} 次游玩</small></span><ArrowRight size={16} /></Link>)}</div></section>}
       <section id="discover" className="discover-section">
         <div className="discover-heading">
-          <div><span className="section-kicker">THE ARCADE</span><h2>Discover your next game<span>.</span></h2></div>
-          <span className="game-total">{games.length} {games.length === 1 ? "GAME" : "GAMES"} TO EXPLORE</span>
+          <div><span className="section-kicker">游戏广场</span><h2>发现下一款游戏<span>.</span></h2></div>
+          <span className="game-total">共 {games.length} 款游戏</span>
         </div>
         <div className="catalog-controls">
-          <label className="catalog-search"><Search size={19} /><span className="sr-only">Search games</span>
-            <input type="search" placeholder="Search by title or creator" value={draftSearch}
+          <label className="catalog-search"><Search size={19} /><span className="sr-only">搜索游戏</span>
+            <input type="search" placeholder="搜索游戏或创作者" value={draftSearch}
               onChange={(e) => setDraftSearch(e.target.value)} />
             <kbd>⌕</kbd>
           </label>
-          <div className="tags" aria-label="Filter by tag">
-          <button className={!selectedTag ? "active" : ""} onClick={() => updateFilter(search, "")}>All games</button>
+          <div className="tags" aria-label="按标签筛选">
+          <button className={!selectedTag ? "active" : ""} onClick={() => updateFilter(search, "")}>全部游戏</button>
           {availableTags.map((tag) => (
             <button
               key={tag}
@@ -102,17 +102,17 @@ export default function Home({ games, featuredGame, availableTags, search, selec
           ))}
           </div>
         </div>
-        {loading && games.length === 0 ? <div className="catalog-state" role="status"><span className="loading-orb" /> Loading the arcade...</div>
+        {loading && games.length === 0 ? <div className="catalog-state" role="status"><span className="loading-orb" /> 正在加载游戏...</div>
           : games.length === 0 ? (
             <div className="catalog-empty">
               <div className="empty-symbol"><Gamepad2 size={36} /></div>
-              <div><span className="section-kicker">{error ? "CONNECTION UNAVAILABLE" : isFiltering ? "NO MATCHES YET" : "THE STORY STARTS HERE"}</span>
-                <h3>{error ? "The arcade is taking a breather." : isFiltering ? "No games found." : "The first game could be yours."}</h3>
-                <p>{error ? "We couldn't load games right now. Try refreshing in a moment." : isFiltering
-                  ? "Try another search or clear your filters to see more games."
-                  : "Published games will appear here. Bring your idea to life and help fill the arcade."}</p>
-                {isFiltering ? <button className="empty-link" onClick={() => { setDraftSearch(""); updateFilter("", ""); }}>Clear filters <ArrowRight size={17} /></button>
-                  : <Link className="empty-link" to={createTarget}>Start creating <ArrowRight size={17} /></Link>}
+              <div><span className="section-kicker">{error ? "连接暂时不可用" : isFiltering ? "暂无搜索结果" : "从这里开始"}</span>
+                <h3>{error ? "游戏广场暂时无法加载。" : isFiltering ? "没有找到游戏。" : "第一款游戏，等你创造。"}</h3>
+                <p>{error ? "暂时无法加载游戏，请稍后刷新。" : isFiltering
+                  ? "试试其他关键词，或清除筛选条件。"
+                  : "发布后的游戏会出现在这里，快来分享你的想法。"}</p>
+                {isFiltering ? <button className="empty-link" onClick={() => { setDraftSearch(""); updateFilter("", ""); }}>清除筛选 <ArrowRight size={17} /></button>
+                  : <Link className="empty-link" to={createTarget}>开始创作 <ArrowRight size={17} /></Link>}
               </div>
             </div>
           ) : (
@@ -133,7 +133,7 @@ function GameCard({ game }: { game: Game }) {
         <span className="cover-open"><ArrowUpRight size={19} /></span>
       </div>
       <div className="catalog-card-content">
-        <div><h3>{game.title}</h3><p>by {game.creatorName || "Gameweare creator"}</p></div>
+        <div><h3>{game.title}</h3><p>作者：{game.creatorName || "Gameweare 创作者"}</p></div>
         <span className="catalog-plays"><Play size={13} fill="currentColor" /> {formatPlays(game.plays)}</span>
       </div>
     </Link>

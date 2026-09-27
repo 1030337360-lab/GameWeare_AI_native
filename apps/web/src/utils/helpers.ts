@@ -3,7 +3,7 @@
 import { RUN_STAGE_LABELS, ANONYMOUS_ID_STORAGE_KEY } from "./constants";
 
 export function runStageLabel(stage: string): string {
-  return RUN_STAGE_LABELS[stage] ?? stage;
+  return RUN_STAGE_LABELS[stage] ?? stage.replace(/[_-]/g, " ");
 }
 
 export function isPlanPreview(value: unknown): value is { steps: unknown[]; checks: unknown[] } {
