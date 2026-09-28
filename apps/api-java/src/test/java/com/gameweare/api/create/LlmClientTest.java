@@ -67,4 +67,35 @@ class LlmClientTest {
             server.stop(0);
         }
     }
+
+    @Test
+    void streamsResponsesAndRequiresACompletedEventWithUsage() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/responses", exchange -> {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String events = request.contains("\"stream\":true")
+                    ? "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+                        + "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"content\":[{\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n"
+                    : "data: {\"type\":\"error\",\"message\":\"stream option missing\"}\n\n";
+            byte[] response = events.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.sendResponseHeaders(200, response.length);
+            try (var out = exchange.getResponseBody()) { out.write(response); }
+        });
+        server.start();
+        String oldHosts = LlmClient.allowedHosts;
+        boolean oldPrivate = CreateService.privateLlmEndpointsAllowed;
+        try {
+            LlmClient.allowedHosts = "127.0.0.1";
+            CreateService.privateLlmEndpointsAllowed = true;
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
+            LlmClient.Result result = LlmClient.generate(base, "mock", "test", "hello");
+            assertEquals("ok", result.text());
+            assertEquals(3, result.totalTokens());
+        } finally {
+            LlmClient.allowedHosts = oldHosts;
+            CreateService.privateLlmEndpointsAllowed = oldPrivate;
+            server.stop(0);
+        }
+    }
 }

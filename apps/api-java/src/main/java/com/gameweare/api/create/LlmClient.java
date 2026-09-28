@@ -2,6 +2,9 @@ package com.gameweare.api.create;
 
 import java.net.Proxy;
 import java.net.URI;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,12 +45,12 @@ final class LlmClient {
             for (Image image : images) content.add(Map.of("type", "input_image", "image_url", image.dataUrl()));
             input = List.of(Map.of("role", "user", "content", content));
         }
-        String body = JSON.writeValueAsString(Map.of("model", model, "input", input));
+        String body = JSON.writeValueAsString(Map.of("model", model, "input", input, "stream", true));
         OkHttpClient http = new OkHttpClient.Builder()
                 .proxy(Proxy.NO_PROXY).followRedirects(false).followSslRedirects(false)
                 .dns(policy::resolve).connectTimeout(Duration.ofSeconds(10))
                 .readTimeout(Duration.ofSeconds(180))
-                .callTimeout(Duration.ofSeconds(240)).build();
+                .callTimeout(Duration.ofMinutes(10)).build();
         Request request = new Request.Builder().url(uri.toString())
                 .header("Authorization", "Bearer " + apiKey)
                 .post(RequestBody.create(body, MediaType.get("application/json"))).build();
@@ -71,11 +74,59 @@ final class LlmClient {
                 throw new IllegalStateException("AI provider returned HTTP " + response.code() + details);
             }
             if (response.body() == null) throw new IllegalStateException("AI provider returned an empty response");
-            byte[] responseBytes = response.body().byteStream().readNBytes(4_000_001);
-            if (responseBytes.length > 4_000_000)
-                throw new IllegalStateException("AI provider response is too large");
-            String responseJson = new String(responseBytes, java.nio.charset.StandardCharsets.UTF_8);
-            JsonNode root = JSON.readTree(responseJson);
+            JsonNode root;
+            String contentType = response.header("Content-Type", "");
+            if (contentType.toLowerCase(java.util.Locale.ROOT).startsWith("text/event-stream")) {
+                root = readCompletedStream(response);
+            } else {
+                byte[] responseBytes = response.body().byteStream().readNBytes(4_000_001);
+                if (responseBytes.length > 4_000_000)
+                    throw new IllegalStateException("AI provider response is too large");
+                root = JSON.readTree(responseBytes);
+            }
+            return parseResult(root);
+        }
+    }
+
+    private static JsonNode readCompletedStream(Response response) throws Exception {
+        int receivedBytes = 0;
+        StringBuilder eventData = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                response.body().byteStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                receivedBytes += line.getBytes(StandardCharsets.UTF_8).length + 1;
+                if (receivedBytes > 8_000_000) throw new IllegalStateException("AI provider stream is too large");
+                if (line.isEmpty()) {
+                    JsonNode completed = processEvent(eventData);
+                    if (completed != null) return completed;
+                    eventData.setLength(0);
+                } else if (line.startsWith("data:")) {
+                    if (!eventData.isEmpty()) eventData.append('\n');
+                    eventData.append(line.substring(5).stripLeading());
+                }
+            }
+            JsonNode completed = processEvent(eventData);
+            if (completed != null) return completed;
+        }
+        throw new IllegalStateException("AI provider stream ended before response.completed");
+    }
+
+    private static JsonNode processEvent(StringBuilder eventData) throws Exception {
+        if (eventData.isEmpty() || "[DONE]".contentEquals(eventData)) return null;
+        JsonNode event = JSON.readTree(eventData.toString());
+        String type = event.path("type").asText("");
+        if ("response.completed".equals(type)) return event.path("response");
+        if ("response.failed".equals(type) || "response.incomplete".equals(type) || "error".equals(type)) {
+            JsonNode error = event.path("response").path("error");
+            if (error.isMissingNode() || error.isNull()) error = event.path("error");
+            String message = error.path("message").asText(event.path("message").asText(type));
+            throw new IllegalStateException("AI provider stream failed: " + message);
+        }
+        return null;
+    }
+
+    private static Result parseResult(JsonNode root) {
             String text = root.path("output_text").asText("");
             if (text.isBlank()) {
                 StringBuilder result = new StringBuilder();
@@ -93,6 +144,5 @@ final class LlmClient {
             if (tokens < 0 || promptTokens < 0 || completionTokens < 0 || promptTokens + completionTokens != tokens)
                 throw new IllegalStateException("AI provider did not return consistent token usage");
             return new Result(text, promptTokens, completionTokens, tokens);
-        }
     }
 }

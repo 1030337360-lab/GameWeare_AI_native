@@ -26,8 +26,7 @@ public class ArtifactValidator {
     public Result validate(String raw) {
         List<Diagnostic> errors = new ArrayList<>();
         if (raw == null) return failed("EMPTY", "HTML is required");
-        String html = raw.strip().replaceFirst("(?is)^```(?:html)?\\s*", "")
-                .replaceFirst("(?s)\\s*```$", "").strip();
+        String html = normalizeDocument(raw);
         int bytes = html.getBytes(StandardCharsets.UTF_8).length;
         if (bytes < 100) errors.add(new Diagnostic("TOO_SMALL", "A complete HTML game is required", 0, 0));
         if (bytes > 2_000_000) errors.add(new Diagnostic("TOO_LARGE", "HTML exceeds 2 MB", 0, 0));
@@ -87,6 +86,18 @@ public class ArtifactValidator {
 
     private static Result failed(String code, String message) {
         return new Result(false, "single-html", List.of(new Diagnostic(code, message, 0, 0)), "");
+    }
+
+    private static String normalizeDocument(String raw) {
+        String text = raw.strip();
+        String lower = text.toLowerCase(Locale.ROOT);
+        int opening = lower.indexOf("<html");
+        int closing = lower.lastIndexOf("</html>");
+        if (opening < 0 || closing < opening) return text;
+        int doctype = lower.lastIndexOf("<!doctype html", opening);
+        if (doctype >= 0 && lower.substring(doctype, opening).matches("(?s)<!doctype html\\s*>\\s*"))
+            opening = doctype;
+        return text.substring(opening, closing + "</html>".length()).strip();
     }
 
     private static boolean hiddenAtLoad(Document doc, Element element) {

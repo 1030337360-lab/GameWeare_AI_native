@@ -17,6 +17,15 @@ class ArtifactValidatorTest {
         assertEquals(html, result.normalizedHtml());
     }
 
+    @Test void removesModelCommentaryAroundHtmlDocument() {
+        String html = "<!doctype html><html><head><title>Game</title></head><body><canvas></canvas>"
+                + "<script>const ready = true;</script></body></html>";
+        ArtifactValidator.Result result = validator.validate("Here is your game.\n```html\n" + html
+                + "\n```\nSome playing instructions.");
+        assertTrue(result.ok(), () -> result.diagnostics().toString());
+        assertEquals(html, result.normalizedHtml());
+    }
+
     @Test void returnsScriptLocationForSyntaxError() {
         String html = "<!doctype html><html><head><title>Game</title></head><body><canvas id='game'></canvas>"
                 + "<script>const score = ;</script></body></html>";

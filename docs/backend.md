@@ -35,7 +35,9 @@ Worker 校验游戏文件后上传 MinIO，再在 MySQL 事务中建立 `game_ve
 
 ## 产物校验与安全边界
 
-[`ArtifactValidator`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactValidator.java) 用 Jsoup 检查单文件 HTML 结构和外部资源，用 GraalVM `Context.parse` 检查内联 JavaScript 语法，**不会执行游戏脚本**。外部 Agent 可以先调用 `/create/artifacts/validate` 获得逐项诊断，再经 [`ArtifactService`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactService.java) 提交待审草稿。试玩 HTML 经 [`PlayController`](../apps/api-java/src/main/java/com/gameweare/api/play/PlayController.java) 返回 CSP，并在前端 sandbox iframe 中运行。
+[`LlmClient`](../apps/api-java/src/main/java/com/gameweare/api/create/LlmClient.java) 对兼容 Responses API 的模型启用 SSE 流式输出，等待 `response.completed` 取得完整文本和用量；明确处理失败与未完成事件，避免长时间无响应的非流式请求被网关重置。
+
+[`ArtifactValidator`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactValidator.java) 从模型回复中提取完整 HTML 文档，去除前后说明文字；再用 Jsoup 检查单文件 HTML 结构和外部资源，用 GraalVM `Context.parse` 检查内联 JavaScript 语法，**不会执行游戏脚本**。外部 Agent 可以先调用 `/create/artifacts/validate` 获得逐项诊断，再经 [`ArtifactService`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactService.java) 提交待审草稿。试玩 HTML 经 [`PlayController`](../apps/api-java/src/main/java/com/gameweare/api/play/PlayController.java) 返回 CSP，并在前端 sandbox iframe 中运行。
 
 [`ProductionConfigGuard`](../apps/api-java/src/main/java/com/gameweare/api/config/ProductionConfigGuard.java) 在 `prod` 启动时拒绝默认密钥、非 HTTPS 公网地址、私网模型入口和非 Kubernetes 文件系统。[`LlmEndpointPolicy`](../apps/api-java/src/main/java/com/gameweare/api/create/LlmEndpointPolicy.java) 限定模型主机、DNS 解析和连接地址；真实部署仍需要防火墙或出口代理作为网络层约束。生产密钥应由独立密钥系统提供，`AI_CONFIG_SECRET` 变更会使既有加密的用户密钥无法直接读取。MySQL 与 MinIO 应联合备份并演练恢复。
 
