@@ -4,9 +4,9 @@
 
 | 页面 | 主要 API | 对接代码 |
 | --- | --- | --- |
-| 首页、详情 | `GET /games`、`/games/tags`、`/games/{slug}`、`/games/trending` | [`Home.tsx`](../apps/web/src/pages/Home.tsx)、[`GameDetail.tsx`](../apps/web/src/pages/GameDetail.tsx) |
+| 首页、详情、评论 | `GET /games?sort=latest|likes`、`/games/tags`、`/games/{slug}`、`/games/trending`、`/games/{slug}/comments` | [`Home.tsx`](../apps/web/src/pages/Home.tsx)、[`GameDetail.tsx`](../apps/web/src/pages/GameDetail.tsx) |
 | 登录、注册 | `POST /auth/login`、`/auth/register`，`GET /auth/session`，`POST /auth/logout` | [`LoginPage.tsx`](../apps/web/src/pages/LoginPage.tsx)、[`RegisterPage.tsx`](../apps/web/src/pages/RegisterPage.tsx)、[`AuthController`](../apps/api-java/src/main/java/com/gameweare/api/auth/AuthController.java) |
-| 创作工作区 | `/create/ai-config`、`/create/jobs`、`/create/runs/{id}/steps`、`/create/runs/{id}/events`、`/create/jobs/{id}/publish` | [`Create.tsx`](../apps/web/src/pages/Create.tsx)、[`CreateController`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateController.java) |
+| 创作工作区 | `/create/ai-config`、`/create/jobs`、`/create/runs/{id}/steps`、`/create/runs/{id}/events`、`/create/jobs/{id}/cancel`、`/create/jobs/{id}/publish` | [`Create.tsx`](../apps/web/src/pages/Create.tsx)、[`CreateController`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateController.java) |
 | 试玩 | `GET /play/{slug}/manifest`、`/play/{slug}/document`，`POST /play/events` | [`PlayGame.tsx`](../apps/web/src/pages/PlayGame.tsx)、[`PlayController`](../apps/api-java/src/main/java/com/gameweare/api/play/PlayController.java) |
 | 奖励 | `/checkins`、`/vouchers/me`、`/voucher-campaigns` | [`Rewards.tsx`](../apps/web/src/pages/Rewards.tsx)、[`voucher` 控制器](../apps/api-java/src/main/java/com/gameweare/api/voucher) |
 | 管理后台 | `/maintenance/**` | [`MaintainerPanel.tsx`](../apps/web/src/pages/MaintainerPanel.tsx)、[`MaintenanceController`](../apps/api-java/src/main/java/com/gameweare/api/maintenance/MaintenanceController.java) |
@@ -32,6 +32,11 @@ Content-Type: application/json
 `agentMode` 支持 `chat`、`react`、`plan`、`decentralized`；`refine` 仅用于 `createType=opt`。`fundingMode=voucher` 时同时传 `voucherId`，由后端占券并使用官方模型。`POST /create/jobs` 返回 202 和任务信息。`GET /create/jobs` 用于侧栏，`GET /create/jobs/{id}` 用于详情；`GET /create/runs/{id}/steps` 与 SSE `/create/runs/{id}/events` 用于进度。`plan` 需要 `/plan-preview` 与 `/plan-decision`；`decentralized` 需要候选预览、选择和确认。完成后先预览，再调用 `/create/jobs/{id}/publish` 发布。优化任务发布前不会替换线上版本或原始封面。
 
 任务列表显示 `displayTitle`、中文状态与模式；完整提示词保留在详情。[`DELETE /create/jobs/{id}`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateController.java) 仅允许本人删除终态任务，隐藏任务和轨迹，已发布游戏与审计数据保留。
+本人可对 `pending`、`generating`、`planning`、`reviewing` 任务调用 `POST /create/jobs/{id}/cancel`。响应为 `status=canceled`；已完成任务返回 409。取消后 SSE 结束，任务轨迹保留，可再用 DELETE 隐藏。跨实例以 MySQL 状态和租约为最终判定，运行中的模型请求会尽快中断。
+
+## 评论与点赞排序
+
+`GET /games?sort=likes` 按点赞数降序展示公开游戏；省略 `sort` 时按发布时间。点赞继续使用 `PUT/DELETE /games/{slug}/like`，MySQL 唯一键避免重复计数。`GET /games/{slug}/comments?page=0&limit=20` 返回 `{items,hasMore,page,total}`；登录用户用 `POST /games/{slug}/comments` 提交 `{content}`（1–1000 字符），仅作者可用 `DELETE /games/{slug}/comments/{commentId}` 删除自己的评论。评论只在已公开游戏上可见，前端以普通文本呈现内容。
 
 ## 外部 Agent 产物
 

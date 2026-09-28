@@ -44,8 +44,10 @@ function AppRoutes() {
     const query = new URLSearchParams();
     const search = searchParams.get("q");
     const tag = searchParams.get("tag");
+    const sort = searchParams.get("sort");
     if (search) query.set("q", search);
     if (tag) query.set("tag", tag);
+    if (sort === "likes") query.set("sort", "likes");
     const suffix = query.size ? `?${query}` : "";
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     Promise.all([
@@ -75,7 +77,7 @@ function AppRoutes() {
       <Routes location={location}>
         <Route
           path="/"
-          element={<Home games={games} featuredGame={featuredGame} availableTags={availableTags} search={searchParams.get("q") ?? ""} selectedTag={searchParams.get("tag") ?? ""} loading={catalogLoading} error={catalogError} />}
+          element={<Home games={games} featuredGame={featuredGame} availableTags={availableTags} search={searchParams.get("q") ?? ""} selectedTag={searchParams.get("tag") ?? ""} sort={searchParams.get("sort") === "likes" ? "likes" : "latest"} loading={catalogLoading} error={catalogError} />}
         />
         <Route
           path="/create"

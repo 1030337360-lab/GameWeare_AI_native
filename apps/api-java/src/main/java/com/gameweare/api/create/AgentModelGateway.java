@@ -30,15 +30,21 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 final class AgentModelGateway {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024;
-    private static final int MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_REQUEST_BYTES = 64 * 1024 * 1024;
+    private static final int MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, Target> targets = new ConcurrentHashMap<>();
     private final int port;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AgentProgressHeartbeat heartbeat;
 
     AgentModelGateway(@Value("${server.port:8080}") int port) { this.port = port; }
 
     Registration register(String baseUrl, String apiKey) {
+        return register(null, baseUrl, apiKey);
+    }
+
+    Registration register(String jobId, String baseUrl, String apiKey) {
         LlmEndpointPolicy policy = new LlmEndpointPolicy(
                 LlmClient.allowedHosts, CreateService.privateLlmEndpointsAllowed);
         URI base = URI.create(baseUrl.strip().replaceAll("/+$", "")
@@ -54,9 +60,9 @@ final class AgentModelGateway {
                 .dns(policy::resolve).connectTimeout(Duration.ofSeconds(10))
                 // Game HTML is much longer than the one-word configuration probe. OkHttp's
                 // default 10-second read timeout incorrectly aborts a healthy generation.
-                .readTimeout(Duration.ofSeconds(180))
-                .callTimeout(Duration.ofSeconds(240)).build();
-        targets.put(token, new Target(endpoint, apiKey, http));
+                .readTimeout(Duration.ofMinutes(10))
+                .callTimeout(Duration.ofMinutes(20)).build();
+        targets.put(token, new Target(endpoint, apiKey, http, jobId));
         return new Registration(token, "http://127.0.0.1:" + port + "/internal/agent-model/" + token + "/v1");
     }
 
@@ -72,11 +78,13 @@ final class AgentModelGateway {
         byte[] body = request.getInputStream().readNBytes(MAX_REQUEST_BYTES + 1);
         if (body.length > MAX_REQUEST_BYTES)
             return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).build();
+        if (heartbeat != null) heartbeat.touch(target.jobId());
         body = compatibleChatRequest(body);
         Request outbound = new Request.Builder().url(target.endpoint().toString())
                 .header("Authorization", "Bearer " + target.apiKey())
                 .post(RequestBody.create(body, MediaType.get("application/json"))).build();
         try (okhttp3.Response response = target.http().newCall(outbound).execute()) {
+            if (heartbeat != null) heartbeat.touch(target.jobId());
             byte[] content = response.body() == null ? new byte[0]
                     : response.body().byteStream().readNBytes(MAX_RESPONSE_BYTES + 1);
             if (content.length > MAX_RESPONSE_BYTES)
@@ -118,5 +126,5 @@ final class AgentModelGateway {
         }
     }
 
-    private record Target(URI endpoint, String apiKey, OkHttpClient http) {}
+    private record Target(URI endpoint, String apiKey, OkHttpClient http, String jobId) {}
 }

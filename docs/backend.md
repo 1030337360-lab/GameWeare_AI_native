@@ -19,9 +19,11 @@ INSERT INTO outbox_events (..., event_type, ..., status, ...)
 VALUES (..., 'job.created', ..., 'pending', ...);
 ```
 
-[`OutboxPublisher`](../apps/api-java/src/main/java/com/gameweare/api/config/OutboxPublisher.java) 认领待投递事件，经 RabbitMQ publisher confirm/return 确认后标为 `sent`；超时和投递失败会回到 `pending`。[`CreateWorker`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateWorker.java) 用任务租约和 `lease_token` 条件更新防止多实例重复提交。消息允许重复投递，因此幂等键、租约、状态条件和唯一约束共同承担去重。`X-Idempotency-Key` 同用户同请求可返回已有任务，不同请求复用会冲突。
+[`OutboxPublisher`](../apps/api-java/src/main/java/com/gameweare/api/config/OutboxPublisher.java) 认领待投递事件，经 RabbitMQ publisher confirm/return 确认后标为 `sent`；超时和投递失败会回到 `pending`。[`CreateWorker`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateWorker.java) 先获取任务级 Redisson 锁（不指定固定租期，由 30 秒看门狗自动续期），再用 MySQL 租约和 `lease_token` 条件更新防止多实例重复提交。消息允许重复投递，因此幂等键、锁、租约、状态条件和唯一约束共同承担去重。`X-Idempotency-Key` 同用户同请求可返回已有任务，不同请求复用会冲突。
 
 Worker 校验游戏文件后上传 MinIO，再在 MySQL 事务中建立 `game_versions`、`assets`、用量和任务终态。优化任务会生成新草稿；`POST /create/jobs/{id}/publish` 才把公开版本切过去。MinIO 与 MySQL 不共享事务，数据库提交失败可能留下孤儿对象，仍需要周期清理。用户删除任务通过 [`V12`](../apps/api-java/src/main/resources/db/migration/V12__hide_deleted_creation_tasks.sql) 的 `deleted_at` 隐藏记录和轨迹；已发布游戏及审计账本保留。
+
+本人终止创建时，[`CreateService.cancelJob`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateService.java) 在事务中把待处理/生成/待确认任务改为 `canceled`、清除租约并返还预留；完成事务后通知本实例 Worker。跨实例 Worker 在租约续期时发现状态变化后中断本地线程。旧引擎在模型 HTTP 调用期间还会取消 OkHttp Call。Worker 提交游戏版本前再次核对租约；取消或提交失败的本次 MinIO 文件会清理，避免发布半成品。提供方已处理的请求可能仍产生费用，不能把本地取消等同于提供方零用量。
 
 ## 模型额度与生成券
 
@@ -31,7 +33,9 @@ Worker 校验游戏文件后上传 MinIO，再在 MySQL 事务中建立 `game_ve
 
 [`VoucherCampaignService`](../apps/api-java/src/main/java/com/gameweare/api/voucher/VoucherCampaignService.java) 使用 Redis Lua 在同一脚本内检查活动时间、用户预留和库存，扣减预库存并写 Stream；预扣返回 `pending`，不代表已发券。[`VoucherClaimQueue`](../apps/api-java/src/main/java/com/gameweare/api/voucher/VoucherClaimQueue.java) 中继与消费 RabbitMQ 消息，MySQL 中条件扣库存、同场唯一约束和券发放决定最终结果；失败通过重试与对账补偿预留。Redis 不可用时停止新抢券，不能依据缓存值宣布到账。
 
-[`CheckinController`](../apps/api-java/src/main/java/com/gameweare/api/voucher/CheckinController.java) 的每日唯一记录和奖励流水在 MySQL，Bitmap 只用于日历。关注关系由 MySQL 唯一约束决定；[`GameCatalogCache`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameCatalogCache.java) 使用 Cache Aside、随机 TTL、空值缓存和重建锁，公开状态仍由 MySQL 判定。[`GameTrendingService`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameTrendingService.java) 和 [`PlayUvService`](../apps/api-java/src/main/java/com/gameweare/api/play/PlayUvService.java) 使用 Redis 展示投影，UV 为近似统计。
+[`CheckinController`](../apps/api-java/src/main/java/com/gameweare/api/voucher/CheckinController.java) 的每日唯一记录和奖励流水在 MySQL，Bitmap 只用于日历。关注关系由 MySQL 唯一约束决定；[`GameCatalogCache`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameCatalogCache.java) 使用 Cache Aside：Caffeine 作为容量 1 万、3 秒过期的 L1，Redis 作为随机 60–120 秒过期的 L2，另有 10 秒空值缓存和 Redisson 看门狗重建锁。写操作提交后删除 L2 并通过 Redis Topic 通知其他实例失效 L1；消息丢失时 L1 最多保留 3 秒。公开状态仍由 MySQL 判定。[`GameSlugBloomFilter`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameSlugBloomFilter.java) 在启动时扫描已公开 slug，并在新游戏发布前写入 Redis 布隆过滤器；只有初始化完成且 Redis 进程标识与初始化时一致的过滤器才拦截确定不存在的 slug；Redis 重启或故障时回退 MySQL，定时重扫公开游戏再启用。布隆过滤器可能误报存在，不负责权限或计费。[`GameTrendingService`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameTrendingService.java) 和 [`PlayUvService`](../apps/api-java/src/main/java/com/gameweare/api/play/PlayUvService.java) 使用 Redis 展示投影，UV 为近似统计。
+
+[`GameCatalogController`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameCatalogController.java) 的 `sort=likes` 用 MySQL 点赞计数排序，点赞唯一键与计数在同一事务更新。[`GameCommentController`](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameCommentController.java) 对公开游戏提供分页评论，内容和作者归属存 MySQL；发表、软删除与 `comments_count` 同事务，缓存于提交后失效。结构与索引见 [`V13`](../apps/api-java/src/main/resources/db/migration/V13__game_comments_and_like_order.sql)。
 
 ## 产物校验与安全边界
 

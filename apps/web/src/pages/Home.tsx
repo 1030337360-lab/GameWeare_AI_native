@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, ArrowUpRight, Gamepad2, Play, Search, Sparkles } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Gamepad2, Heart, Play, Search, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { API_BASE_URL } from "../utils/constants";
@@ -12,11 +12,12 @@ interface HomeProps {
   availableTags: string[];
   search: string;
   selectedTag: string;
+  sort: "latest" | "likes";
   loading: boolean;
   error: boolean;
 }
 
-export default function Home({ games, featuredGame, availableTags, search, selectedTag, loading, error }: HomeProps) {
+export default function Home({ games, featuredGame, availableTags, search, selectedTag, sort, loading, error }: HomeProps) {
   const auth = useAuth();
   const navigate = useNavigate();
   const [draftSearch, setDraftSearch] = React.useState(search);
@@ -38,10 +39,11 @@ export default function Home({ games, featuredGame, availableTags, search, selec
     return () => window.clearTimeout(timer);
   }, [draftSearch, search, selectedTag]);
 
-  function updateFilter(nextSearch: string, nextTag = selectedTag) {
+  function updateFilter(nextSearch: string, nextTag = selectedTag, nextSort = sort) {
     const query = new URLSearchParams();
     if (nextSearch.trim()) query.set("q", nextSearch.trim());
     if (nextTag) query.set("tag", nextTag);
+    if (nextSort === "likes") query.set("sort", "likes");
     navigate(`/?${query.toString()}`, { replace: true });
   }
 
@@ -101,6 +103,10 @@ export default function Home({ games, featuredGame, availableTags, search, selec
             </button>
           ))}
           </div>
+          <div className="catalog-sort" role="group" aria-label="游戏排序">
+            <button type="button" className={sort === "latest" ? "active" : ""} onClick={() => updateFilter(search, selectedTag, "latest")}>最新发布</button>
+            <button type="button" className={sort === "likes" ? "active" : ""} onClick={() => updateFilter(search, selectedTag, "likes")}><Heart size={14} /> 点赞最多</button>
+          </div>
         </div>
         {loading && games.length === 0 ? <div className="catalog-state" role="status"><span className="loading-orb" /> 正在加载游戏...</div>
           : games.length === 0 ? (
@@ -134,7 +140,7 @@ function GameCard({ game }: { game: Game }) {
       </div>
       <div className="catalog-card-content">
         <div><h3>{game.title}</h3><p>作者：{game.creatorName || "GameWeare 创作者"}</p></div>
-        <span className="catalog-plays"><Play size={13} fill="currentColor" /> {formatPlays(game.plays)}</span>
+        <span className="catalog-plays"><Play size={13} fill="currentColor" /> {formatPlays(game.plays)} <Heart size={13} /> {formatPlays(game.likes)}</span>
       </div>
     </Link>
   );

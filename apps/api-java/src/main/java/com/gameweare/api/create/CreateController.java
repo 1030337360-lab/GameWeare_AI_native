@@ -61,6 +61,11 @@ public class CreateController {
         return service.deleteJob(userId, id);
     }
 
+    @PostMapping("/jobs/{id}/cancel")
+    public Map<String, Object> cancelJob(@RequestAttribute("userId") String userId, @PathVariable String id) {
+        return service.cancelJob(userId, id);
+    }
+
     @PostMapping("/jobs/{id}/publish")
     public Map<String, Object> publish(@RequestAttribute("userId") String userId, @PathVariable String id) {
         return service.publish(userId, id);

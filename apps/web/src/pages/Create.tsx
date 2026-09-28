@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, ChevronRight, Clock3, GripVertical, Plus, Sparkles, Play, Settings, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronRight, Clock3, GripVertical, Plus, Sparkles, Play, Settings, Square, Trash2 } from "lucide-react";
 import { API_BASE_URL } from "../utils/constants";
 import { readApiError } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
@@ -84,6 +84,7 @@ function Create() {
   const [previewBusy, setPreviewBusy] = React.useState(false);
   const [recentGame, setRecentGame] = React.useState<RecentGame | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [cancelBusyId, setCancelBusyId] = React.useState<string | null>(null);
   const [pendingImages, setPendingImages] = React.useState<PendingImage[]>([]);
   const streamAbortRef = React.useRef<AbortController | null>(null);
   const selectedJobRef = React.useRef<string | null>(null);
@@ -296,6 +297,7 @@ function Create() {
         setJob(payload);
         if (payload.status === "completed") setStatus("游戏已生成，可以预览或发布。");
         else if (payload.status === "failed") setStatus(payload.errorMessage || "游戏生成失败。");
+        else if (payload.status === "canceled") setStatus("已终止创作，本次任务不会发布游戏。相关预留资源正在释放。");
       }
       await Promise.all([loadTaskHistory(), loadProjects()]);
       return payload;
@@ -427,7 +429,7 @@ function Create() {
       const payload = (await response.json()) as CreateJob;
       if (selectedJobRef.current !== taskId) return;
       setJob(payload);
-      setStatus(payload.status === "completed" ? "游戏已生成，可以预览或发布。" : payload.status === "failed" ? payload.errorMessage || "游戏生成失败。" : `Task is ${taskStatus(payload.status).label.toLowerCase()}.`);
+      setStatus(payload.status === "completed" ? "游戏已生成，可以预览或发布。" : payload.status === "failed" ? payload.errorMessage || "游戏生成失败。" : payload.status === "canceled" ? "已终止创作，本次任务不会发布游戏。" : `任务${taskStatus(payload.status).label}。`);
       if (payload.runId) {
         const stepsResponse = await apiFetch(`/create/runs/${payload.runId}/steps`);
         if (stepsResponse.ok && selectedJobRef.current === taskId) setRunSteps((await stepsResponse.json()) as CreateRunStep[]);
@@ -452,6 +454,25 @@ function Create() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "删除失败，请稍后重试");
     }
+  }
+
+  async function cancelTask(taskId: string) {
+    if (!window.confirm("确定终止这个创建任务吗？已生成但尚未发布的内容不会保存为游戏版本。")) return;
+    setCancelBusyId(taskId);
+    try {
+      const response = await apiFetch(`/create/jobs/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+      if (!response.ok) throw new Error((await readApiError(response)).message || "终止失败");
+      setTaskHistory(current => current.map(item => item.id === taskId ? { ...item, status: "canceled" } : item));
+      if (selectedJobRef.current === taskId) {
+        streamAbortRef.current?.abort();
+        setStreaming(false);
+        await loadFinalJob(taskId);
+        const stepsResponse = await apiFetch(`/create/runs/${encodeURIComponent(taskId)}/steps`);
+        if (stepsResponse.ok) setRunSteps(await stepsResponse.json() as CreateRunStep[]);
+      }
+      setStatus("已终止创作，本次任务不会发布游戏。");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "终止失败，请稍后重试"); }
+    finally { setCancelBusyId(null); }
   }
 
   function beginResize(event: React.PointerEvent<HTMLDivElement>) {
@@ -794,7 +815,9 @@ function Create() {
                 <strong>{taskTitle(item.displayTitle || item.prompt)}</strong>
                 <span className="create-task-item-foot">{item.createType === "opt" ? "继续优化" : "新建游戏"} <span>·</span> {({ chat: "对话", react: "推理行动", plan: "规划", decentralized: "多智能体", refine: "精修" } as Record<string, string>)[item.agentMode ?? ""] ?? "创作"}</span>
                 </button>
-                {!["pending", "generating"].includes(item.status) && <button type="button" className="create-task-delete" aria-label={`删除任务：${taskTitle(item.displayTitle || item.prompt)}`} title="删除任务和轨迹" onClick={() => void deleteTask(item)}><Trash2 size={15} /></button>}
+                {["pending", "generating", "planning", "reviewing"].includes(item.status)
+                  ? <button type="button" className="create-task-cancel" disabled={cancelBusyId === item.id} aria-label={`终止任务：${taskTitle(item.displayTitle || item.prompt)}`} title="终止创建" onClick={() => void cancelTask(item.id)}><Square size={13} fill="currentColor" /></button>
+                  : <button type="button" className="create-task-delete" aria-label={`删除任务：${taskTitle(item.displayTitle || item.prompt)}`} title="删除任务和轨迹" onClick={() => void deleteTask(item)}><Trash2 size={15} /></button>}
               </div>;
             })}
           </div>
@@ -815,6 +838,7 @@ function Create() {
           </div>
           <div className="create-progress-track" aria-hidden="true"><span className="done" /><span className={runSteps.length > 0 ? "done" : ""} /><span className={job?.status === "completed" ? "done" : ""} /><span className={job?.publishStatus === "published" ? "done" : ""} /></div>
           <div className="create-progress-labels"><span>等待</span><span>生成</span><span>完成</span><span>发布</span></div>
+          {job && ["pending", "generating", "planning", "reviewing"].includes(job.status) && <div className="create-cancel-strip"><span>任务正在进行。你可以随时终止，终止后保留轨迹供查看。</span><button type="button" disabled={cancelBusyId === job.id} onClick={() => void cancelTask(job.id)}><Square size={13} fill="currentColor" /> {cancelBusyId === job.id ? "正在终止…" : "终止创建"}</button></div>}
           {job?.prompt && <details className="create-prompt-details"><summary>查看完整创作要求</summary><p>{job.prompt}</p></details>}
         </section>
       ) : <div className="create-compose-heading"><span className="create-overline">开始创作</span><h2>描述你想玩的游戏</h2><p>告诉我们玩法、氛围或故事设定。</p></div>}
@@ -1132,8 +1156,8 @@ function Create() {
           <div className="create-result-summary">
               {job.status === "completed" && job.coverDataUrl && <img className="create-result-cover" src={job.coverDataUrl} alt={`Cover for ${taskTitle(job.prompt)}`} />}
               <span>CREATION STATUS</span>
-              <strong>{job.publishStatus === "published" ? "Your game is live" : job.status === "completed" ? "Your game is ready" : job.status === "failed" ? "This attempt stopped" : job.status === "planning" || job.status === "reviewing" ? "Waiting for your review" : "Making your game"}</strong>
-              <p>{streaming ? "Live updates are coming in." : job.status === "completed" ? "Review the result or keep improving it." : job.status === "failed" ? "Check the run steps for details." : "We will keep this task in your list as it progresses."}</p>
+              <strong>{job.publishStatus === "published" ? "游戏已发布" : job.status === "completed" ? "游戏已生成" : job.status === "failed" ? "本次生成失败" : job.status === "canceled" ? "创作已终止" : job.status === "planning" || job.status === "reviewing" ? "等待你的确认" : "正在创作游戏"}</strong>
+              <p>{job.status === "canceled" ? "任务轨迹已保留，未完成的游戏版本不会发布。" : streaming ? "正在接收实时进度。" : job.status === "completed" ? "可以预览、发布或继续优化。" : job.status === "failed" ? "查看任务轨迹了解原因。" : "你可以切换任务，稍后回来查看进度。"}</p>
               <details className="create-technical-details">
                 <summary>Technical details</summary>
                 <span>Task: {job.id}</span>

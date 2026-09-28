@@ -20,13 +20,15 @@
 
 `AGENT_FILESYSTEM` 选择 `local`、`docker` 或 `kubernetes`。本地 Docker 路径使用 AgentScope `DockerFilesystemSpec`，设置无网络、只读根文件系统、临时工作区及 CPU/内存限制。Kubernetes 路径使用 `KubernetesFilesystemSpec` 和 [`infra/k8s/agent-sandbox.yaml.template`](../infra/k8s/agent-sandbox.yaml.template)；生产启动守卫只接受 Kubernetes。`local` 模式仅用于受控开发，不提供同等级别的隔离。
 
-模型密钥留在 API 控制面。[`AgentModelGateway`](../apps/api-java/src/main/java/com/gameweare/api/create/AgentModelGateway.java) 以短期令牌提供仅回环可访问的 Chat Completions 代理，再按 [`LlmEndpointPolicy`](../apps/api-java/src/main/java/com/gameweare/api/create/LlmEndpointPolicy.java) 检查模型出口。沙箱不会直接拿到真实 API Key。AgentScope 引擎没有本地 Token 或工具迭代次数上限；模型服务商的额度、任务超时和资源限制仍然生效。
+模型密钥留在 API 控制面。[`AgentModelGateway`](../apps/api-java/src/main/java/com/gameweare/api/create/AgentModelGateway.java) 以短期令牌提供仅回环可访问的 Chat Completions 代理，再按 [`LlmEndpointPolicy`](../apps/api-java/src/main/java/com/gameweare/api/create/LlmEndpointPolicy.java) 检查模型出口。沙箱不会直接拿到真实 API Key。代理允许 64 MiB 请求和 32 MiB 响应，单次读取等待 10 分钟、完整请求最多 20 分钟；这些是传输保护，不是模型上下文容量。AgentScope 引擎没有本地 Token 或工具迭代次数上限；模型服务商的额度、任务超时和资源限制仍然生效。若 Agent 在未交付时结束，服务端会继续提醒，只有连续重复同一无进展答复才以明确原因终止。
+
+Worker 持有任务级 Redisson 锁时不设置固定租期，客户端看门狗自动续期；MySQL `lease_token` 仍是最终写入围栏。每 30 秒检查运行线程、分布式锁归属和最近进度，并仅在健康时续 MySQL 租约。AgentScope 模型代理每次请求和响应都会更新进度；默认 25 分钟无进度视为停滞，取消本实例请求并令租约到期，由重试恢复。这个检查监测 Java Worker 与模型交互，不能代替 Docker/Kubernetes 自身的容器健康探针；容器执行失败仍由 AgentScope 错误或超时反馈。配置为 `AGENT_STALL_TIMEOUT_MINUTES`。
 
 ## 游戏产物的硬门槛
 
 游戏 Agent 必须写 `index.html`，调用 [`validate_game_html`](../apps/api-java/src/main/java/com/gameweare/api/create/GameValidationTool.java) 检查当前文件，修正逐条诊断，再调用 `deliver_artifact`。校验工具保存通过时的 SHA-256；交付回调再次比较文件字节，防止“校验后修改”。[`ArtifactValidator`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactValidator.java) 只检查 HTML 包装、自包含资源和 JavaScript 语法，不执行游戏，也不能证明可玩性。Worker 在入库前会再次校验。
 
-`legacy` 引擎的最终生成同样要求模型调用 `validate_game_html` 函数；服务端用同一 `GameValidationTool` 校验提交的完整 HTML，将 `FAIL` 诊断作为 `function_call_output` 回传，直到出现 `PASS` 才接受产物。每轮显式回传模型的原始输出项（包括思考项和函数调用）及工具结果，兼容不支持 `previous_response_id` / `store` 的无状态 Responses 接口。各轮用量累加；没有本地工具调用次数上限。规划预览仍为普通模型请求，因其不是游戏产物。
+`legacy` 引擎的最终生成要求模型调用 `validate_game_html` 函数；服务端用同一 `GameValidationTool` 校验提交的完整 HTML，将 `FAIL` 诊断作为 `function_call_output` 回传，直到出现 `PASS` 才接受产物。每轮显式回传模型的原始输出项（包括思考项和函数调用）及工具结果，兼容不支持 `previous_response_id` / `store` 的无状态 Responses 接口。部分兼容接口会忽略强制工具调用：若返回普通文本，服务端仍通过相同的校验器检查完整 HTML；不合格时把诊断作为用户消息继续送回模型。连续重复同一无进展答复会报明原因。各轮用量累加；没有本地工具调用次数上限。规划预览仍为普通模型请求，因其不是游戏产物。
 每次校验的通过或失败及具体诊断写入任务轨迹的 `game_validation_tool` 步骤，不保存候选源码。
 
 新游戏的封面在游戏 HTML 验证后由独立的 [`CoverReActEngine`](../apps/api-java/src/main/java/com/gameweare/api/create/CoverReActEngine.java) 生成：把已验证的完整源码和原始需求传给封面 Agent，要求写 `cover.svg`、调用 [`validate_cover_svg`](../apps/api-java/src/main/java/com/gameweare/api/create/CoverValidationTool.java)，并交付相同版本的文件。SVG 不合格或阶段失败时记录原因并使用本地安全回退封面。优化旧游戏时不重新生成封面，沿用原封面。

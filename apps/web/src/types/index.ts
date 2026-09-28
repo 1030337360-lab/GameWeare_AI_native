@@ -18,6 +18,7 @@ export type Game = {
   coverUrl: string;
   plays: number;
   likes: number;
+  comments: number;
   favorites: number;
   likedByMe: boolean;
   favoritedByMe: boolean;

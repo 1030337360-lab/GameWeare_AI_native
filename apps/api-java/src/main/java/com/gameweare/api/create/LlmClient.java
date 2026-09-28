@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Call;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
@@ -57,6 +58,8 @@ final class LlmClient {
         if (firstInput instanceof String text) conversation.add(Map.of("role", "user", "content", text));
         else conversation.addAll((List<?>) firstInput);
         long promptTokens = 0, completionTokens = 0, totalTokens = 0;
+        String lastUnproductiveAnswer = null;
+        int repeatedUnproductiveAnswers = 0;
         while (true) {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("model", model);
@@ -74,9 +77,11 @@ final class LlmClient {
             completionTokens = Math.addExact(completionTokens, usage[1]);
             totalTokens = Math.addExact(totalTokens, usage[2]);
             List<Map<String, String>> toolOutputs = new ArrayList<>();
+            boolean calledValidation = false;
             for (JsonNode item : root.path("output")) conversation.add(item.deepCopy());
             for (JsonNode item : root.path("output")) {
                 if (!"function_call".equals(item.path("type").asText())) continue;
+                calledValidation = true;
                 if (!"validate_game_html".equals(item.path("name").asText()))
                     throw new IllegalStateException("AI provider requested an unknown validation tool");
                 String callId = item.path("call_id").asText("");
@@ -98,10 +103,59 @@ final class LlmClient {
                 toolOutputs.add(Map.of("type", "function_call_output", "call_id", callId,
                         "output", result.feedback()));
             }
-            if (toolOutputs.isEmpty())
-                throw new IllegalStateException("AI provider did not call validate_game_html; game was not delivered");
-            conversation.addAll(toolOutputs);
+            if (calledValidation) {
+                lastUnproductiveAnswer = null;
+                repeatedUnproductiveAnswers = 0;
+                conversation.addAll(toolOutputs);
+                continue;
+            }
+            // Some OpenAI-compatible endpoints ignore a forced tool_choice and return
+            // a normal assistant message. Validate a complete HTML answer through the
+            // same server-side gate; otherwise feed precise diagnostics back to the model.
+            String textAnswer = outputText(root);
+            String answerFingerprint = Integer.toHexString(textAnswer.hashCode()) + ":" + textAnswer.length();
+            repeatedUnproductiveAnswers = answerFingerprint.equals(lastUnproductiveAnswer)
+                    ? repeatedUnproductiveAnswers + 1 : 1;
+            lastUnproductiveAnswer = answerFingerprint;
+            if (repeatedUnproductiveAnswers >= 3)
+                throw new IllegalStateException("AI provider repeatedly returned the same answer without "
+                        + "a validate_game_html call or a valid playable HTML artifact; tool_choice may be ignored");
+            if (!textAnswer.isBlank()) {
+                String candidate = unwrapHtml(textAnswer);
+                GameValidationTool.CandidateResult result = validator.validateCandidate(candidate);
+                onValidation.accept(result);
+                if (result.passed())
+                    return new Result(result.normalizedHtml(), promptTokens, completionTokens, totalTokens);
+                conversation.add(Map.of("role", "user", "content",
+                        "Your previous response was text, not a validate_game_html tool call. "
+                        + result.feedback() + " Submit the complete corrected HTML with validate_game_html. "));
+            } else {
+                conversation.add(Map.of("role", "user", "content",
+                        "No validate_game_html call or HTML was returned. Continue generation and "
+                        + "submit the complete index.html to validate_game_html."));
+            }
         }
+    }
+
+    private static String unwrapHtml(String answer) {
+        String trimmed = answer.strip();
+        if (!trimmed.startsWith("```")) return trimmed;
+        int firstLineEnd = trimmed.indexOf('\n');
+        int closingFence = trimmed.lastIndexOf("```");
+        return firstLineEnd >= 0 && closingFence > firstLineEnd
+                ? trimmed.substring(firstLineEnd + 1, closingFence).strip() : trimmed;
+    }
+
+    private static String outputText(JsonNode root) {
+        String text = root.path("output_text").asText("");
+        if (!text.isBlank()) return text;
+        StringBuilder result = new StringBuilder();
+        for (JsonNode item : root.path("output"))
+            for (JsonNode part : item.path("content")) {
+                String fragment = part.path("text").asText("");
+                if (!fragment.isBlank()) result.append(fragment);
+            }
+        return result.toString();
     }
 
     private static Object input(String prompt, List<Image> images) {
@@ -124,12 +178,14 @@ final class LlmClient {
         OkHttpClient http = new OkHttpClient.Builder()
                 .proxy(Proxy.NO_PROXY).followRedirects(false).followSslRedirects(false)
                 .dns(policy::resolve).connectTimeout(Duration.ofSeconds(10))
-                .readTimeout(Duration.ofSeconds(180))
-                .callTimeout(Duration.ofMinutes(10)).build();
+                .readTimeout(Duration.ofMinutes(10))
+                .callTimeout(Duration.ofMinutes(20)).build();
         Request request = new Request.Builder().url(uri.toString())
                 .header("Authorization", "Bearer " + apiKey)
                 .post(RequestBody.create(body, MediaType.get("application/json"))).build();
-        try (Response response = http.newCall(request).execute()) {
+        Call call = http.newCall(request);
+        CreateCancellationRegistry.track(call);
+        try (Response response = call.execute()) {
             if (!response.isSuccessful()) {
                 String details = "";
                 if (response.body() != null) {
@@ -160,6 +216,8 @@ final class LlmClient {
                 root = JSON.readTree(responseBytes);
             }
             return root;
+        } finally {
+            CreateCancellationRegistry.untrack(call);
         }
     }
 
@@ -197,23 +255,16 @@ final class LlmClient {
         if ("response.failed".equals(type) || "response.incomplete".equals(type) || "error".equals(type)) {
             JsonNode error = event.path("response").path("error");
             if (error.isMissingNode() || error.isNull()) error = event.path("error");
-            String message = error.path("message").asText(event.path("message").asText(type));
+            String message = error.path("message").asText(event.path("message").asText(""));
+            if (message.isBlank()) message = event.path("response").path("incomplete_details")
+                    .path("reason").asText(type);
             throw new IllegalStateException("AI provider stream failed: " + message);
         }
         return null;
     }
 
     private static Result parseResult(JsonNode root) {
-            String text = root.path("output_text").asText("");
-            if (text.isBlank()) {
-                StringBuilder result = new StringBuilder();
-                for (JsonNode item : root.path("output"))
-                    for (JsonNode part : item.path("content")) {
-                        String fragment = part.path("text").asText("");
-                        if (!fragment.isBlank()) result.append(fragment);
-                    }
-                text = result.toString();
-            }
+            String text = outputText(root);
             if (text.isBlank()) throw new IllegalStateException("AI provider returned no text");
             long[] usage = usage(root);
             return new Result(text, usage[0], usage[1], usage[2]);

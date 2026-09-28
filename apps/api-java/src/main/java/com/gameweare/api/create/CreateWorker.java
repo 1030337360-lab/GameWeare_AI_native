@@ -8,6 +8,7 @@ import com.gameweare.api.voucher.GenerationVoucherService;
 import io.minio.MinioClient;
 import io.minio.GetObjectArgs;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -16,6 +17,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +28,9 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class CreateWorker {
@@ -40,7 +46,15 @@ public class CreateWorker {
     private final ArtifactValidator artifactValidator;
     private final CoverReActEngine coverReAct;
     private final String bucket;
-    private final Map<String, String> activeLeases = new ConcurrentHashMap<>();
+    private final Map<String, ActiveRun> activeLeases = new ConcurrentHashMap<>();
+    @org.springframework.beans.factory.annotation.Autowired
+    private RedissonClient redisson;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AgentProgressHeartbeat heartbeat;
+    @Value("${gameweare.agent.stall-timeout-minutes:25}")
+    private long stallTimeoutMinutes = 25;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CreateCancellationRegistry cancellations;
 
     public CreateWorker(JdbcTemplate db, TransactionTemplate tx, CreateService service, TokenBillingService billing,
                         GenerationVoucherService vouchers,
@@ -54,6 +68,22 @@ public class CreateWorker {
 
     @RabbitListener(queues = InfrastructureConfig.CREATE_QUEUE)
     public void consume(String jobId) {
+        RLock lock = redisson.getLock("create:job:run:" + jobId);
+        try {
+            // No explicit leaseTime: Redisson's watchdog renews while this JVM owns the lock.
+            if (!lock.tryLock(0, TimeUnit.SECONDS)) return;
+            try {
+                consumeLocked(jobId, lock);
+            } finally {
+                if (lock.isHeldByCurrentThread()) lock.unlock();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted acquiring create job lock", interrupted);
+        }
+    }
+
+    private void consumeLocked(String jobId, RLock lock) {
         String leaseToken = UUID.randomUUID().toString();
         Map<String, Object> job = tx.execute(s -> {
             int changed = db.update("UPDATE create_jobs SET status='generating',lease_token=?,lease_expires_at=DATE_ADD(NOW(), INTERVAL 10 MINUTE),attempts=attempts+1,updated_at=NOW() WHERE id=? AND status='pending' AND attempts<3",
@@ -63,11 +93,17 @@ public class CreateWorker {
             return db.queryForMap("SELECT * FROM create_jobs WHERE id=?", jobId);
         });
         if (job == null) return;
-        activeLeases.put(jobId, leaseToken);
+        ActiveRun active = new ActiveRun(leaseToken, Thread.currentThread(), lock);
+        activeLeases.put(jobId, active);
+        if (heartbeat != null) heartbeat.start(jobId);
+        if (cancellations != null) cancellations.register(jobId);
+        List<String> uploadedObjects = new ArrayList<>();
+        AtomicBoolean persisted = new AtomicBoolean(false);
         String userId = (String) job.get("user_id");
         long reservedTokens = ((Number) job.get("reserved_tokens")).longValue();
         String failureStage = "AI configuration";
         try {
+            if (!leaseOwned(jobId, leaseToken)) return;
             Map<String, Object> config = service.configRowForJob(userId, job);
             if (config == null) throw new IllegalStateException("AI provider configuration is missing");
             String prompt = "Create a complete playable single-file HTML5 browser game. "
@@ -138,6 +174,7 @@ public class CreateWorker {
                             new GameValidationTool(jobId, artifactValidator), result ->
                                     step(jobId, nextStepNo(jobId), "game_validation_tool",
                                             result.passed() ? "completed" : "failed", result.feedback()));
+            if (!leaseOwned(jobId, leaseToken)) return;
             failureStage = "HTML/JavaScript validation";
             String html = generated.text();
             ArtifactValidator.Result validation = artifactValidator.validate(html);
@@ -160,6 +197,7 @@ public class CreateWorker {
                 cover = null;
                 step(jobId, nextStepNo(jobId), "cover_reused", "completed", "Keeping the original game cover");
             }
+            if (!leaseOwned(jobId, leaseToken)) return;
             long coverPromptTokens = cover == null ? 0 : cover.promptTokens();
             long coverCompletionTokens = cover == null ? 0 : cover.completionTokens();
             long totalTokens = Math.addExact(gameTokens, Math.addExact(coverPromptTokens, coverCompletionTokens));
@@ -169,9 +207,11 @@ public class CreateWorker {
             String coverKey = cover == null ? null : "games/" + gameId + "/" + versionId + "/cover.svg";
             byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
             failureStage = "artifact upload";
+            uploadedObjects.add(key);
             minio.putObject(PutObjectArgs.builder().bucket(bucket).object(key)
                     .stream(new ByteArrayInputStream(bytes), bytes.length, -1).contentType("text/html; charset=utf-8").build());
             if (cover != null) {
+                uploadedObjects.add(coverKey);
                 minio.putObject(PutObjectArgs.builder().bucket(bucket).object(coverKey)
                         .stream(new ByteArrayInputStream(cover.bytes()), cover.bytes().length, -1)
                         .contentType("image/svg+xml").build());
@@ -181,8 +221,8 @@ public class CreateWorker {
             }
             failureStage = "database persistence";
             tx.executeWithoutResult(s -> {
-                Map<String, Object> current = db.queryForMap("SELECT status,lease_token FROM create_jobs WHERE id=? FOR UPDATE", jobId);
-                if (!"generating".equals(current.get("status")) || !leaseToken.equals(current.get("lease_token"))) return;
+                List<Map<String, Object>> current = db.queryForList("SELECT id FROM create_jobs WHERE id=? AND status='generating' AND lease_token=? AND lease_expires_at>NOW() FOR UPDATE", jobId, leaseToken);
+                if (current.isEmpty()) return;
                 if (job.get("game_id") == null) {
                     db.update("INSERT INTO games(id,slug,title,description,author_id,publish_status,visibility,created_at,updated_at) VALUES(?,?,?,?,?,'draft','private',NOW(),NOW())",
                             gameId, "game-" + gameId, title, title, userId);
@@ -220,6 +260,10 @@ public class CreateWorker {
                         newGame ? "Game and cover generated and stored" : "Game optimized; original cover retained");
                 if (reservedTokens > 0) billing.settle(userId, jobId, totalTokens);
                 if ("voucher".equals(job.get("funding_mode"))) vouchers.consume(userId, jobId);
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                        new org.springframework.transaction.support.TransactionSynchronization() {
+                            @Override public void afterCommit() { persisted.set(true); }
+                        });
             });
         } catch (Exception ex) {
             LOG.error("Create job {} failed", jobId, ex);
@@ -234,7 +278,15 @@ public class CreateWorker {
                     vouchers.release(userId, jobId);
                 }
             });
-        } finally { activeLeases.remove(jobId, leaseToken); }
+        } finally {
+            activeLeases.remove(jobId, active);
+            if (heartbeat != null) heartbeat.stop(jobId);
+            if (cancellations != null && cancellations.unregister(jobId)) Thread.interrupted();
+            if (!persisted.get()) for (String objectKey : uploadedObjects) {
+                try { minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build()); }
+                catch (Exception cleanupError) { LOG.warn("Could not remove uncommitted object {}", objectKey, cleanupError); }
+            }
+        }
     }
 
     private Map<String, Object> workflow(String jobId) {
@@ -243,7 +295,7 @@ public class CreateWorker {
     }
 
     private boolean leaseOwned(String jobId, String token) {
-        Integer count = db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE id=? AND status='generating' AND lease_token=?", Integer.class, jobId, token);
+        Integer count = db.queryForObject("SELECT COUNT(*) FROM create_jobs WHERE id=? AND status='generating' AND lease_token=? AND lease_expires_at>NOW()", Integer.class, jobId, token);
         return count != null && count == 1;
     }
 
@@ -302,8 +354,34 @@ public class CreateWorker {
 
     @Scheduled(fixedDelay = 30_000)
     public void renewActiveLeases() {
-        activeLeases.forEach((jobId, token) -> db.update("UPDATE create_jobs SET lease_expires_at=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=? AND status='generating' AND lease_token=?",
-                jobId, token));
+        activeLeases.forEach((jobId, active) -> {
+            long lastProgress = Math.max(active.lastProgress.get(), heartbeat == null ? 0 : heartbeat.last(jobId));
+            boolean healthy = active.owner.isAlive()
+                    && TimeUnit.NANOSECONDS.toMinutes(System.nanoTime() - lastProgress) < stallTimeoutMinutes;
+            try {
+                if (healthy && active.lock != null)
+                    healthy = active.lock.isHeldByThread(active.owner.getId());
+            } catch (RuntimeException redisUnavailable) {
+                healthy = false;
+                LOG.warn("Cannot verify Redisson watchdog for create job {}", jobId, redisUnavailable);
+            }
+            if (!healthy) {
+                LOG.warn("Agent worker for job {} lost its lock, thread, or progress heartbeat; expiring MySQL lease", jobId);
+                db.update("UPDATE create_jobs SET lease_expires_at=NOW(),updated_at=NOW() WHERE id=? AND status='generating' AND lease_token=?",
+                        jobId, active.token);
+                if (cancellations != null) cancellations.cancel(jobId);
+                try {
+                    if (active.lock != null && active.lock.isHeldByThread(active.owner.getId()))
+                        active.lock.unlockAsync(active.owner.getId()).toCompletableFuture().join();
+                } catch (RuntimeException unlockFailure) {
+                    LOG.warn("Could not release unhealthy create job lock {} yet", jobId, unlockFailure);
+                }
+                return;
+            }
+            int changed = db.update("UPDATE create_jobs SET lease_expires_at=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=? AND status='generating' AND lease_token=?",
+                    jobId, active.token);
+            if (changed == 0 && cancellations != null) cancellations.cancel(jobId);
+        });
     }
 
     @Scheduled(fixedDelay = 60_000)
@@ -322,11 +400,31 @@ public class CreateWorker {
                 }
             });
         }
+        // A Redis outage may reject a message before a worker can claim its MySQL lease.
+        // Reopen its outbox event so a healthy instance can try again after recovery.
+        for (String id : db.queryForList("SELECT id FROM create_jobs WHERE status='pending' AND attempts<3 AND updated_at<DATE_SUB(NOW(), INTERVAL 2 MINUTE) LIMIT 100", String.class)) {
+            tx.executeWithoutResult(s -> {
+                int changed = db.update("UPDATE create_jobs SET updated_at=NOW() WHERE id=? AND status='pending' AND updated_at<DATE_SUB(NOW(), INTERVAL 2 MINUTE)", id);
+                if (changed == 1) db.update("UPDATE outbox_events SET status='pending',available_at=NOW() WHERE aggregate_id=? AND event_type='job.created' AND status='sent'", id);
+            });
+        }
     }
 
     private void step(String jobId, int no, String stage, String status, String message) {
+        ActiveRun active = activeLeases.get(jobId);
+        if (active != null) active.lastProgress.set(System.nanoTime());
         db.update("INSERT INTO create_run_steps(id,job_id,step_no,stage,status,message) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),message=VALUES(message)",
                 UUID.randomUUID().toString(), jobId, no, stage, status, message);
+    }
+
+    private static final class ActiveRun {
+        final String token;
+        final Thread owner;
+        final RLock lock;
+        final AtomicLong lastProgress = new AtomicLong(System.nanoTime());
+        ActiveRun(String token, Thread owner, RLock lock) {
+            this.token = token; this.owner = owner; this.lock = lock;
+        }
     }
 
     private int nextStepNo(String jobId) {

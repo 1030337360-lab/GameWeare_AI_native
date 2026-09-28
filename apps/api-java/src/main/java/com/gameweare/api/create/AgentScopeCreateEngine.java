@@ -80,7 +80,7 @@ final class AgentScopeCreateEngine {
         AtomicReference<byte[]> delivered = new AtomicReference<>();
         AtomicReference<String> deliveryFailure = new AtomicReference<>();
         GameValidationTool validationTool = new GameValidationTool(jobId, artifactValidator);
-        try (var registration = gateway.register((String) config.get("base_url"), apiKey)) {
+        try (var registration = gateway.register(jobId, (String) config.get("base_url"), apiKey)) {
             var model = OpenAIChatModel.builder().apiKey(registration.token())
                     .modelName((String) config.get("model")).baseUrl(registration.baseUrl())
                     .stream(false).nativeStructuredOutputWithTools(false).build();
@@ -164,9 +164,22 @@ final class AgentScopeCreateEngine {
                 var message = UserMessage.builder().content(messageContent(prompt, images)).build();
                 var reply = agent.call(message, context).block();
                 response = reply == null ? "" : reply.getTextContent();
-                if (!preview && delivered.get() == null) {
+                String lastUndeliveredAnswer = null;
+                int repeatedAnswers = 0;
+                while (!preview && delivered.get() == null) {
+                    if (Thread.currentThread().isInterrupted())
+                        throw new InterruptedException("Agent generation was interrupted before artifact delivery");
+                    String progress = response + "|" + validationTool.lastFailure()
+                            + "|" + deliveryFailure.get();
+                    String fingerprint = Integer.toHexString(progress.hashCode()) + ":" + progress.length();
+                    repeatedAnswers = fingerprint.equals(lastUndeliveredAnswer) ? repeatedAnswers + 1 : 1;
+                    lastUndeliveredAnswer = fingerprint;
+                    if (repeatedAnswers >= 3)
+                        throw new IllegalStateException("Agent repeatedly ended with the same answer without "
+                                + "delivering index.html; last validation=" + validationTool.lastFailure()
+                                + ", last delivery=" + deliveryFailure.get());
                     var reminder = UserMessage.builder().textContent("index.html has not been delivered. "
-                            + "Finish the current todo list, call validate_game_html on index.html, "
+                            + "Continue the current todo list, call validate_game_html with filePath=index.html, "
                             + "fix any reported errors, then call deliver_artifact. "
                             + "Do not stop with a text-only answer.").build();
                     reply = agent.call(reminder, context).block();
@@ -240,7 +253,7 @@ final class AgentScopeCreateEngine {
                     + "Return ONLY JSON with candidates: exactly three objects containing "
                     + "candidateId,title,conceptSummary,expertRole,expertDomain,expertIntro,"
                     + "styleTags (array),staticHtml (self-contained preview).";
-        return common + " Keep index.html under 12 KB and finish tool arguments in one response. "
+        return common + " Keep index.html self-contained and below the validator's 2,000,000-byte limit. "
                 + "Use the sandbox write_file tool to create index.html. "
                 + "Then call validate_game_html with filePath=index.html. If it returns FAIL, "
                 + "fix the file and validate again. Only after PASS, call deliver_artifact "

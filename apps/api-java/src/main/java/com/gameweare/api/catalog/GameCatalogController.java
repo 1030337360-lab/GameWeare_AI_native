@@ -37,8 +37,9 @@ public class GameCatalogController {
     @GetMapping
     public List<Map<String, Object>> list(@RequestParam(required = false) String q,
                                           @RequestParam(required = false) String tag,
+                                          @RequestParam(defaultValue = "latest") String sort,
                                           HttpServletRequest request) {
-        return catalog.list(q, tag, identity(request));
+        return catalog.list(q, tag, sort, identity(request));
     }
 
     @GetMapping("/tags")
@@ -113,12 +114,18 @@ class CatalogService {
     CatalogService(JdbcTemplate jdbc) { this.jdbc = jdbc; this.cache = null; this.trending = null; }
 
     public List<Map<String, Object>> list(String query, String tag, String userId) {
+        return list(query, tag, "latest", userId);
+    }
+
+    public List<Map<String, Object>> list(String query, String tag, String sort, String userId) {
         if (query != null && query.length() > 100 || tag != null && tag.length() > 80) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Search filter is too long");
         }
+        if (!List.of("latest", "likes").contains(sort))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "sort must be latest or likes");
         StringBuilder sql = new StringBuilder("""
             SELECT g.id, g.slug, g.title, g.description, g.author_id, g.cover_object_key,
-                   g.plays_count, g.likes_count, g.favorites_count, g.published_at, g.created_at,
+                   g.plays_count, g.likes_count, g.favorites_count, g.comments_count, g.published_at, g.created_at,
                    u.display_name AS author,
                    (SELECT GROUP_CONCAT(t.name SEPARATOR '|||') FROM game_tags gt JOIN tags t ON t.id=gt.tag_id WHERE gt.game_id=g.id) AS tag_names,
                    EXISTS(SELECT 1 FROM game_likes l WHERE l.game_id=g.id AND l.user_id=?) AS liked,
@@ -138,7 +145,9 @@ class CatalogService {
             sql.append(" AND EXISTS (SELECT 1 FROM game_tags gt JOIN tags t ON t.id=gt.tag_id WHERE gt.game_id=g.id AND LOWER(t.name)=LOWER(?))");
             args.add(tag.trim());
         }
-        sql.append(" ORDER BY g.published_at DESC, g.created_at DESC LIMIT 100");
+        sql.append("likes".equals(sort)
+                ? " ORDER BY g.likes_count DESC, g.published_at DESC, g.id DESC LIMIT 100"
+                : " ORDER BY g.published_at DESC, g.created_at DESC, g.id DESC LIMIT 100");
         return jdbc.query(sql.toString(), (rs, n) -> mapGame(rs), args.toArray());
     }
 
@@ -151,6 +160,8 @@ class CatalogService {
     }
 
     public Map<String, Object> detail(String slug, String userId) {
+        if (cache != null && !cache.mightContain(slug))
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found");
         Integer visible = jdbc.queryForObject("SELECT COUNT(*) FROM games WHERE slug=? AND publish_status='published' AND visibility='public'",
                 Integer.class, slug);
         if (visible == null || visible == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found");
@@ -175,7 +186,7 @@ class CatalogService {
     private Map<String, Object> publicDetail(String slug) {
         List<Map<String, Object>> rows = jdbc.query("""
             SELECT g.id, g.slug, g.title, g.description, g.author_id, g.cover_object_key,
-                   g.plays_count, g.likes_count, g.favorites_count, g.published_at, g.created_at,
+                   g.plays_count, g.likes_count, g.favorites_count, g.comments_count, g.published_at, g.created_at,
                    u.display_name AS author,
                    (SELECT GROUP_CONCAT(t.name SEPARATOR '|||') FROM game_tags gt JOIN tags t ON t.id=gt.tag_id WHERE gt.game_id=g.id) AS tag_names,
                    EXISTS(SELECT 1 FROM game_likes l WHERE l.game_id=g.id AND l.user_id=?) AS liked,
@@ -304,6 +315,7 @@ class CatalogService {
         game.put("coverUrl", "/games/" + slug + "/cover");
         game.put("plays", rs.getLong("plays_count"));
         game.put("likes", rs.getLong("likes_count"));
+        game.put("comments", rs.getLong("comments_count"));
         game.put("favorites", rs.getLong("favorites_count"));
         game.put("likedByMe", rs.getBoolean("liked"));
         game.put("favoritedByMe", rs.getBoolean("favorited"));

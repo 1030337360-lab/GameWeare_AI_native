@@ -56,6 +56,7 @@ public class CreateService {
     private final GenerationVoucherService vouchers;
     @org.springframework.beans.factory.annotation.Autowired(required = false) private GameCatalogCache gameCache;
     @org.springframework.beans.factory.annotation.Autowired(required = false) private GameTrendingService trending;
+    @org.springframework.beans.factory.annotation.Autowired(required = false) private CreateCancellationRegistry cancellations;
     private final String encryptionSecret;
     private final MinioClient minio;
     private final String bucket;
@@ -288,6 +289,28 @@ public class CreateService {
     }
 
     @Transactional
+    public Map<String, Object> cancelJob(String userId, String id) {
+        Map<String, Object> row = one("SELECT status,project_id FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE", id, userId);
+        if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found");
+        String status = (String) row.get("status");
+        if ("canceled".equals(status)) return Map.of("jobId", id, "status", "canceled");
+        if (!Set.of("pending", "generating", "planning", "reviewing").contains(status))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Task has already finished");
+        db.update("UPDATE create_jobs SET status='canceled',lease_token=NULL,lease_expires_at=NULL,error_message='Canceled by creator',updated_at=NOW(6) WHERE id=?", id);
+        db.update("UPDATE create_job_workflows SET phase='canceled' WHERE job_id=?", id);
+        int stepNo = db.queryForObject("SELECT COALESCE(MAX(step_no),0)+1 FROM create_run_steps WHERE job_id=?", Integer.class, id);
+        step(id, stepNo, "creator_canceled", "completed", "Creator canceled the task; no game version was published");
+        billing.refund(userId, id);
+        if (vouchers != null) vouchers.release(userId, id);
+        if (cancellations != null)
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override public void afterCommit() { cancellations.cancel(id); }
+                    });
+        return Map.of("jobId", id, "status", "canceled");
+    }
+
+    @Transactional
     public Map<String, Object> deleteJob(String userId, String id) {
         Map<String, Object> row = one("SELECT status,agent_mode,project_id FROM create_jobs WHERE id=? AND user_id=? AND deleted_at IS NULL FOR UPDATE", id, userId);
         if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found");
@@ -325,13 +348,14 @@ public class CreateService {
         List<String> covers = "opt".equals(row.get("create_type")) ? List.of()
                 : db.queryForList("SELECT object_key FROM assets WHERE version_id=? AND kind='cover' LIMIT 1",
                         String.class, row.get("version_id"));
+        String slug = db.queryForObject("SELECT slug FROM games WHERE id=?", String.class, row.get("game_id"));
+        if (gameCache != null) gameCache.addBeforePublish(slug);
         db.update("UPDATE games SET current_version_id=?,cover_object_key=COALESCE(?,cover_object_key),"
                         + "publish_status='published',visibility='public',published_at=NOW(),updated_at=NOW() "
                         + "WHERE id=? AND author_id=?",
                 row.get("version_id"), originalCover == null ? (covers.isEmpty() ? null : covers.get(0)) : originalCover,
                 row.get("game_id"), userId);
         String publishedId = (String) row.get("game_id");
-        String slug = db.queryForObject("SELECT slug FROM games WHERE id=?", String.class, publishedId);
         Runnable updateProjection = () -> {
             if (gameCache != null) gameCache.invalidate(slug);
             if (trending != null) trending.refresh(publishedId);

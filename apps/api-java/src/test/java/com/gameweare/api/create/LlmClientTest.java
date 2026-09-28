@@ -16,6 +16,80 @@ import org.junit.jupiter.api.Test;
 
 class LlmClientTest {
     @Test
+    void textOnlyReplyCanBeCorrectedOnNextToolCall() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        AtomicInteger calls = new AtomicInteger();
+        String html = "<!doctype html><html><head><title>Game</title></head><body><canvas></canvas>"
+                + "<script>const game = true;</script></body></html>";
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/responses", exchange -> {
+            int number = calls.incrementAndGet();
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            if (number == 2 && !request.contains("previous response was text"))
+                throw new AssertionError("Missing corrective prompt after text-only response");
+            Object item = number == 1
+                    ? Map.of("type", "message", "role", "assistant", "content",
+                            List.of(Map.of("type", "output_text", "text", "I am working on the game.")))
+                    : Map.of("type", "function_call", "name", "validate_game_html", "call_id", "call-2",
+                            "arguments", json.writeValueAsString(Map.of("html", html)));
+            byte[] response = json.writeValueAsBytes(Map.of("output", List.of(item),
+                    "usage", Map.of("input_tokens", 2, "output_tokens", 1, "total_tokens", 3)));
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, response.length);
+            try (var out = exchange.getResponseBody()) { out.write(response); }
+        });
+        server.start();
+        String oldHosts = LlmClient.allowedHosts;
+        boolean oldPrivate = CreateService.privateLlmEndpointsAllowed;
+        try {
+            LlmClient.allowedHosts = "127.0.0.1";
+            CreateService.privateLlmEndpointsAllowed = true;
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
+            LlmClient.Result result = LlmClient.generateValidatedGame(base, "mock", "test", "Make a game",
+                    List.of(), new GameValidationTool("job-1", new ArtifactValidator()), ignored -> {});
+            assertEquals(html, result.text());
+            assertEquals(2, calls.get());
+            assertEquals(6, result.totalTokens());
+        } finally {
+            LlmClient.allowedHosts = oldHosts;
+            CreateService.privateLlmEndpointsAllowed = oldPrivate;
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void completeHtmlInTextOnlyReplyStillPassesServerValidation() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        String html = "<!doctype html><html><head><title>Game</title></head><body><canvas></canvas>"
+                + "<script>const game = true;</script></body></html>";
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/responses", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] response = json.writeValueAsBytes(Map.of("output", List.of(Map.of("type", "message",
+                    "content", List.of(Map.of("type", "output_text", "text", "```html\n" + html + "\n```")))),
+                    "usage", Map.of("input_tokens", 2, "output_tokens", 1, "total_tokens", 3)));
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, response.length);
+            try (var out = exchange.getResponseBody()) { out.write(response); }
+        });
+        server.start();
+        String oldHosts = LlmClient.allowedHosts;
+        boolean oldPrivate = CreateService.privateLlmEndpointsAllowed;
+        try {
+            LlmClient.allowedHosts = "127.0.0.1";
+            CreateService.privateLlmEndpointsAllowed = true;
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
+            LlmClient.Result result = LlmClient.generateValidatedGame(base, "mock", "test", "Make a game",
+                    List.of(), new GameValidationTool("job-1", new ArtifactValidator()), ignored -> {});
+            assertEquals(html, result.text());
+        } finally {
+            LlmClient.allowedHosts = oldHosts;
+            CreateService.privateLlmEndpointsAllowed = oldPrivate;
+            server.stop(0);
+        }
+    }
+
+    @Test
     void validationToolReturnsDiagnosticsAndAcceptsCorrectedHtml() throws Exception {
         ObjectMapper json = new ObjectMapper();
         AtomicInteger calls = new AtomicInteger();

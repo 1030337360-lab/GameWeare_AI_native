@@ -1,6 +1,10 @@
 server:
   port: ${API_PORT:8080}
 spring:
+  task:
+    scheduling:
+      pool:
+        size: 4
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
     username: ${MYSQL_USER:gameweare}
@@ -44,6 +48,7 @@ management:
 gameweare:
   agent:
     engine: ${AGENT_ENGINE:legacy}
+    stall-timeout-minutes: ${AGENT_STALL_TIMEOUT_MINUTES:25}
     filesystem: ${AGENT_FILESYSTEM:kubernetes}
     docker:
       image: ${AGENT_DOCKER_IMAGE:public.ecr.aws/docker/library/python:3.12-alpine}

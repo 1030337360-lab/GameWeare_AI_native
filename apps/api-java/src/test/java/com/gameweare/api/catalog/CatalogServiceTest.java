@@ -13,8 +13,20 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 class CatalogServiceTest {
+    @Test
+    void likesSortUsesDatabaseCountAndStableTieBreakers() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        new CatalogService(jdbc).list(null, null, "likes", null);
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).query(sql.capture(), any(org.springframework.jdbc.core.RowMapper.class),
+                eq(""), eq(""));
+        org.junit.jupiter.api.Assertions.assertTrue(sql.getValue().contains(
+                "ORDER BY g.likes_count DESC, g.published_at DESC, g.id DESC"));
+    }
+
     @Test
     void duplicateLikeDoesNotIncreaseCounter() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
