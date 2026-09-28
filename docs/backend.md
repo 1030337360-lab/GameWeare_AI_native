@@ -36,6 +36,7 @@ Worker 校验游戏文件后上传 MinIO，再在 MySQL 事务中建立 `game_ve
 ## 产物校验与安全边界
 
 [`LlmClient`](../apps/api-java/src/main/java/com/gameweare/api/create/LlmClient.java) 对兼容 Responses API 的模型启用 SSE 流式输出，等待 `response.completed` 取得完整文本和用量；明确处理失败与未完成事件，避免长时间无响应的非流式请求被网关重置。
+游戏校验工具的多轮请求由客户端显式回传原始模型输出项及工具结果，不依赖服务端保存响应；DeepSeek 官方无状态 Responses 接口和火山方舟的兼容接口共用此路径。AgentScope 的 Chat 网关仅针对 DeepSeek 模型移除非标准 `thinkmode` / `thinking_mode` 字段，并为 V4.1 Flash 移除不支持的惩罚参数；标准 `thinking` 和 `reasoning_content` 保留。
 函数调用携带完整游戏 HTML 时，SSE 增量帧的累计传输量可能远大于最终文件；客户端按累计 128 MiB 设置流量保护，产物本身仍受 2 MB 校验上限约束。
 
 [`ArtifactValidator`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactValidator.java) 从模型回复中提取完整 HTML 文档，去除前后说明文字；再用 Jsoup 检查单文件 HTML 结构和外部资源，用 GraalVM `Context.parse` 检查内联 JavaScript 语法，**不会执行游戏脚本**。外部 Agent 可以先调用 `/create/artifacts/validate` 获得逐项诊断，再经 [`ArtifactService`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactService.java) 提交待审草稿。试玩 HTML 经 [`PlayController`](../apps/api-java/src/main/java/com/gameweare/api/play/PlayController.java) 返回 CSP，并在前端 sandbox iframe 中运行。

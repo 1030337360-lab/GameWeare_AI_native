@@ -27,12 +27,16 @@ class LlmClientTest {
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             if (number == 1 && !request.contains("validate_game_html")) throw new AssertionError("tool missing");
             if (number == 2 && (!request.contains("EXTERNAL_HTTP_RESOURCE")
-                    || !request.contains("previous_response_id"))) throw new AssertionError("feedback missing");
+                    || !request.contains("function_call_output")
+                    || !request.contains("reasoning")
+                    || request.contains("previous_response_id") || request.contains("\"store\"")))
+                throw new AssertionError("stateless tool feedback or reasoning replay missing");
             String candidate = number == 1 ? html.replace("const game = true;",
                     "const game = true; fetch('https://invalid.example/game');") : html;
             String event = "data: {\"type\":\"response.completed\",\"response\":"
                     + json.writeValueAsString(Map.of("id", "resp-" + number,
-                    "output", List.of(Map.of("type", "function_call", "name", "validate_game_html",
+                    "output", List.of(Map.of("type", "reasoning", "content", "keep prior reasoning"),
+                            Map.of("type", "function_call", "name", "validate_game_html",
                             "call_id", "call-" + number,
                             "arguments", json.writeValueAsString(Map.of("html", candidate)))),
                     "usage", Map.of("input_tokens", 2, "output_tokens", 1, "total_tokens", 3)))

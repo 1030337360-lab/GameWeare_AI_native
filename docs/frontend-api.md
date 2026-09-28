@@ -14,6 +14,7 @@
 ## 认证与错误
 
 受保护接口要求 Bearer Token。前端启动后用 `/auth/session` 恢复登录态；后端从 MySQL 会话摘要与 Redis 撤销/缓存判断有效性。管理路由还要求管理员或维护员角色，前端隐藏入口不构成权限控制。接口失败时应读取 HTTP 状态与响应体；[`readApiError`](../apps/web/src/services/api.ts) 会优先展示 `detail.llm.message`、`detail.message` 等具体原因，不应把不同生成失败合并成固定文案。
+`POST /create/ai-config/test` 的 `ok=false` 响应在 `details.providerMessage` 返回脱敏、截断后的供应商错误，便于识别不支持的参数或模型；前端配置区直接展示该字段。
 
 ## 创建任务与进度
 

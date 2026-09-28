@@ -1,5 +1,8 @@
 package com.gameweare.api.create;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.InetAddress;
 import java.net.Proxy;
@@ -7,6 +10,7 @@ import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import okhttp3.MediaType;
@@ -25,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 /** Loopback-only model gateway for AgentScope's OpenAI-compatible chat endpoint. */
 @RestController
 final class AgentModelGateway {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024;
     private static final int MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
     private final SecureRandom random = new SecureRandom();
@@ -67,6 +72,7 @@ final class AgentModelGateway {
         byte[] body = request.getInputStream().readNBytes(MAX_REQUEST_BYTES + 1);
         if (body.length > MAX_REQUEST_BYTES)
             return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).build();
+        body = compatibleChatRequest(body);
         Request outbound = new Request.Builder().url(target.endpoint().toString())
                 .header("Authorization", "Bearer " + target.apiKey())
                 .post(RequestBody.create(body, MediaType.get("application/json"))).build();
@@ -80,6 +86,21 @@ final class AgentModelGateway {
             return ResponseEntity.status(response.code())
                     .contentType(org.springframework.http.MediaType.APPLICATION_JSON).body(content);
         }
+    }
+
+    /** Remove optional parameters that the selected DeepSeek model cannot accept. */
+    static byte[] compatibleChatRequest(byte[] body) throws Exception {
+        JsonNode parsed = JSON.readTree(body);
+        if (!(parsed instanceof ObjectNode request)) return body;
+        String model = request.path("model").asText("").toLowerCase(Locale.ROOT);
+        if (!model.contains("deepseek")) return body;
+        boolean changed = request.remove("thinkmode") != null;
+        changed |= request.remove("thinking_mode") != null;
+        if (model.contains("v4.1-flash") || model.contains("v4-1-flash")) {
+            changed |= request.remove("frequency_penalty") != null;
+            changed |= request.remove("presence_penalty") != null;
+        }
+        return changed ? JSON.writeValueAsBytes(request) : body;
     }
 
     final class Registration implements AutoCloseable {

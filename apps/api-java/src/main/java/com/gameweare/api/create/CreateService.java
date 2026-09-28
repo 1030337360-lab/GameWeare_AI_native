@@ -628,7 +628,11 @@ public class CreateService {
             LlmClient.Result response = LlmClient.generate(base, model, key, "Return a one-word greeting.");
             return Map.of("ok", true, "code", "ok", "message", "Connection successful.", "details", Map.of("totalTokens", response.totalTokens()));
         } catch (Exception ex) {
-            return Map.of("ok", false, "code", "provider_error", "message", "AI provider connection failed.", "details", Map.of());
+            String reason = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+            if (!key.isBlank()) reason = reason.replace(key, "[redacted]");
+            if (reason.length() > 500) reason = reason.substring(0, 500);
+            return Map.of("ok", false, "code", "provider_error", "message", "AI provider connection failed.",
+                    "details", Map.of("providerMessage", reason));
         }
     }
 

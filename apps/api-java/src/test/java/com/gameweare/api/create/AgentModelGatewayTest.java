@@ -2,6 +2,7 @@ package com.gameweare.api.create;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -11,6 +12,21 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 class AgentModelGatewayTest {
+    @Test
+    void deepseekProfileRemovesUnsupportedOptionalChatParameters() throws Exception {
+        String request = "{\"model\":\"deepseek-v4.1-flash\",\"messages\":[{\"role\":\"assistant\","
+                + "\"reasoning_content\":\"keep this\"}],\"thinkmode\":true,\"thinking_mode\":\"enabled\","
+                + "\"frequency_penalty\":0,\"presence_penalty\":0,\"thinking\":{\"type\":\"enabled\"}}";
+        String adapted = new String(AgentModelGateway.compatibleChatRequest(
+                request.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
+        assertFalse(adapted.contains("thinkmode"));
+        assertFalse(adapted.contains("thinking_mode"));
+        assertFalse(adapted.contains("frequency_penalty"));
+        assertFalse(adapted.contains("presence_penalty"));
+        assertTrue(adapted.contains("reasoning_content"));
+        assertTrue(adapted.contains("\"thinking\""));
+    }
+
     @Test
     void loopbackTokenGatewayForwardsWithRealKeyAndClosesRegistration() throws Exception {
         HttpServer provider = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

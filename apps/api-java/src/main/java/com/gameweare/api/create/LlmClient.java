@@ -49,28 +49,32 @@ final class LlmClient {
                 "description", "Validate the complete game HTML, inline JavaScript and external resource policy. "
                         + "Call again with corrected HTML after every FAIL. Only a PASS may be delivered.",
                 "parameters", parameters);
-        Object input = input(prompt, images);
-        String previousResponseId = null;
+        // Some Responses-compatible providers (including DeepSeek) are stateless.
+        // Replay the exact assistant output items and tool results instead of relying
+        // on previous_response_id/store being implemented by the provider.
+        List<Object> conversation = new ArrayList<>();
+        Object firstInput = input(prompt, images);
+        if (firstInput instanceof String text) conversation.add(Map.of("role", "user", "content", text));
+        else conversation.addAll((List<?>) firstInput);
         long promptTokens = 0, completionTokens = 0, totalTokens = 0;
         while (true) {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("model", model);
-            payload.put("input", input);
+            payload.put("input", conversation);
             payload.put("stream", true);
-            payload.put("store", true);
             payload.put("tools", List.of(tool));
             payload.put("tool_choice", Map.of("type", "function", "name", "validate_game_html"));
             payload.put("instructions", "Produce a complete playable single-file HTML game. "
                     + "Submit the complete HTML through validate_game_html. "
                     + "If validation returns FAIL, correct every reported issue and call the tool again. "
                     + "Do not finish with text before the tool reports PASS.");
-            if (previousResponseId != null) payload.put("previous_response_id", previousResponseId);
             JsonNode root = request(baseUrl, apiKey, payload);
             long[] usage = usage(root);
             promptTokens = Math.addExact(promptTokens, usage[0]);
             completionTokens = Math.addExact(completionTokens, usage[1]);
             totalTokens = Math.addExact(totalTokens, usage[2]);
             List<Map<String, String>> toolOutputs = new ArrayList<>();
+            for (JsonNode item : root.path("output")) conversation.add(item.deepCopy());
             for (JsonNode item : root.path("output")) {
                 if (!"function_call".equals(item.path("type").asText())) continue;
                 if (!"validate_game_html".equals(item.path("name").asText()))
@@ -96,10 +100,7 @@ final class LlmClient {
             }
             if (toolOutputs.isEmpty())
                 throw new IllegalStateException("AI provider did not call validate_game_html; game was not delivered");
-            previousResponseId = root.path("id").asText("");
-            if (previousResponseId.isBlank())
-                throw new IllegalStateException("AI provider omitted response id needed to return validation feedback");
-            input = toolOutputs;
+            conversation.addAll(toolOutputs);
         }
     }
 

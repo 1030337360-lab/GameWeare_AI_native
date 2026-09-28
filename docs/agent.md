@@ -26,7 +26,7 @@
 
 游戏 Agent 必须写 `index.html`，调用 [`validate_game_html`](../apps/api-java/src/main/java/com/gameweare/api/create/GameValidationTool.java) 检查当前文件，修正逐条诊断，再调用 `deliver_artifact`。校验工具保存通过时的 SHA-256；交付回调再次比较文件字节，防止“校验后修改”。[`ArtifactValidator`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactValidator.java) 只检查 HTML 包装、自包含资源和 JavaScript 语法，不执行游戏，也不能证明可玩性。Worker 在入库前会再次校验。
 
-`legacy` 引擎的最终生成同样要求模型调用 `validate_game_html` 函数；服务端用同一 `GameValidationTool` 校验提交的完整 HTML，将 `FAIL` 诊断作为 `function_call_output` 回传，直到出现 `PASS` 才接受产物。各轮用量累加；没有本地工具调用次数上限。规划预览仍为普通模型请求，因其不是游戏产物。
+`legacy` 引擎的最终生成同样要求模型调用 `validate_game_html` 函数；服务端用同一 `GameValidationTool` 校验提交的完整 HTML，将 `FAIL` 诊断作为 `function_call_output` 回传，直到出现 `PASS` 才接受产物。每轮显式回传模型的原始输出项（包括思考项和函数调用）及工具结果，兼容不支持 `previous_response_id` / `store` 的无状态 Responses 接口。各轮用量累加；没有本地工具调用次数上限。规划预览仍为普通模型请求，因其不是游戏产物。
 每次校验的通过或失败及具体诊断写入任务轨迹的 `game_validation_tool` 步骤，不保存候选源码。
 
 新游戏的封面在游戏 HTML 验证后由独立的 [`CoverReActEngine`](../apps/api-java/src/main/java/com/gameweare/api/create/CoverReActEngine.java) 生成：把已验证的完整源码和原始需求传给封面 Agent，要求写 `cover.svg`、调用 [`validate_cover_svg`](../apps/api-java/src/main/java/com/gameweare/api/create/CoverValidationTool.java)，并交付相同版本的文件。SVG 不合格或阶段失败时记录原因并使用本地安全回退封面。优化旧游戏时不重新生成封面，沿用原封面。
