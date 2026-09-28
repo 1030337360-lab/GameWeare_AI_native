@@ -7,7 +7,7 @@
 | 模式 | 用户可见流程 | 代码边界 |
 | --- | --- | --- |
 | `chat` | 描述 → 生成 → 验证 → 预览/发布 | 生成阶段由所选引擎执行 |
-| `react` | 迭代编写并使用验证工具修复 | AgentScope 使用 Harness 工具循环；`legacy` 只做规划与生成两次模型调用，不等同完整 ReAct |
+| `react` | 迭代编写并使用验证工具修复 | AgentScope 使用 Harness 工具循环；`legacy` 先规划，再通过 Responses 函数调用反复提交游戏 HTML 给校验工具，仍不具备 Harness 的完整任务管理能力 |
 | `plan` | 先看规划，批准后再生成 | AgentScope 预览阶段必须调用官方 `agent_spawn` 分派 `planner`；批准状态写 MySQL |
 | `decentralized` | 三个方向候选，选择并确认后生成 | AgentScope 必须分派 `concept-1..3`；候选与决定写 MySQL |
 | `refine` | 基于同项目旧版本优化 | 只允许 `createType=opt`，读取旧 HTML 与已确认项目记忆；发布前保持旧公开版本 |
@@ -25,6 +25,9 @@
 ## 游戏产物的硬门槛
 
 游戏 Agent 必须写 `index.html`，调用 [`validate_game_html`](../apps/api-java/src/main/java/com/gameweare/api/create/GameValidationTool.java) 检查当前文件，修正逐条诊断，再调用 `deliver_artifact`。校验工具保存通过时的 SHA-256；交付回调再次比较文件字节，防止“校验后修改”。[`ArtifactValidator`](../apps/api-java/src/main/java/com/gameweare/api/create/ArtifactValidator.java) 只检查 HTML 包装、自包含资源和 JavaScript 语法，不执行游戏，也不能证明可玩性。Worker 在入库前会再次校验。
+
+`legacy` 引擎的最终生成同样要求模型调用 `validate_game_html` 函数；服务端用同一 `GameValidationTool` 校验提交的完整 HTML，将 `FAIL` 诊断作为 `function_call_output` 回传，直到出现 `PASS` 才接受产物。各轮用量累加；没有本地工具调用次数上限。规划预览仍为普通模型请求，因其不是游戏产物。
+每次校验的通过或失败及具体诊断写入任务轨迹的 `game_validation_tool` 步骤，不保存候选源码。
 
 新游戏的封面在游戏 HTML 验证后由独立的 [`CoverReActEngine`](../apps/api-java/src/main/java/com/gameweare/api/create/CoverReActEngine.java) 生成：把已验证的完整源码和原始需求传给封面 Agent，要求写 `cover.svg`、调用 [`validate_cover_svg`](../apps/api-java/src/main/java/com/gameweare/api/create/CoverValidationTool.java)，并交付相同版本的文件。SVG 不合格或阶段失败时记录原因并使用本地安全回退封面。优化旧游戏时不重新生成封面，沿用原封面。
 

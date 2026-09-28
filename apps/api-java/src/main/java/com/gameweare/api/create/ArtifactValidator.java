@@ -41,6 +41,13 @@ public class ArtifactValidator {
             errors.add(new Diagnostic("SCRIPT_REQUIRED", "At least one inline script is required", 0, 0));
         if (!doc.select("script[src], link[href], iframe, object, embed, base").isEmpty())
             errors.add(new Diagnostic("EXTERNAL_RESOURCE", "External scripts, styles, frames and embedded content are not allowed", 0, 0));
+        var remoteUrl = Pattern.compile("(?i)https?://[^\\s\\\"'<>)]{0,100}").matcher(html);
+        if (remoteUrl.find()) {
+            int line = 1 + (int) html.substring(0, remoteUrl.start()).chars().filter(ch -> ch == '\n').count();
+            errors.add(new Diagnostic("EXTERNAL_HTTP_RESOURCE",
+                    "External HTTP URL near line " + line + ": " + remoteUrl.group()
+                            + ". Remove the remote dependency and include the code or artwork inline.", 0, line));
+        }
         Element startScreen = doc.getElementById("start");
         Element gameScreen = doc.getElementById("game");
         if (startScreen != null && gameScreen != null && !startScreen.select("button").isEmpty()

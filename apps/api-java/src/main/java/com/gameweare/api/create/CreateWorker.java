@@ -133,10 +133,13 @@ public class CreateWorker {
             LlmClient.Result generated = useAgentScope
                     ? agentScope.run(jobId, userId, mode, prompt, config,
                             service.keyFor(config), images, false)
-                    : LlmClient.generate((String) config.get("base_url"), (String) config.get("model"),
-                            service.keyFor(config), prompt, images);
+                    : LlmClient.generateValidatedGame((String) config.get("base_url"),
+                            (String) config.get("model"), service.keyFor(config), prompt, images,
+                            new GameValidationTool(jobId, artifactValidator), result ->
+                                    step(jobId, nextStepNo(jobId), "game_validation_tool",
+                                            result.passed() ? "completed" : "failed", result.feedback()));
             failureStage = "HTML/JavaScript validation";
-            String html = useAgentScope ? generated.text() : validateHtml(generated.text());
+            String html = generated.text();
             ArtifactValidator.Result validation = artifactValidator.validate(html);
             if (!validation.ok())
                 throw new IllegalStateException("Generated game did not pass HTML/JavaScript validation: "
@@ -329,22 +332,6 @@ public class CreateWorker {
     private int nextStepNo(String jobId) {
         return db.queryForObject("SELECT COALESCE(MAX(step_no),0)+1 FROM create_run_steps WHERE job_id=?",
                 Integer.class, jobId);
-    }
-
-    static String validateHtml(String raw) {
-        if (raw == null) throw new IllegalStateException("AI provider returned no game HTML");
-        String html = raw.strip().replaceFirst("(?is)^```(?:html)?\\s*", "").replaceFirst("(?s)\\s*```$", "").strip();
-        String lower = html.toLowerCase(java.util.Locale.ROOT);
-        List<String> errors = new ArrayList<>();
-        if (html.length() < 100) errors.add("HTML is only " + html.length() + " characters; at least 100 are required");
-        if (html.length() > 2_000_000) errors.add("HTML is " + html.length() + " characters; maximum is 2,000,000");
-        if (!lower.contains("<html") || !lower.contains("</html>")) errors.add("complete <html>...</html> element is missing");
-        if (!lower.contains("<script")) errors.add("inline <script> block is missing");
-        if (lower.contains("<script src=")) errors.add("external script src is forbidden");
-        if (lower.contains("http://") || lower.contains("https://")) errors.add("external HTTP resources are forbidden");
-        if (!errors.isEmpty()) throw new IllegalStateException("Generated HTML cannot be delivered:\n- "
-                + String.join("\n- ", errors));
-        return html;
     }
 
 }

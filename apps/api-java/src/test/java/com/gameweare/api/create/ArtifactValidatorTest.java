@@ -42,6 +42,17 @@ class ArtifactValidatorTest {
         assertFalse(validator.validate(html).ok());
     }
 
+    @Test void reportsRemoteUrlInInlineCodeButIgnoresExplanatoryTextOutsideDocument() {
+        String html = "<!doctype html><html><head><title>Game</title></head><body><canvas></canvas>"
+                + "<script>fetch('https://invalid.example/data');</script></body></html>";
+        ArtifactValidator.Result failed = validator.validate(html);
+        assertFalse(failed.ok());
+        assertTrue(failed.diagnostics().stream().anyMatch(d -> d.code().equals("EXTERNAL_HTTP_RESOURCE")
+                && d.message().contains("invalid.example")));
+        String clean = html.replace("fetch('https://invalid.example/data');", "const ready = true;");
+        assertTrue(validator.validate("See https://docs.example/help\n" + clean + "\nDone.").ok());
+    }
+
     @Test void refusesAHiddenStartButtonAndHiddenGame() {
         String html = "<!doctype html><html><head><style>#game,#start{display:none}</style></head>"
                 + "<body><div id='start'><button id='go'>Start</button></div><div id='game'>Play</div>"

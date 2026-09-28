@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Validates the exact sandbox file that the agent will deliver. */
 final class GameValidationTool {
+    record CandidateResult(boolean passed, String normalizedHtml, String feedback) {}
     private final String jobId;
     private final ArtifactValidator validator;
     private final AtomicReference<String> validatedSha256 = new AtomicReference<>();
@@ -47,14 +48,21 @@ final class GameValidationTool {
         if (content == null) return fail("FAIL: Sandbox returned no bytes for index.html.");
         if (content.length > 2_000_000)
             return fail("FAIL: index.html is " + content.length + " bytes; maximum is 2,000,000 bytes.");
-        ArtifactValidator.Result result = validator.validate(new String(content, StandardCharsets.UTF_8));
-        if (!result.ok()) {
-            return fail("FAIL: index.html has " + result.diagnostics().size() + " validation error(s):\n"
-                    + ValidationDiagnostics.format(result.diagnostics()));
-        }
+        CandidateResult result = validateCandidate(new String(content, StandardCharsets.UTF_8));
+        if (!result.passed()) return fail(result.feedback());
         validatedSha256.set(sha256(content));
         lastFailure.set(null);
-        return "PASS: index.html passed HTML and JavaScript syntax validation; now call deliver_artifact.";
+        return result.feedback() + " Now call deliver_artifact.";
+    }
+
+    CandidateResult validateCandidate(String html) {
+        ArtifactValidator.Result result = validator.validate(html);
+        if (!result.ok()) return new CandidateResult(false, "",
+                "FAIL: index.html has " + result.diagnostics().size() + " validation error(s):\n"
+                        + ValidationDiagnostics.format(result.diagnostics())
+                        + "\nFix every error and call validate_game_html again with the complete revised HTML.");
+        return new CandidateResult(true, result.normalizedHtml(),
+                "PASS: index.html passed HTML, external resource and JavaScript syntax validation.");
     }
 
     String lastFailure() { return lastFailure.get(); }
