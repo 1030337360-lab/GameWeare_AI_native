@@ -30,6 +30,7 @@ spring:
       mandatory: true
     listener:
       simple:
+        prefetch: 1
         default-requeue-rejected: false
         retry:
           enabled: true
@@ -48,6 +49,7 @@ management:
 gameweare:
   agent:
     engine: ${AGENT_ENGINE:legacy}
+    worker-concurrency: ${AGENT_WORKER_CONCURRENCY:2}
     stall-timeout-minutes: ${AGENT_STALL_TIMEOUT_MINUTES:25}
     filesystem: ${AGENT_FILESYSTEM:kubernetes}
     docker:

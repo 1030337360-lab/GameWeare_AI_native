@@ -1,0 +1,122 @@
+name: gameweare-benchmark
+
+# Isolated benchmark stack with persistent named volumes, separate from regular data.
+services:
+  api-a:
+    build: ../../apps/api-java
+    image: gameweare-backend-api:benchmark
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    environment: &api-environment
+      API_PORT: 8080
+      MYSQL_URL: jdbc:mysql://mysql:3306/gameweare?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: benchmark-password
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: gameweare
+      RABBITMQ_PASSWORD: benchmark-password
+      REDIS_HOST: redis
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: benchmark-minio
+      MINIO_SECRET_KEY: benchmark-minio-password
+      MINIO_BUCKET: gameweare-games
+      MINIO_PUBLIC_BASE_URL: http://localhost:19000/gameweare-games
+      WEB_ORIGIN: http://localhost:1314
+      AI_CONFIG_SECRET: benchmark-only-secret-at-least-32-characters
+      LLM_ALLOW_PRIVATE_ENDPOINTS: "true"
+      AGENT_ENGINE: legacy
+      AGENT_FILESYSTEM: local
+      AGENT_WORKER_CONCURRENCY: "2"
+    ports: ["127.0.0.1:18080:8080"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api-b:
+    image: gameweare-backend-api:benchmark
+    depends_on:
+      api-a: { condition: service_healthy }
+    environment: *api-environment
+    ports: ["127.0.0.1:18081:8080"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    image: public.ecr.aws/docker/library/mysql:8.4
+    command: ["mysqld", "--innodb-flush-log-at-trx-commit=1"]
+    volumes:
+      - benchmark-mysql:/var/lib/mysql
+    environment:
+      MYSQL_DATABASE: gameweare
+      MYSQL_USER: gameweare
+      MYSQL_PASSWORD: benchmark-password
+      MYSQL_ROOT_PASSWORD: benchmark-root-password
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u gameweare -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    volumes:
+      - benchmark-rabbitmq:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: gameweare
+      RABBITMQ_DEFAULT_PASS: benchmark-password
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec",
+              "--save", "900", "1", "--save", "300", "10", "--save", "60", "10000"]
+    volumes:
+      - benchmark-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: ghcr.io/coollabsio/minio:latest
+    command: server /data --console-address ":9001"
+    volumes:
+      - benchmark-minio:/data
+    environment:
+      MINIO_ROOT_USER: benchmark-minio
+      MINIO_ROOT_PASSWORD: benchmark-minio-password
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mock-llm:
+    image: public.ecr.aws/docker/library/python:3.12-alpine
+    volumes:
+      - ../../scripts/mock_llm.py:/mock_llm.py:ro
+    command: ["python", "/mock_llm.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  benchmark-mysql:
+  benchmark-rabbitmq:
+  benchmark-redis:
+  benchmark-minio:

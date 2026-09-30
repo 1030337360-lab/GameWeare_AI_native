@@ -11,5 +11,5 @@ local remaining = redis.call('DECR', KEYS[1])
 redis.call('HSET', KEYS[2], ARGV[2], ARGV[3])
 redis.call('SET', KEYS[3], 'pending:' .. now, 'EX', 3888000)
 redis.call('SET', KEYS[5], ARGV[1] .. '|' .. ARGV[2], 'EX', 3888000)
-redis.call('XADD', KEYS[4], '*', 'id', ARGV[3], 'campaign', ARGV[1], 'user', ARGV[2], 'remaining', remaining)
+redis.call('XADD', KEYS[4], '*', 'id', ARGV[3], 'campaign', ARGV[1], 'user', ARGV[2], 'remaining', remaining, 'created', now)
 return 'OK:' .. remaining

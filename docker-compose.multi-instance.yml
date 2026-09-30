@@ -2,6 +2,7 @@ services:
   api:
     environment:
       LLM_ALLOW_PRIVATE_ENDPOINTS: "true"
+      AGENT_WORKER_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-2}
       AGENT_FILESYSTEM: local
 
   api-replica:
@@ -31,6 +32,7 @@ services:
       WEB_ORIGIN: http://localhost:1314
       AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:-local-dev-key-change-before-public-use-32}
       LLM_ALLOW_PRIVATE_ENDPOINTS: "true"
+      AGENT_WORKER_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-2}
       AGENT_FILESYSTEM: local
     ports: ["127.0.0.1:8081:8080"]
     healthcheck:

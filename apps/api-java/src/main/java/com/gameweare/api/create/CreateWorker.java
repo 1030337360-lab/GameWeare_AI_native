@@ -66,7 +66,10 @@ public class CreateWorker {
         this.coverReAct = coverReAct; this.bucket = bucket;
     }
 
-    @RabbitListener(queues = InfrastructureConfig.CREATE_QUEUE)
+    // Each consumer owns one long-running job. Keep prefetch at one so idle consumers
+    // can receive the next job instead of leaving it reserved behind an active run.
+    @RabbitListener(queues = InfrastructureConfig.CREATE_QUEUE,
+            concurrency = "${gameweare.agent.worker-concurrency:2}")
     public void consume(String jobId) {
         RLock lock = redisson.getLock("create:job:run:" + jobId);
         try {

@@ -30,11 +30,13 @@ public class VoucherCampaignService {
     private final StringRedisTemplate redis;
     private final GenerationVoucherService vouchers;
     private final TransactionTemplate transactions;
+    private final VoucherStageMetrics metrics;
 
     public VoucherCampaignService(JdbcTemplate jdbc, StringRedisTemplate redis, GenerationVoucherService vouchers,
-                                  PlatformTransactionManager manager) {
+                                  PlatformTransactionManager manager, VoucherStageMetrics metrics) {
         this.jdbc = jdbc; this.redis = redis; this.vouchers = vouchers;
         this.transactions = new TransactionTemplate(manager);
+        this.metrics = metrics;
     }
 
     private static <T> DefaultRedisScript<T> script(String path, Class<T> resultType) {
@@ -84,8 +86,8 @@ public class VoucherCampaignService {
     }
 
     public Map<String, Object> claim(String campaignId, String userId) {
-        List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT starts_at,ends_at,status FROM voucher_campaigns WHERE id=?", campaignId);
+        List<Map<String, Object>> rows = metrics.time("claim.mysql_campaign_read", () -> jdbc.queryForList(
+                "SELECT starts_at,ends_at,status FROM voucher_campaigns WHERE id=?", campaignId));
         if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Campaign not found");
         Map<String, Object> campaign = rows.get(0);
         if ("canceled".equals(campaign.get("status")))
@@ -93,12 +95,12 @@ public class VoucherCampaignService {
         String reservationId = UUID.randomUUID().toString();
         String response;
         try {
-            response = redis.execute(RESERVE,
+            response = metrics.time("claim.redis_reserve_lua", () -> redis.execute(RESERVE,
                     List.of(stockKey(campaignId), usersKey(campaignId), stateKey(reservationId), STREAM,
                             ownerKey(reservationId)),
                     campaignId, userId, reservationId,
                     Long.toString(asInstant(campaign.get("starts_at")).toEpochMilli()),
-                    Long.toString(asInstant(campaign.get("ends_at")).toEpochMilli()));
+                    Long.toString(asInstant(campaign.get("ends_at")).toEpochMilli())));
         } catch (RuntimeException unavailable) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Seckill temporarily unavailable", unavailable);
         }
@@ -166,14 +168,16 @@ public class VoucherCampaignService {
 
     /** Called only by the Rabbit listener. MySQL is the final stock and ownership authority. */
     @Transactional
-    public void issue(String campaignId, String userId, String reservationId, int remainingAfter) {
+    public boolean issue(String campaignId, String userId, String reservationId, int remainingAfter) {
         // Serialize issuance and terminal compensation for this campaign in MySQL.
-        jdbc.queryForObject("SELECT remaining_stock FROM voucher_campaigns WHERE id=? FOR UPDATE",
-                Integer.class, campaignId);
+        metrics.time("consumer.mysql_campaign_lock", () -> jdbc.queryForObject(
+                "SELECT remaining_stock FROM voucher_campaigns WHERE id=? FOR UPDATE",
+                Integer.class, campaignId));
         Integer existing = jdbc.queryForObject("SELECT COUNT(*) FROM voucher_claims WHERE id=?",
                 Integer.class, reservationId);
-        if (existing != null && existing > 0) { projectIssued(reservationId); return; }
-        String state = redis.opsForValue().get(stateKey(reservationId));
+        if (existing != null && existing > 0) { projectIssued(reservationId); return false; }
+        String state = metrics.time("consumer.redis_reservation_check",
+                () -> redis.opsForValue().get(stateKey(reservationId)));
         if (state == null || !state.startsWith("pending")
                 || !reservationId.equals(redis.opsForHash().get(usersKey(campaignId), userId)))
             throw new IllegalStateException("Reservation is no longer pending");
@@ -191,6 +195,7 @@ public class VoucherCampaignService {
                 """, reservationId, campaignId, userId, remainingAfter);
         vouchers.grant(userId, "campaign", campaignId, 30);
         projectIssued(reservationId);
+        return true;
     }
 
     private void projectIssued(String reservationId) {

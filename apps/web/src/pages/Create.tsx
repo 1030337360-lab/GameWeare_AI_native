@@ -93,6 +93,7 @@ function Create() {
   const pendingImagesRef = React.useRef<PendingImage[]>([]);
   const { apiFetch, token } = useAuth();
   const optimizableProjects = projects.filter((project) => Boolean(project.gameId) && project.status !== "archived");
+  const activeTaskCount = taskHistory.filter((task) => ACTIVE_STATUSES.has(task.status)).length;
   const availableVouchers = vouchers.filter((voucher) => voucher.status === "available" && new Date(voucher.expiresAt).getTime() > Date.now());
   const fundingReady = fundingMode === "voucher" ? Boolean(aiConfig?.officialConfigured && voucherId) : Boolean(aiConfig?.configured && !editingConfig);
 
@@ -791,14 +792,14 @@ function Create() {
         <div>
           <p className="eyebrow">游戏工作室 / 创建</p>
           <h1>让灵感成为游戏。</h1>
-          <p>写下玩法想法，在左侧任务记录中随时查看进度与成果。</p>
+          <p>可以同时创建多个不同的游戏。任务分别运行，进度会保留在左侧列表。</p>
         </div>
         <span className="create-page-mark"><Sparkles size={17} /> 创作空间</span>
       </header>
       <div className="create-workspace" ref={workspaceRef} style={{ "--task-sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
         <aside className="create-sidebar" aria-label="创建任务">
           <div className="create-sidebar-top">
-            <div><span className="create-overline">我的工作区</span><h2>任务记录 <small>{taskHistory.length}</small></h2></div>
+            <div><span className="create-overline">我的工作区</span><h2>任务记录 <small>{taskHistory.length}</small></h2>{activeTaskCount > 0 && <span className="create-overline">{activeTaskCount} 个任务正在排队或生成</span>}</div>
             <button type="button" className="create-new-icon" onClick={() => startNewTask()} aria-label="新建任务"><Plus size={19} /></button>
           </div>
           <button type="button" className={`create-new-task ${selectedJobId === null ? "selected" : ""}`} onClick={() => startNewTask()}>
@@ -838,7 +839,7 @@ function Create() {
           </div>
           <div className="create-progress-track" aria-hidden="true"><span className="done" /><span className={runSteps.length > 0 ? "done" : ""} /><span className={job?.status === "completed" ? "done" : ""} /><span className={job?.publishStatus === "published" ? "done" : ""} /></div>
           <div className="create-progress-labels"><span>等待</span><span>生成</span><span>完成</span><span>发布</span></div>
-          {job && ["pending", "generating", "planning", "reviewing"].includes(job.status) && <div className="create-cancel-strip"><span>任务正在进行。你可以随时终止，终止后保留轨迹供查看。</span><button type="button" disabled={cancelBusyId === job.id} onClick={() => void cancelTask(job.id)}><Square size={13} fill="currentColor" /> {cancelBusyId === job.id ? "正在终止…" : "终止创建"}</button></div>}
+          {job && ["pending", "generating", "planning", "reviewing"].includes(job.status) && <div className="create-cancel-strip"><span>此任务会独立运行。现在就能并行创建另一款游戏；同一游戏的优化仍需等待当前任务结束。</span><button type="button" className="create-parallel-action" onClick={() => { startNewTask(); focusComposer(); }}><Plus size={13} /> 并行新建游戏</button><button type="button" disabled={cancelBusyId === job.id} onClick={() => void cancelTask(job.id)}><Square size={13} fill="currentColor" /> {cancelBusyId === job.id ? "正在终止…" : "终止创建"}</button></div>}
           {job?.prompt && <details className="create-prompt-details"><summary>查看完整创作要求</summary><p>{job.prompt}</p></details>}
         </section>
       ) : <div className="create-compose-heading"><span className="create-overline">开始创作</span><h2>描述你想玩的游戏</h2><p>告诉我们玩法、氛围或故事设定。</p></div>}

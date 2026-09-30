@@ -10,12 +10,17 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import com.gameweare.api.voucher.VoucherStageMetrics;
 
 @Component
 public class AuthFilter extends OncePerRequestFilter {
     private final AuthService auth;
+    private final VoucherStageMetrics metrics;
 
-    public AuthFilter(AuthService auth) { this.auth = auth; }
+    public AuthFilter(AuthService auth, VoucherStageMetrics metrics) {
+        this.auth = auth;
+        this.metrics = metrics;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -23,7 +28,7 @@ public class AuthFilter extends OncePerRequestFilter {
         try {
             String token = bearer(request);
             if (token != null) {
-                var user = auth.findUserByToken(token);
+                var user = metrics.time("auth.token_lookup", () -> auth.findUserByToken(token));
                 if (user != null) {
                     request.setAttribute("userId", user.id());
                     request.setAttribute("authUser", user);

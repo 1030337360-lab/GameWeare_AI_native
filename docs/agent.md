@@ -16,6 +16,14 @@
 
 ## AgentScope、记忆与沙箱
 
+### 同一用户并行创建
+
+新建游戏请求不传 `projectId`，`CreateService` 会为每个任务建立独立 `create_projects` 与 `create_jobs` 记录；因此同一用户可以同时提交多个不同游戏。只有对**同一个已有项目**执行继续优化时，才通过项目行锁和活动任务检查串行化，避免两个版本同时覆盖同一项目。一个 `jobId` 对应一个 AgentScope session、独立 workspace 和一个沙箱 slot；不能用 `userId` 作为沙箱隔离键。
+
+`CreateWorker` 的 RabbitMQ 监听器默认在每个 API 实例启动 **2 个并发消费者**，可用 `AGENT_WORKER_CONCURRENCY` 调整；队列 prefetch 为 1，长任务不会把后续消息预取到忙碌消费者。多个 API 实例共享同一队列时，总运行上限大致是实例数乘每实例消费者数，还受数据库连接池、模型服务限流和 Kubernetes Pod 配额约束。任务级 Redisson 锁和 MySQL `lease_token` 继续防止同一任务被重复提交产物。`SandboxWarmPool` 模板预热 2 个沙箱，命名空间 Pod 配额 30；预热数量不是全平台并发上限，实际可调度数量还要看 controller 与集群资源。为避免耗尽数据库连接或模型额度，调大消费者数前应压测并监控 Rabbit 队列深度、Pod Pending、Agent 心跳与外部模型的 429/超时。
+
+本地 `docker-compose.yml` 默认 `AGENT_ENGINE=legacy`，且项目的 k8s 模板不会自动安装 controller。要真正看到每个任务由 Kubernetes 沙箱 Pod 执行，需部署模板依赖的 agent-sandbox controller/CRD、运行时镜像与所需 RuntimeClass，配置 `AGENT_ENGINE=agentscope` 和 `AGENT_FILESYSTEM=kubernetes`，再检查 claim 与 Pod 的创建和回收。仅运行本地 k8s 基础节点不代表创作任务已经在 k8s 运行。
+
 `AgentScopeCreateEngine` 建立 `HarnessAgent`，启用任务清单、用量中间件及 MySQL 分布式状态存储，`RuntimeContext.sessionId` 使用任务 ID。`agent_project_memory` 保存已验证版本的项目摘要，后续优化只读取同用户、同项目的有限历史；它不替代完整源码。每个任务的工作区独立，结束后清理临时目录。
 
 `AGENT_FILESYSTEM` 选择 `local`、`docker` 或 `kubernetes`。本地 Docker 路径使用 AgentScope `DockerFilesystemSpec`，设置无网络、只读根文件系统、临时工作区及 CPU/内存限制。Kubernetes 路径使用 `KubernetesFilesystemSpec` 和 [`infra/k8s/agent-sandbox.yaml.template`](../infra/k8s/agent-sandbox.yaml.template)；生产启动守卫只接受 Kubernetes。`local` 模式仅用于受控开发，不提供同等级别的隔离。

@@ -35,15 +35,18 @@ public class BuiltInGameSeeder implements ApplicationRunner {
     private final JdbcTemplate jdbc;
     private final MinioClient minio;
     private final ArtifactValidator validator;
+    private final GameSlugBloomFilter bloomFilter;
     private final TransactionTemplate transaction;
     private final String bucket;
 
     public BuiltInGameSeeder(JdbcTemplate jdbc, MinioClient minio, ArtifactValidator validator,
+            GameSlugBloomFilter bloomFilter,
             PlatformTransactionManager transactionManager,
             @Value("${gameweare.minio.bucket}") String bucket) {
         this.jdbc = jdbc;
         this.minio = minio;
         this.validator = validator;
+        this.bloomFilter = bloomFilter;
         this.transaction = new TransactionTemplate(transactionManager);
         this.bucket = bucket;
     }
@@ -53,6 +56,11 @@ public class BuiltInGameSeeder implements ApplicationRunner {
         List<String> existing = jdbc.queryForList("SELECT id FROM games WHERE slug=?", String.class, SLUG);
         if (!existing.isEmpty()) {
             if (!GAME_ID.equals(existing.get(0))) log.warn("Bundled quiz slug already belongs to another game; skipping seed");
+            else {
+                Integer published = jdbc.queryForObject("SELECT COUNT(*) FROM games WHERE id=? AND publish_status='published' AND visibility='public'",
+                        Integer.class, GAME_ID);
+                if (published != null && published > 0) bloomFilter.addBeforePublish(SLUG);
+            }
             return;
         }
 
@@ -65,6 +73,9 @@ public class BuiltInGameSeeder implements ApplicationRunner {
                     .stream(input, html.length, -1).contentType("text/html; charset=utf-8").build());
         }
         long size = html.length;
+        // A scheduled Bloom seed may finish before this startup fixture is published.
+        // Register the slug first so a ready filter cannot reject the new public game.
+        bloomFilter.addBeforePublish(SLUG);
         transaction.executeWithoutResult(status -> {
             jdbc.update("INSERT IGNORE INTO users(id,email,password_hash,display_name,role) VALUES(?,?,?,?,'user')",
                     USER_ID, EMAIL, new BCryptPasswordEncoder().encode(UUID.randomUUID().toString()), "GameWeare 官方");
