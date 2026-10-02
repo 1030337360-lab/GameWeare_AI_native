@@ -1,10 +1,10 @@
 package com.gameweare.api.catalog;
 
+import com.gameweare.api.catalog.dao.GameStatsMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,22 +26,19 @@ class TrendingController {
 @Service
 public class GameTrendingService {
     private static final String KEY = "game:trending";
-    private final JdbcTemplate jdbc;
+    private final GameStatsMapper games;
     private final StringRedisTemplate redis;
-    public GameTrendingService(JdbcTemplate jdbc, StringRedisTemplate redis) {
-        this.jdbc = jdbc; this.redis = redis;
+    public GameTrendingService(GameStatsMapper games, StringRedisTemplate redis) {
+        this.games = games; this.redis = redis;
     }
 
     public void refresh(String gameId) {
         try {
-            List<Map<String, Object>> games = jdbc.queryForList("""
-                    SELECT plays_count,likes_count,favorites_count,publish_status,visibility FROM games WHERE id=?
-                    """, gameId);
-            if (games.isEmpty() || !"published".equals(games.get(0).get("publish_status"))
-                    || !"public".equals(games.get(0).get("visibility"))) {
+            Map<String, Object> row = games.counters(gameId);
+            if (row == null || !"published".equals(row.get("publish_status"))
+                    || !"public".equals(row.get("visibility"))) {
                 redis.opsForZSet().remove(KEY, gameId); return;
             }
-            Map<String, Object> row = games.get(0);
             double score = ((Number) row.get("plays_count")).doubleValue()
                     + 3 * ((Number) row.get("likes_count")).doubleValue()
                     + 5 * ((Number) row.get("favorites_count")).doubleValue();
@@ -55,22 +52,11 @@ public class GameTrendingService {
             var top = redis.opsForZSet().reverseRange(KEY, 0, Math.max(limit * 2L, 50));
             if (top != null) ids.addAll(top);
         } catch (RuntimeException ignored) { }
-        if (ids.isEmpty()) return jdbc.queryForList("""
-                SELECT g.slug AS id,g.title,u.display_name AS author,
-                       g.plays_count AS plays,g.likes_count AS likes,g.favorites_count AS favorites
-                FROM games g JOIN users u ON u.id=g.author_id
-                WHERE g.publish_status='published' AND g.visibility='public'
-                ORDER BY (g.plays_count+3*g.likes_count+5*g.favorites_count) DESC,g.published_at DESC LIMIT ?
-                """, limit);
+        if (ids.isEmpty()) return games.topGames(limit);
         List<Map<String, Object>> result = new ArrayList<>();
         for (String id : ids) {
-            List<Map<String, Object>> rows = jdbc.queryForList("""
-                    SELECT g.slug AS id,g.title,u.display_name AS author,
-                           g.plays_count AS plays,g.likes_count AS likes,g.favorites_count AS favorites
-                    FROM games g JOIN users u ON u.id=g.author_id
-                    WHERE g.id=? AND g.publish_status='published' AND g.visibility='public'
-                    """, id);
-            if (!rows.isEmpty()) result.add(rows.get(0));
+            Map<String, Object> row = games.publicGameSummary(id);
+            if (row != null) result.add(row);
             if (result.size() >= limit) break;
         }
         return result;
@@ -79,13 +65,9 @@ public class GameTrendingService {
     @Scheduled(initialDelay = 30_000, fixedDelay = 600_000)
     public void rebuild() {
         try {
-            List<Map<String, Object>> games = jdbc.queryForList("""
-                    SELECT id,plays_count,likes_count,favorites_count FROM games
-                    WHERE publish_status='published' AND visibility='public'
-                    ORDER BY (plays_count+3*likes_count+5*favorites_count) DESC LIMIT 1000
-                    """);
+            List<Map<String, Object>> top = games.topCounters();
             redis.delete(KEY);
-            for (Map<String, Object> row : games) {
+            for (Map<String, Object> row : top) {
                 double score = ((Number) row.get("plays_count")).doubleValue()
                         + 3 * ((Number) row.get("likes_count")).doubleValue()
                         + 5 * ((Number) row.get("favorites_count")).doubleValue();

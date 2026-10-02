@@ -1,6 +1,14 @@
 # Java 后端：实现与一致性
 
-本文以 [`apps/api-java`](../apps/api-java) 的当前代码为准。后端使用 Java 17、Spring Boot 4、Spring JDBC、Flyway、MySQL、Redis、RabbitMQ 和 MinIO；它是按业务包组织的单体应用。入口是 [`GameWeareApplication`](../apps/api-java/src/main/java/com/gameweare/api/GameWeareApplication.java)，配置入口是 [`application.yml`](../apps/api-java/src/main/resources/application.yml)。
+本文以 [`apps/api-java`](../apps/api-java) 的当前代码为准。后端使用 Java 17、Spring Boot 4、MyBatis、Spring JDBC、Flyway、MySQL、Redis、RabbitMQ 和 MinIO；它是按业务包组织的单体应用。入口是 [`GameWeareApplication`](../apps/api-java/src/main/java/com/gameweare/api/GameWeareApplication.java)，配置入口是 [`application.yml`](../apps/api-java/src/main/resources/application.yml)。
+
+## 分层与 SQL 位置
+
+目前逐业务域迁移到 Controller → Service → DAO/Mapper → MySQL。MyBatis Spring Boot Starter 4.0.0 自动扫描标有 `@Mapper` 的接口；SQL 放在 Mapper 方法的 `@Select`/`@Insert`/`@Update` 注解旁，代码阅读时直接可见。评论域可作为完整范例：[Controller](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameCommentController.java)、[Service](../apps/api-java/src/main/java/com/gameweare/api/catalog/GameCommentService.java)、[Mapper](../apps/api-java/src/main/java/com/gameweare/api/catalog/dao/GameCommentMapper.java)、[Entity](../apps/api-java/src/main/java/com/gameweare/api/catalog/entity/GameCommentEntity.java) 分开存放。认证、历史 Token 账本、游戏目录与社区、游戏游玩、生成券与秒杀、签到、个人资料、上传、Outbox、内置游戏初始化和外部产物入库均已有业务域 Mapper；例如 [AuthMapper](../apps/api-java/src/main/java/com/gameweare/api/auth/dao/AuthMapper.java)、[CatalogMapper](../apps/api-java/src/main/java/com/gameweare/api/catalog/dao/CatalogMapper.java)、[VoucherCampaignMapper](../apps/api-java/src/main/java/com/gameweare/api/voucher/dao/VoucherCampaignMapper.java) 和 [ArtifactMapper](../apps/api-java/src/main/java/com/gameweare/api/create/dao/ArtifactMapper.java)。
+
+迁移是渐进的：任务创建/Worker 编排、Agent 用量审计和管理后台仍有 `JdbcTemplate` 调用，不能把整个项目称为“已全面改用 MyBatis”。这些 SQL 依然执行在同一 MySQL 数据源和 Spring 事务管理器中。复杂动态 SQL 可用 MyBatis XML 或 `<script>`，不把表名等 SQL 标识符直接交给客户端。以计费为例，`TokenAccountMapper.lockAccount` 保留原来的 `SELECT ... FOR UPDATE`，Service 的 `@Transactional` 覆盖查询、余额更新及流水插入。MyBatis 的 Map 查询可能把 MySQL 时间列返回为 `LocalDateTime`，认证映射按 UTC 显式处理这个类型。
+
+Docker 的 [后端 Dockerfile](../apps/api-java/Dockerfile) 在 Maven 构建阶段复制 `pom.xml` 与 `src`，将 MyBatis Starter 和 Mapper 类一同打入 Spring Boot JAR，再由 Java 17 运行镜像启动。开发、双实例和生产 Compose 都引用同一后端构建产物或镜像，不需要为 MyBatis 单独部署服务；它继续使用 Spring 配置的 MySQL 连接池。更新后端时重建 `api` 镜像并重建 API 容器，保留原有中间件容器与具名数据卷；详情见 [本地启动](../README.md#本地启动)。
 
 ## 认证、会话与权限
 

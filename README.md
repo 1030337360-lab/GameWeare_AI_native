@@ -17,7 +17,7 @@ GameWeare 让用户描述游戏、选择生成模式、查看任务轨迹，随�
 | 路径 | 职责 |
 | --- | --- |
 | `apps/web` | React + Vite 玩家、创作者、管理员界面 |
-| `apps/api-java` | Spring Boot API、任务 Worker、Flyway 迁移 |
+| `apps/api-java` | Spring Boot API、MyBatis/JDBC 数据访问、任务 Worker、Flyway 迁移 |
 | `apps/agent-sandbox-runtime` | AgentScope Kubernetes 沙箱的 Java HTTP 运行时 |
 | `infra` | MySQL 初始化与 Kubernetes 沙箱模板 |
 | `scripts` | 本地启动与端到端、并发、秒杀验收脚本 |
@@ -33,6 +33,8 @@ docker compose ps
 ```
 
 前端：<http://localhost:1314>；API 健康检查：<http://localhost:8080/actuator/health>。MySQL、Redis、RabbitMQ、MinIO 分别由 Compose 启动。首次启动会执行 Flyway 迁移，并把后端内部的 Java 面试知识闯关注册为首页可玩的内置游戏；重复启动不会重复创建。开发配置中的默认密码只适用于本机。
+
+仅修改 Java 后端时，可在仓库根目录执行 `docker compose build api`，再执行 `docker compose up -d --no-build api web`。API 镜像会从 `apps/api-java/pom.xml` 编译并打包 MyBatis；Compose 继续使用现有 MySQL、Redis、RabbitMQ、MinIO 数据卷。用 `docker compose ps` 检查容器状态，再访问上述健康检查和 `/games?sort=latest`。镜像构建使用 `-DskipTests`，提交前仍需单独运行 `mvn -f apps/api-java/pom.xml test`。
 
 创建游戏前，可在“创作”页配置自己的模型地址、名称和 API Key。官方生成券还需服务端配置 `OFFICIAL_LLM_BASE_URL`、`OFFICIAL_LLM_MODEL`、`OFFICIAL_LLM_API_KEY`。新建生成任务的模型额度由服务商 API 判断，项目不以旧版本地 Token 余额拒绝任务。
 

@@ -1,5 +1,6 @@
 package com.gameweare.api.catalog;
 
+import com.gameweare.api.catalog.dao.GameStatsMapper;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
@@ -9,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -22,12 +22,12 @@ public class GameSlugBloomFilter {
     private static final String FILTER = "game:public:slugs:v1";
     private static final String READY = "game:public:slugs:ready:v2";
     private final RedissonClient redis;
-    private final JdbcTemplate db;
+    private final GameStatsMapper games;
     private final StringRedisTemplate redisInfo;
 
-    public GameSlugBloomFilter(RedissonClient redis, JdbcTemplate db, StringRedisTemplate redisInfo) {
+    public GameSlugBloomFilter(RedissonClient redis, GameStatsMapper games, StringRedisTemplate redisInfo) {
         this.redis = redis;
-        this.db = db;
+        this.games = games;
         this.redisInfo = redisInfo;
     }
 
@@ -44,8 +44,7 @@ public class GameSlugBloomFilter {
                 if (runId.equals(redis.<String>getBucket(READY).get())) return;
                 RBloomFilter<String> filter = redis.getBloomFilter(FILTER);
                 filter.tryInit(1_000_000L, 0.01);
-                List<String> slugs = db.queryForList(
-                        "SELECT slug FROM games WHERE publish_status='published' AND visibility='public'", String.class);
+                List<String> slugs = games.publicSlugs();
                 for (String slug : slugs) filter.add(slug);
                 redis.<String>getBucket(READY).set(runId);
                 LOG.info("Public game Bloom filter ready with {} existing slugs", slugs.size());

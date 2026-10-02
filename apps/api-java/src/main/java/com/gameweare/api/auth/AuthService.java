@@ -1,5 +1,6 @@
 package com.gameweare.api.auth;
 
+import com.gameweare.api.auth.dao.AuthMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -10,12 +11,12 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -30,15 +31,15 @@ public class AuthService {
     private static final long ABSOLUTE_SESSION_SECONDS = Duration.ofDays(30).toSeconds();
     private static final String DUMMY_HASH = new BCryptPasswordEncoder().encode("not-a-real-password");
 
-    private final JdbcTemplate jdbc;
+    private final AuthMapper authMapper;
     private final StringRedisTemplate redis;
     private final long starterTokens;
     private final BCryptPasswordEncoder passwords = new BCryptPasswordEncoder();
     private final SecureRandom random = new SecureRandom();
 
-    public AuthService(JdbcTemplate jdbc, StringRedisTemplate redis,
+    public AuthService(AuthMapper authMapper, StringRedisTemplate redis,
                        @Value("${gameweare.billing.starter-tokens:100000}") long starterTokens) {
-        this.jdbc = jdbc;
+        this.authMapper = authMapper;
         this.redis = redis;
         this.starterTokens = starterTokens;
         if (starterTokens < 0) throw new IllegalArgumentException("Starter tokens cannot be negative");
@@ -57,15 +58,12 @@ public class AuthService {
         }
         String userId = UUID.randomUUID().toString();
         try {
-            jdbc.update("INSERT INTO users(id,email,password_hash,display_name,role,last_login_at,created_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                    userId, email, passwords.encode(password), displayName, "user");
+            authMapper.insertUser(userId, email, passwords.encode(password), displayName);
         } catch (DataIntegrityViolationException duplicate) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already registered", duplicate);
         }
-        jdbc.update("INSERT INTO token_accounts(user_id,balance,reserved,version) VALUES(?,?,0,0)", userId, starterTokens);
-        if (starterTokens > 0) jdbc.update(
-                "INSERT INTO token_ledger(id,user_id,job_id,entry_type,amount,created_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",
-                UUID.randomUUID().toString(), userId, userId, "GRANT", starterTokens);
+        authMapper.insertAccount(userId, starterTokens);
+        if (starterTokens > 0) authMapper.insertStarterGrant(UUID.randomUUID().toString(), userId, userId, starterTokens);
         return issue(new UserProfile(userId, email, displayName, null, "user", Instant.now()));
     }
 
@@ -75,14 +73,13 @@ public class AuthService {
         checkLoginRate(email);
         if (password != null && password.getBytes(StandardCharsets.UTF_8).length > 72)
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
-        var users = jdbc.query("SELECT id,email,password_hash,display_name,role FROM users WHERE email=?",
-                (rs, ignored) -> new LoginRow(rs.getString("id"), rs.getString("email"),
-                        rs.getString("password_hash"), rs.getString("display_name"), rs.getString("role")), email);
-        LoginRow row = users.isEmpty() ? null : users.get(0);
+        Map<String, Object> found = authMapper.findLoginUser(email);
+        LoginRow row = found == null ? null : new LoginRow(string(found, "id"), string(found, "email"),
+                string(found, "password_hash"), string(found, "display_name"), string(found, "role"));
         if (!passwords.matches(password == null ? "" : password, row == null ? DUMMY_HASH : row.passwordHash())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
         }
-        jdbc.update("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?", row.id());
+        authMapper.touchLogin(row.id());
         redis.delete("auth:login:attempts:" + hash(email));
         return issue(new UserProfile(row.id(), row.email(), row.displayName(), null, row.role(), Instant.now()));
     }
@@ -93,7 +90,7 @@ public class AuthService {
             String tokenHash = hash(token);
             redis.opsForValue().set("auth:revoked:" + tokenHash, "1", Duration.ofSeconds(ABSOLUTE_SESSION_SECONDS));
             redis.delete("auth:session:" + tokenHash);
-            jdbc.update("UPDATE user_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE token_hash=? AND revoked_at IS NULL", tokenHash);
+            authMapper.revokeSession(tokenHash);
         }
     }
 
@@ -117,14 +114,10 @@ public class AuthService {
                 redis.delete("auth:session:" + tokenHash);
             }
         }
-        var users = jdbc.query("""
-                SELECT u.id,u.email,u.display_name,u.avatar_url,u.role,u.last_login_at,s.expires_at,s.created_at
-                FROM user_sessions s JOIN users u ON u.id=s.user_id
-                WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP
-                """, (rs, ignored) -> new SessionUser(user(rs), rs.getTimestamp("expires_at").toInstant(),
-                        rs.getTimestamp("created_at").toInstant()), tokenHash);
-        if (users.isEmpty()) return null;
-        SessionUser session = users.get(0);
+        Map<String, Object> found = authMapper.findActiveSession(tokenHash);
+        if (found == null) return null;
+        SessionUser session = new SessionUser(user(found), timestamp(found, "expires_at").toInstant(),
+                timestamp(found, "created_at").toInstant());
         UserProfile profile = session.profile();
         Instant expiresAt = session.expiresAt();
         if (expiresAt.isBefore(Instant.now().plus(Duration.ofDays(1)))) {
@@ -132,10 +125,7 @@ public class AuthService {
             Instant absolute = session.createdAt().plusSeconds(ABSOLUTE_SESSION_SECONDS);
             if (newExpiry.isAfter(absolute)) newExpiry = absolute;
             if (newExpiry.isAfter(expiresAt)) {
-                int updated = jdbc.update("""
-                        UPDATE user_sessions SET expires_at=? WHERE token_hash=? AND revoked_at IS NULL
-                          AND expires_at>UTC_TIMESTAMP(6) AND expires_at<?
-                        """, java.sql.Timestamp.from(newExpiry), tokenHash, java.sql.Timestamp.from(newExpiry));
+                int updated = authMapper.extendSession(java.sql.Timestamp.from(newExpiry), tokenHash);
                 if (updated > 0) expiresAt = newExpiry;
             }
         }
@@ -161,8 +151,7 @@ public class AuthService {
         byte[] secret = new byte[32];
         random.nextBytes(secret);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(secret);
-        jdbc.update("INSERT INTO user_sessions(id,user_id,token_hash,expires_at) VALUES(?,?,?,?)",
-                UUID.randomUUID().toString(), user.id(), hash(token),
+        authMapper.insertSession(UUID.randomUUID().toString(), user.id(), hash(token),
                 java.sql.Timestamp.from(Instant.now().plusSeconds(SESSION_SECONDS)));
         return new AuthResponse(true, user, token, "bearer", SESSION_SECONDS);
     }
@@ -198,6 +187,28 @@ public class AuthService {
         var lastLogin = rs.getTimestamp("last_login_at");
         return new UserProfile(rs.getString("id"), rs.getString("email"), rs.getString("display_name"),
                 rs.getString("avatar_url"), rs.getString("role"), lastLogin == null ? null : lastLogin.toInstant());
+    }
+
+    static UserProfile user(Map<String, Object> row) {
+        java.sql.Timestamp lastLogin = timestamp(row, "last_login_at");
+        return new UserProfile(string(row, "id"), string(row, "email"), string(row, "display_name"),
+                string(row, "avatar_url"), string(row, "role"), lastLogin == null ? null : lastLogin.toInstant());
+    }
+
+    private static String string(Map<String, Object> row, String column) {
+        Object value = row.get(column);
+        return value == null ? null : value.toString();
+    }
+
+    private static java.sql.Timestamp timestamp(Map<String, Object> row, String column) {
+        Object value = row.get(column);
+        if (value == null) return null;
+        if (value instanceof java.sql.Timestamp timestamp) return timestamp;
+        // MyBatis' default Map result uses LocalDateTime for MySQL DATETIME/TIMESTAMP.
+        if (value instanceof java.time.LocalDateTime dateTime) {
+            return java.sql.Timestamp.from(dateTime.toInstant(java.time.ZoneOffset.UTC));
+        }
+        throw new IllegalStateException("Unexpected SQL timestamp type for " + column + ": " + value.getClass());
     }
 
     private record LoginRow(String id, String email, String passwordHash, String displayName, String role) {}

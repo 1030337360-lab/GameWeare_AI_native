@@ -1,5 +1,6 @@
 package com.gameweare.api.storage;
 
+import com.gameweare.api.storage.dao.AssetMapper;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
@@ -7,7 +8,6 @@ import java.io.IOException;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -16,7 +16,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -27,9 +26,9 @@ import static org.mockito.Mockito.when;
 class UploadServiceTest {
     private static final byte[] PNG = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0};
 
-    private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    private final AssetMapper assets = mock(AssetMapper.class);
     private final MinioClient minio = mock(MinioClient.class);
-    private final UploadService service = new UploadService(jdbc, minio, "bucket");
+    private final UploadService service = new UploadService(assets, minio, "bucket");
 
     private MultipartFile file(String mime, byte[] bytes, long size) throws IOException {
         MultipartFile file = mock(MultipartFile.class);
@@ -67,8 +66,6 @@ class UploadServiceTest {
 
     @Test
     void storesPngUploadAndRegistersAsset() throws Exception {
-        when(jdbc.update(contains("INSERT INTO assets"), any(Object[].class))).thenReturn(1);
-
         Map<String, Object> out = service.upload(file("image/png", PNG, PNG.length), "u1");
 
         assertEquals("uploaded", out.get("status"));
@@ -77,13 +74,14 @@ class UploadServiceTest {
         assertTrue(out.get("objectKey").toString().startsWith("uploads/u1/create-input/"));
         assertTrue(out.get("publicUrl").toString().startsWith("/uploads/"));
         verify(minio).putObject(any(PutObjectArgs.class));
-        verify(jdbc).update(contains("INSERT INTO assets"), any(), eq("u1"), eq("bucket"),
-                eq(out.get("objectKey")), eq("image/png"), eq(PNG.length), anyString());
+        verify(assets).insertUpload(anyString(), eq("u1"), eq("bucket"),
+                eq(out.get("objectKey").toString()), eq("image/png"), eq((long) PNG.length), anyString());
     }
 
     @Test
     void cleansUpObjectWhenAssetRegistrationFails() throws Exception {
-        when(jdbc.update(contains("INSERT INTO assets"), any(Object[].class)))
+        when(assets.insertUpload(anyString(), eq("u1"), eq("bucket"), anyString(), eq("image/png"),
+                eq((long) PNG.length), anyString()))
                 .thenThrow(new RuntimeException("database unavailable"));
 
         assertThrows(RuntimeException.class, () -> service.upload(file("image/png", PNG, PNG.length), "u1"));
@@ -94,10 +92,9 @@ class UploadServiceTest {
 
     @Test
     void refusesToDeleteAnUploadUsedByAJob() {
-        when(jdbc.queryForList(contains("FROM assets"), eq("asset-1"), eq("u1")))
-                .thenReturn(java.util.List.of(Map.of("bucket", "bucket", "object_key", "uploads/u1/image.png")));
-        when(jdbc.queryForObject(contains("create_job_inputs"), eq(Integer.class), eq("asset-1")))
-                .thenReturn(1);
+        when(assets.lockUpload("asset-1", "u1"))
+                .thenReturn(Map.of("bucket", "bucket", "object_key", "uploads/u1/image.png"));
+        when(assets.usageCount("asset-1")).thenReturn(1);
 
         ResponseStatusException error = assertThrows(ResponseStatusException.class,
                 () -> service.delete("asset-1", "u1"));

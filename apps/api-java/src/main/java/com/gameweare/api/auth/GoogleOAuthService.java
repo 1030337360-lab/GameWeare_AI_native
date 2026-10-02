@@ -1,5 +1,6 @@
 package com.gameweare.api.auth;
 
+import com.gameweare.api.auth.dao.AuthMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
@@ -11,13 +12,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Base64;
-import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
@@ -34,7 +33,7 @@ public class GoogleOAuthService {
     private final String webOrigin;
     private final long starterTokens;
     private final StringRedisTemplate redis;
-    private final JdbcTemplate jdbc;
+    private final AuthMapper authMapper;
     private final TransactionTemplate transaction;
     private final AuthService auth;
     private final ObjectMapper json;
@@ -47,11 +46,11 @@ public class GoogleOAuthService {
                               @Value("${GOOGLE_REDIRECT_URI:http://localhost:8080/auth/google/callback}") String redirectUri,
                               @Value("${gameweare.web-origin:http://localhost:1314}") String webOrigin,
                               @Value("${gameweare.billing.starter-tokens:100000}") long starterTokens,
-                              StringRedisTemplate redis, JdbcTemplate jdbc, TransactionTemplate transaction,
+                              StringRedisTemplate redis, AuthMapper authMapper, TransactionTemplate transaction,
                               AuthService auth, ObjectMapper json) {
         this.clientId = clientId; this.clientSecret = clientSecret; this.redirectUri = redirectUri;
         this.webOrigin = webOrigin; this.starterTokens = starterTokens; this.redis = redis;
-        this.jdbc = jdbc; this.transaction = transaction; this.auth = auth; this.json = json;
+        this.authMapper = authMapper; this.transaction = transaction; this.auth = auth; this.json = json;
     }
 
     public URI start(String linkingUserId) {
@@ -81,52 +80,44 @@ public class GoogleOAuthService {
     }
 
     private AuthService.AuthResponse signIn(GoogleIdentity identity, String mode) {
-        List<String> mapped = jdbc.queryForList("SELECT user_id FROM oauth_accounts WHERE provider='google' AND provider_subject=?",
-                String.class, identity.subject());
+        String mapped = authMapper.findGoogleUserId(identity.subject());
         String userId;
         if (mode.startsWith("link:")) {
             userId = mode.substring(5);
-            if (jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=?", Integer.class, userId) == 0)
+            if (authMapper.countUserById(userId) == 0)
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Linking user no longer exists");
-            if (!mapped.isEmpty() && !mapped.get(0).equals(userId))
+            if (mapped != null && !mapped.equals(userId))
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Google account is linked elsewhere");
-            List<String> emailOwners = jdbc.queryForList("SELECT id FROM users WHERE email=?", String.class, identity.email());
-            if (!emailOwners.isEmpty() && !emailOwners.get(0).equals(userId))
+            String emailOwner = authMapper.findUserIdByEmail(identity.email());
+            if (emailOwner != null && !emailOwner.equals(userId))
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Google email belongs to another account");
         } else if ("login".equals(mode)) {
-            if (!mapped.isEmpty()) userId = mapped.get(0);
+            if (mapped != null) userId = mapped;
             else {
                 // Do not silently take over an unverified local email account.
-                if (jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE email=?", Integer.class, identity.email()) != 0)
+                if (authMapper.countUserByEmail(identity.email()) != 0)
                     throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already registered; sign in and link Google explicitly");
                 userId = UUID.randomUUID().toString();
                 try {
-                    jdbc.update("INSERT INTO users(id,email,password_hash,display_name,avatar_url,role,last_login_at) VALUES(?,?,NULL,?,?,'user',CURRENT_TIMESTAMP)",
-                            userId, identity.email(), identity.name(), identity.picture());
+                    authMapper.insertGoogleUser(userId, identity.email(), identity.name(), identity.picture());
                 } catch (DataIntegrityViolationException race) {
                     throw new ResponseStatusException(HttpStatus.CONFLICT, "Email was registered concurrently", race);
                 }
-                jdbc.update("INSERT INTO token_accounts(user_id,balance,reserved,version) VALUES(?,?,0,0)", userId, starterTokens);
-                if (starterTokens > 0) jdbc.update("INSERT INTO token_ledger(id,user_id,job_id,entry_type,amount) VALUES(?,?,?,?,?)",
-                        UUID.randomUUID().toString(), userId, userId, "GRANT", starterTokens);
+                authMapper.insertAccount(userId, starterTokens);
+                if (starterTokens > 0) authMapper.insertStarterGrant(UUID.randomUUID().toString(), userId, userId, starterTokens);
             }
         } else throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid OAuth state");
-        if (mapped.isEmpty()) {
+        if (mapped == null) {
             try {
-                jdbc.update("INSERT INTO oauth_accounts(provider,provider_subject,user_id,provider_email) VALUES('google',?,?,?)",
-                        identity.subject(), userId, identity.email());
+                authMapper.insertGoogleAccount(identity.subject(), userId, identity.email());
             } catch (DataIntegrityViolationException race) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Google account was linked concurrently", race);
             }
         } else {
-            jdbc.update("UPDATE oauth_accounts SET provider_email=? WHERE provider='google' AND provider_subject=?",
-                    identity.email(), identity.subject());
+            authMapper.updateGoogleEmail(identity.email(), identity.subject());
         }
-        jdbc.update("UPDATE users SET last_login_at=CURRENT_TIMESTAMP,avatar_url=COALESCE(?,avatar_url) WHERE id=?",
-                identity.picture(), userId);
-        var users = jdbc.query("SELECT id,email,display_name,avatar_url,role,last_login_at FROM users WHERE id=?",
-                (rs, ignored) -> AuthService.user(rs), userId);
-        return auth.issue(users.get(0));
+        authMapper.touchGoogleLogin(identity.picture(), userId);
+        return auth.issue(AuthService.user(authMapper.findUserById(userId)));
     }
 
     private GoogleIdentity fetchIdentity(String code) {

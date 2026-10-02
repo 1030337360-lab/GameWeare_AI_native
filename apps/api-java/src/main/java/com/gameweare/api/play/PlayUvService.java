@@ -1,11 +1,11 @@
 package com.gameweare.api.play;
 
+import com.gameweare.api.play.dao.PlayUvMapper;
+import com.gameweare.api.play.entity.PlayIdentityEvent;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.Map;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,9 +28,9 @@ class PlayUvController {
 
 @Service
 public class PlayUvService {
-    private final JdbcTemplate jdbc;
+    private final PlayUvMapper events;
     private final StringRedisTemplate redis;
-    public PlayUvService(JdbcTemplate jdbc, StringRedisTemplate redis) { this.jdbc = jdbc; this.redis = redis; }
+    public PlayUvService(PlayUvMapper events, StringRedisTemplate redis) { this.events = events; this.redis = redis; }
 
     public void record(String gameId, String userId, String anonymousId) {
         String identity = userId == null ? anonymousId == null ? null : "a:" + anonymousId : "u:" + userId;
@@ -51,13 +51,8 @@ public class PlayUvService {
             return Map.of("day", day.toString(), "gameId", gameId == null ? "all" : gameId,
                     "uv", approximate == null ? 0 : approximate, "approximate", true);
         } catch (RuntimeException unavailable) {
-            String sql = "SELECT COUNT(DISTINCT COALESCE(CONCAT('u:',user_id),CONCAT('a:',anonymous_id))) "
-                    + "FROM play_events WHERE created_at>=? AND created_at<? AND event_type IN ('game_view','game_start')"
-                    + (gameId == null ? "" : " AND game_id=?");
-            Object[] args = gameId == null
-                    ? new Object[] {java.sql.Date.valueOf(day), java.sql.Date.valueOf(day.plusDays(1))}
-                    : new Object[] {java.sql.Date.valueOf(day), java.sql.Date.valueOf(day.plusDays(1)), gameId};
-            Long exact = jdbc.queryForObject(sql, Long.class, args);
+            Long exact = events.exactUv(java.sql.Date.valueOf(day),
+                    java.sql.Date.valueOf(day.plusDays(1)), gameId);
             return Map.of("day", day.toString(), "gameId", gameId == null ? "all" : gameId,
                     "uv", exact == null ? 0 : exact, "approximate", false);
         }
@@ -66,23 +61,14 @@ public class PlayUvService {
     @Scheduled(initialDelay = 60_000, fixedDelay = 3_600_000)
     public void rebuildRecent() {
         LocalDate from = LocalDate.now(ZoneOffset.UTC).minusDays(1);
-        List<Map<String, Object>> events = jdbc.query("""
-                SELECT game_id,user_id,anonymous_id,created_at FROM play_events
-                WHERE created_at>=? AND event_type IN ('game_view','game_start')
-                ORDER BY created_at DESC LIMIT 100000
-                """, (rs, index) -> Map.<String, Object>of(
-                    "game_id", rs.getString("game_id"),
-                    "identity", rs.getString("user_id") != null ? "u:" + rs.getString("user_id")
-                        : rs.getString("anonymous_id") != null ? "a:" + rs.getString("anonymous_id") : "",
-                    "day", rs.getTimestamp("created_at").toInstant().atZone(ZoneOffset.UTC).toLocalDate()
-                ), java.sql.Date.valueOf(from));
-        for (Map<String, Object> event : events) {
-            String identity = (String) event.get("identity");
+        for (PlayIdentityEvent event : events.recentEvents(java.sql.Date.valueOf(from))) {
+            String identity = event.userId() != null ? "u:" + event.userId()
+                    : event.anonymousId() != null ? "a:" + event.anonymousId() : "";
             if (identity.isEmpty()) continue;
-            LocalDate day = (LocalDate) event.get("day");
+            LocalDate day = event.createdAt().toInstant().atZone(ZoneOffset.UTC).toLocalDate();
             try {
                 redis.opsForHyperLogLog().add("uv:global:" + day, identity);
-                redis.opsForHyperLogLog().add("uv:game:" + event.get("game_id") + ":" + day, identity);
+                redis.opsForHyperLogLog().add("uv:game:" + event.gameId() + ":" + day, identity);
             } catch (RuntimeException unavailable) { return; }
         }
     }

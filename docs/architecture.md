@@ -4,6 +4,8 @@
 
 GameWeare 是前后端分离的模块化单体。[React 应用](../apps/web/src/App.tsx) 通过 HTTP 调用 [Spring Boot 应用](../apps/api-java/src/main/java/com/gameweare/api/GameWeareApplication.java)；同一个 Java 部署同时承载 API、Outbox 投递和创建任务 Worker。AgentScope、旧版模型调用与封面阶段由任务创建时固定的 `engine` 选择。旧 Python 后端只在 `archive/python-api` 中留作行为对照。
 
+Java 代码按业务包组织；已迁移的业务使用 Controller、Service、MyBatis Mapper/DAO 和实体读模型分层，SQL 在 Mapper 中可直接审阅。认证、历史计费、游戏目录、社区、签到、生成券、游玩、上传、Outbox 和外部产物入库已接入 MyBatis；任务创建/Worker 编排、Agent 用量审计和管理后台仍使用 Spring JDBC，共享 Spring 管理的 MySQL 数据源与事务。具体代码入口和迁移范围见 [后端实现](backend.md)。
+
 ```mermaid
 flowchart LR
     Browser[React 前端] --> API[Spring Boot API]

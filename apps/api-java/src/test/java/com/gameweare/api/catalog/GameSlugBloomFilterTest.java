@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.gameweare.api.catalog.dao.GameStatsMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.RedisCallback;
 import java.util.Properties;
@@ -24,7 +24,7 @@ class GameSlugBloomFilterTest {
         doReturn(props).when(info).execute(any(RedisCallback.class));
         when(redis.<String>getBucket("game:public:slugs:ready:v2")).thenReturn(ready);
         when(redis.<String>getBloomFilter("game:public:slugs:v1")).thenReturn(filter);
-        GameSlugBloomFilter bloom = new GameSlugBloomFilter(redis, mock(JdbcTemplate.class), info);
+        GameSlugBloomFilter bloom = new GameSlugBloomFilter(redis, mock(GameStatsMapper.class), info);
         assertTrue(bloom.mightContain("missing"));
         verifyNoInteractions(filter);
         when(ready.get()).thenReturn("redis-boot-1");
@@ -40,7 +40,7 @@ class GameSlugBloomFilterTest {
         RedissonClient redis = mock(RedissonClient.class);
         @SuppressWarnings("unchecked") RBloomFilter<String> filter = mock(RBloomFilter.class);
         when(redis.<String>getBloomFilter("game:public:slugs:v1")).thenReturn(filter);
-        new GameSlugBloomFilter(redis, mock(JdbcTemplate.class),
+        new GameSlugBloomFilter(redis, mock(GameStatsMapper.class),
                 mock(StringRedisTemplate.class)).addBeforePublish("game-1");
         verify(filter).add("game-1");
     }

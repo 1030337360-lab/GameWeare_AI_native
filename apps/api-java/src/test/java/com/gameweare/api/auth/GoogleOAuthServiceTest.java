@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.gameweare.api.auth.dao.AuthMapper;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -24,7 +24,7 @@ class GoogleOAuthServiceTest {
     private GoogleOAuthService service() {
         when(redis.opsForValue()).thenReturn(values);
         return new GoogleOAuthService("client-id", "client-secret", "https://api.example.test/auth/google/callback",
-                "https://web.example.test", 100, redis, mock(JdbcTemplate.class), mock(TransactionTemplate.class),
+                "https://web.example.test", 100, redis, mock(AuthMapper.class), mock(TransactionTemplate.class),
                 mock(AuthService.class), new ObjectMapper());
     }
 
@@ -48,7 +48,7 @@ class GoogleOAuthServiceTest {
 
     @Test void missingConfigurationCannotStart() {
         GoogleOAuthService service = new GoogleOAuthService("", "", "https://api.example.test/callback",
-                "https://web.example.test", 100, redis, mock(JdbcTemplate.class), mock(TransactionTemplate.class),
+                "https://web.example.test", 100, redis, mock(AuthMapper.class), mock(TransactionTemplate.class),
                 mock(AuthService.class), new ObjectMapper());
         ResponseStatusException error = assertThrows(ResponseStatusException.class, () -> service.start(null));
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatusCode());

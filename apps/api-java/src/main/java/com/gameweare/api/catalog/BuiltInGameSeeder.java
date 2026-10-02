@@ -1,11 +1,11 @@
 package com.gameweare.api.catalog;
 
+import com.gameweare.api.catalog.dao.BuiltInGameMapper;
 import com.gameweare.api.create.ArtifactValidator;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,7 +14,6 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -32,18 +31,18 @@ public class BuiltInGameSeeder implements ApplicationRunner {
     private static final String VERSION_ID = stableId("version-1");
     private static final String ASSET_ID = stableId("asset-1");
     private static final String OBJECT_KEY = "games/" + GAME_ID + "/" + VERSION_ID + "/index.html";
-    private final JdbcTemplate jdbc;
+    private final BuiltInGameMapper games;
     private final MinioClient minio;
     private final ArtifactValidator validator;
     private final GameSlugBloomFilter bloomFilter;
     private final TransactionTemplate transaction;
     private final String bucket;
 
-    public BuiltInGameSeeder(JdbcTemplate jdbc, MinioClient minio, ArtifactValidator validator,
+    public BuiltInGameSeeder(BuiltInGameMapper games, MinioClient minio, ArtifactValidator validator,
             GameSlugBloomFilter bloomFilter,
             PlatformTransactionManager transactionManager,
             @Value("${gameweare.minio.bucket}") String bucket) {
-        this.jdbc = jdbc;
+        this.games = games;
         this.minio = minio;
         this.validator = validator;
         this.bloomFilter = bloomFilter;
@@ -53,13 +52,11 @@ public class BuiltInGameSeeder implements ApplicationRunner {
 
     @Override
     public void run(org.springframework.boot.ApplicationArguments args) throws Exception {
-        List<String> existing = jdbc.queryForList("SELECT id FROM games WHERE slug=?", String.class, SLUG);
-        if (!existing.isEmpty()) {
-            if (!GAME_ID.equals(existing.get(0))) log.warn("Bundled quiz slug already belongs to another game; skipping seed");
+        String existing = games.gameIdBySlug(SLUG);
+        if (existing != null) {
+            if (!GAME_ID.equals(existing)) log.warn("Bundled quiz slug already belongs to another game; skipping seed");
             else {
-                Integer published = jdbc.queryForObject("SELECT COUNT(*) FROM games WHERE id=? AND publish_status='published' AND visibility='public'",
-                        Integer.class, GAME_ID);
-                if (published != null && published > 0) bloomFilter.addBeforePublish(SLUG);
+                if (games.publicGameCount(GAME_ID) > 0) bloomFilter.addBeforePublish(SLUG);
             }
             return;
         }
@@ -77,33 +74,20 @@ public class BuiltInGameSeeder implements ApplicationRunner {
         // Register the slug first so a ready filter cannot reject the new public game.
         bloomFilter.addBeforePublish(SLUG);
         transaction.executeWithoutResult(status -> {
-            jdbc.update("INSERT IGNORE INTO users(id,email,password_hash,display_name,role) VALUES(?,?,?,?,'user')",
-                    USER_ID, EMAIL, new BCryptPasswordEncoder().encode(UUID.randomUUID().toString()), "GameWeare 官方");
-            List<String> author = jdbc.queryForList("SELECT id FROM users WHERE email=?", String.class, EMAIL);
-            if (author.size() != 1 || !USER_ID.equals(author.get(0)))
+            games.insertAuthor(USER_ID, EMAIL, new BCryptPasswordEncoder().encode(UUID.randomUUID().toString()),
+                    "GameWeare 官方");
+            String author = games.authorIdByEmail(EMAIL);
+            if (!USER_ID.equals(author))
                 throw new IllegalStateException("Bundled quiz author account conflicts with existing user");
-            jdbc.update("""
-                    INSERT IGNORE INTO games(id,slug,title,description,author_id,publish_status,visibility)
-                    VALUES(?,?,?,?,?,'draft','private')
-                    """, GAME_ID, SLUG, "Java 面试知识闯关",
+            games.insertGame(GAME_ID, SLUG, "Java 面试知识闯关",
                     "内置 Java 知识问答游戏：80 道题，按八个方向抽取基础与进阶题，每局挑战 16 题。", USER_ID);
-            List<String> game = jdbc.queryForList("SELECT id FROM games WHERE slug=?", String.class, SLUG);
-            if (game.size() != 1 || !GAME_ID.equals(game.get(0)))
+            String game = games.gameIdBySlug(SLUG);
+            if (!GAME_ID.equals(game))
                 throw new IllegalStateException("Bundled quiz slug conflicts with existing game");
-            jdbc.update("""
-                    INSERT IGNORE INTO game_versions(id,game_id,version_no,entry_object_key,runtime,
-                        build_status,safety_status,entry_file,storage_prefix)
-                    VALUES(?,?,1,?,'iframe-html5','passed','passed','index.html',?)
-                    """, VERSION_ID, GAME_ID, OBJECT_KEY, "games/" + GAME_ID + "/" + VERSION_ID);
-            jdbc.update("""
-                    INSERT IGNORE INTO assets(id,owner_id,game_id,version_id,kind,bucket,object_key,content_type,size_bytes)
-                    VALUES(?,?,?,?,'html',?,?,?,?)
-                    """, ASSET_ID, USER_ID, GAME_ID, VERSION_ID, bucket, OBJECT_KEY, "text/html; charset=utf-8", size);
-            jdbc.update("""
-                    UPDATE games SET current_version_id=?, publish_status='published', visibility='public',
-                        published_at=COALESCE(published_at,UTC_TIMESTAMP(6))
-                    WHERE id=? AND slug=? AND author_id=? AND current_version_id IS NULL
-                    """, VERSION_ID, GAME_ID, SLUG, USER_ID);
+            games.insertVersion(VERSION_ID, GAME_ID, OBJECT_KEY, "games/" + GAME_ID + "/" + VERSION_ID);
+            games.insertAsset(ASSET_ID, USER_ID, GAME_ID, VERSION_ID, bucket, OBJECT_KEY,
+                    "text/html; charset=utf-8", size);
+            games.publish(VERSION_ID, GAME_ID, SLUG, USER_ID);
         });
         log.info("Bundled Java interview quiz is available at /play/{}/manifest", SLUG);
     }
