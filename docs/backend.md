@@ -18,6 +18,10 @@ Docker 的 [后端 Dockerfile](../apps/api-java/Dockerfile) 在 Maven 构建阶�
 
 ## 任务、消息和版本一致性
 
+Chat 访谈先走 [`CreationChatService`](../apps/api-java/src/main/java/com/gameweare/api/create/CreationChatService.java)，V14 增加会话与消息表，数据库访问由 `CreationChatMapper` 承担。回复认领采用 revision CAS 与独立五分钟 token 租约；模型调用在事务外，完成时只允许当前租约提交，两条消息和画像一起提交。重试按 requestId 幂等，失败释放认领，过期请求不能覆盖新回复。全部会话操作按 `user_id` 限定；技能读取只接受资源仓库注册 ID，文本以 React 转义输出。
+
+用户确认时锁会话行并核对 revision，构造 ReAct `JobRequest` 后调用 `CreateService.create`，会话确认、生成任务、占券及 Outbox 同事务提交。重复确认返回原 job ID，不重复扣券或投递。Chat 讨论期间只校验 BYOK 配置或官方券资格，不预留券；消息表记录成功返回的对话用量，不代表异常请求零费用。会话/限流/技能目录及模型兼容性边界见 [Agent 文档](agent.md)。
+
 [`CreateService.create`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateService.java) 校验模式、项目归属、上传资产与付款方式，在一个事务中写 `create_jobs` 和 `outbox_events`。代码中的核心写入是：
 
 ```sql

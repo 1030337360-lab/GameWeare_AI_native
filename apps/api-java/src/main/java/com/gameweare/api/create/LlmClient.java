@@ -167,6 +167,15 @@ final class LlmClient {
     }
 
     private static JsonNode request(String baseUrl, String apiKey, Map<String, Object> payload) throws Exception {
+        return request(baseUrl, apiKey, payload, Duration.ofMinutes(10), Duration.ofMinutes(20), MAX_STREAM_BYTES);
+    }
+
+    static JsonNode guideRequest(String baseUrl, String apiKey, Map<String, Object> payload) throws Exception {
+        return request(baseUrl, apiKey, payload, Duration.ofSeconds(45), Duration.ofSeconds(45), 4L * 1024 * 1024);
+    }
+
+    private static JsonNode request(String baseUrl, String apiKey, Map<String, Object> payload,
+                                    Duration readTimeout, Duration callTimeout, long maxStreamBytes) throws Exception {
         LlmEndpointPolicy policy = new LlmEndpointPolicy(allowedHosts, CreateService.privateLlmEndpointsAllowed);
         URI base = URI.create(baseUrl.strip());
         policy.validate(base);
@@ -178,8 +187,8 @@ final class LlmClient {
         OkHttpClient http = new OkHttpClient.Builder()
                 .proxy(Proxy.NO_PROXY).followRedirects(false).followSslRedirects(false)
                 .dns(policy::resolve).connectTimeout(Duration.ofSeconds(10))
-                .readTimeout(Duration.ofMinutes(10))
-                .callTimeout(Duration.ofMinutes(20)).build();
+                .readTimeout(readTimeout)
+                .callTimeout(callTimeout).build();
         Request request = new Request.Builder().url(uri.toString())
                 .header("Authorization", "Bearer " + apiKey)
                 .post(RequestBody.create(body, MediaType.get("application/json"))).build();
@@ -208,7 +217,7 @@ final class LlmClient {
             JsonNode root;
             String contentType = response.header("Content-Type", "");
             if (contentType.toLowerCase(java.util.Locale.ROOT).startsWith("text/event-stream")) {
-                root = readCompletedStream(response);
+                root = readCompletedStream(response, maxStreamBytes);
             } else {
                 byte[] responseBytes = response.body().byteStream().readNBytes(4_000_001);
                 if (responseBytes.length > 4_000_000)
@@ -221,7 +230,7 @@ final class LlmClient {
         }
     }
 
-    private static JsonNode readCompletedStream(Response response) throws Exception {
+    private static JsonNode readCompletedStream(Response response, long maxStreamBytes) throws Exception {
         long receivedBytes = 0;
         StringBuilder eventData = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -229,8 +238,8 @@ final class LlmClient {
             String line;
             while ((line = reader.readLine()) != null) {
                 receivedBytes += line.getBytes(StandardCharsets.UTF_8).length + 1;
-                if (receivedBytes > MAX_STREAM_BYTES)
-                    throw new IllegalStateException("AI provider stream exceeded " + MAX_STREAM_BYTES
+                if (receivedBytes > maxStreamBytes)
+                    throw new IllegalStateException("AI provider stream exceeded " + maxStreamBytes
                             + " bytes after receiving " + receivedBytes + " bytes");
                 if (line.isEmpty()) {
                     JsonNode completed = processEvent(eventData);

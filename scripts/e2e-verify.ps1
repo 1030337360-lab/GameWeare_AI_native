@@ -127,7 +127,7 @@ Pass "API reached the mock provider"
 Step "Chat mode: create, publish, play ($Engine engine)"
 $idem = "e2e-$Engine-chat-$stamp"
 $createHeaders = @{ Authorization = $Auth.Authorization; "X-Idempotency-Key" = $idem }
-$chatBody = @{ prompt = "Create a neon runner game with score"; agentMode = "chat" }
+$chatBody = @{ prompt = "Create a neon runner game with score"; agentMode = "react" }
 $job = Invoke-Api POST "/create/jobs" $chatBody $createHeaders
 if (-not $job.id) { Fail "create-job" "no job id returned" }
 Pass "job accepted ($($job.id))"
@@ -136,7 +136,7 @@ $again = Invoke-Api POST "/create/jobs" $chatBody $createHeaders
 if ($again.id -ne $job.id) { Fail "idempotency" "same key returned different job: $($again.id)" }
 Pass "idempotency key returns the same job"
 
-$done = Wait-JobStatus $job.id @("completed") $Auth "chat-generation"
+$done = Wait-JobStatus $job.id @("completed") $Auth "react-generation"
 if (-not $done.gameId -or -not $done.versionId) { Fail "chat-generation" "missing gameId/versionId" }
 Pass "worker completed generation (gameId=$($done.gameId))"
 

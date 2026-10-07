@@ -65,7 +65,7 @@ $jobs = 1..8 | ForEach-Object -Parallel {
     try {
         $job = Invoke-RestMethod -Method Post "$api/create/jobs" -Headers @{
             Authorization = "Bearer $bearer"; "X-Idempotency-Key" = "billing-$artifactKey-$_"
-        } -ContentType "application/json" -Body (@{ prompt="Billing concurrency $_"; agentMode="chat"; createType="init" } | ConvertTo-Json -Compress)
+        } -ContentType "application/json" -Body (@{ prompt="Billing concurrency $_"; agentMode="react"; createType="init" } | ConvertTo-Json -Compress)
         @{ accepted=$true; id=$job.id }
     } catch {
         @{ accepted=$false; status=[int]$_.Exception.Response.StatusCode }

@@ -87,6 +87,9 @@ jobs:
       - name: Verify multi-instance consistency
         shell: pwsh
         run: ./scripts/multi-instance-verify.ps1
+      - name: Verify guided Chat handoff to ReAct
+        shell: pwsh
+        run: ./scripts/chat-verify.ps1 -Api http://localhost:8080 -ReplicaApi http://localhost:8081 -MockBaseUrl http://mock-llm:8080
       - name: Verify stock-one voucher seckill across replicas
         shell: pwsh
         run: ./scripts/seckill-verify.ps1 -VerifyRedemption -VerifyDuplicateDelivery -VerifyRabbitRecovery -VerifyCompensation -VerifyRedisRestart

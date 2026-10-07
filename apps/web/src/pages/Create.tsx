@@ -6,6 +6,7 @@ import { readApiError } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import { runStageLabel, formatStepMetrics, preparePlayableDocument } from "../utils/helpers";
 import { INIT_AGENT_MODES, OPT_AGENT_MODES } from "../types";
+import CreationChat from "../components/CreationChat";
 import type {
   CreateInputAsset,
   PlanPreviewResponse,
@@ -555,6 +556,7 @@ function Create() {
 
   async function submitJob(event: React.FormEvent) {
     event.preventDefault();
+    if (agentMode === "chat") return;
     const startingRect = composerRef.current?.getBoundingClientRect();
     const submittedPrompt = message;
     setBusy(true);
@@ -842,7 +844,7 @@ function Create() {
           {job && ["pending", "generating", "planning", "reviewing"].includes(job.status) && <div className="create-cancel-strip"><span>此任务会独立运行。现在就能并行创建另一款游戏；同一游戏的优化仍需等待当前任务结束。</span><button type="button" className="create-parallel-action" onClick={() => { startNewTask(); focusComposer(); }}><Plus size={13} /> 并行新建游戏</button><button type="button" disabled={cancelBusyId === job.id} onClick={() => void cancelTask(job.id)}><Square size={13} fill="currentColor" /> {cancelBusyId === job.id ? "正在终止…" : "终止创建"}</button></div>}
           {job?.prompt && <details className="create-prompt-details"><summary>查看完整创作要求</summary><p>{job.prompt}</p></details>}
         </section>
-      ) : <div className="create-compose-heading"><span className="create-overline">开始创作</span><h2>描述你想玩的游戏</h2><p>告诉我们玩法、氛围或故事设定。</p></div>}
+      ) : <div className="create-compose-heading"><span className="create-overline">开始创作</span><h2>描述你想玩的游戏</h2><p>通过 Chat 一起完善想法，确认画像后交给 ReAct；也可以选择其他创作方式。</p></div>}
       {!selectedJobId && <>
       {aiConfig && (!aiConfig.configured || editingConfig) && (
         <form className="prompt-panel" onSubmit={saveConfig}>
@@ -1003,11 +1005,11 @@ function Create() {
           <div className="create-mode-options">
             {(createType === "opt" ? OPT_AGENT_MODES : INIT_AGENT_MODES).map((mode) => (
               <button key={mode} type="button" className={agentMode === mode ? "selected" : undefined}
-                aria-pressed={agentMode === mode} onClick={() => setAgentMode(mode)}>{({ chat: "对话", react: "推理行动", plan: "规划", decentralized: "多智能体", refine: "精修" } as Record<string, string>)[mode] ?? mode}</button>
+                aria-pressed={agentMode === mode} onClick={() => setAgentMode(mode)}>{({ chat: "Chat · 完善想法", react: "ReAct · 直接生成", plan: "规划", decentralized: "多智能体", refine: "精修" } as Record<string, string>)[mode] ?? mode}</button>
             ))}
           </div>
         </fieldset>
-        <div className="multimodal-composer">
+        {agentMode !== "chat" && <div className="multimodal-composer">
           {pendingImages.length > 0 && (
             <div className="image-preview-list">
               {pendingImages.map((image) => (
@@ -1035,8 +1037,16 @@ function Create() {
               {streaming ? "生成中..." : "创建游戏"}
             </button>
           </div>
-        </div>
+        </div>}
       </form>
+      {agentMode === "chat" && <CreationChat createType={createType} projectId={projectId} fundingMode={fundingMode} voucherId={voucherId} fundingReady={fundingReady}
+        onCreated={(payload) => {
+          selectedJobRef.current = payload.id;
+          setSelectedJobId(payload.id); setJob(payload); setRunSteps([]); setPlanPreview(null); setDecentralizedPreview(null);
+          setStatus("画像已确认，ReAct 正在创建游戏。进度会显示在任务记录中。");
+          void loadTaskHistory();
+          if (payload.runId) void connectRunEvents(payload.runId, payload.id);
+        }} />}
       </>}
       <div className="status-panel">{status}</div>
       {job?.agentMode === "plan" && job.runId && !planPreview && (

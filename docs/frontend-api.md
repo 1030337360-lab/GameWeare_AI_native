@@ -29,7 +29,24 @@ Content-Type: application/json
 {"prompt":"制作一个可玩的平台跳跃游戏","agentMode":"react","createType":"init","fundingMode":"byok","inputAssets":[]}
 ```
 
-`agentMode` 支持 `chat`、`react`、`plan`、`decentralized`；`refine` 仅用于 `createType=opt`。`fundingMode=voucher` 时同时传 `voucherId`，由后端占券并使用官方模型。`POST /create/jobs` 返回 202 和任务信息。`GET /create/jobs` 用于侧栏，`GET /create/jobs/{id}` 用于详情；`GET /create/runs/{id}/steps` 与 SSE `/create/runs/{id}/events` 用于进度。`plan` 需要 `/plan-preview` 与 `/plan-decision`；`decentralized` 需要候选预览、选择和确认。完成后先预览，再调用 `/create/jobs/{id}/publish` 发布。优化任务发布前不会替换线上版本或原始封面。
+直接生成的 `agentMode` 支持 `react`、`plan`、`decentralized`；`refine` 仅用于 `createType=opt`。省略模式默认 `react`；新的 `chat` 请求返回409，须走下方访谈接口。`fundingMode=voucher` 时同时传 `voucherId`，由后端占券并使用官方模型。`POST /create/jobs` 返回 202 和任务信息。`GET /create/jobs` 用于侧栏，`GET /create/jobs/{id}` 用于详情；`GET /create/runs/{id}/steps` 与 SSE `/create/runs/{id}/events` 用于进度。`plan` 需要 `/plan-preview` 与 `/plan-decision`；`decentralized` 需要候选预览、选择和确认。完成后先预览，再调用 `/create/jobs/{id}/publish` 发布。优化任务发布前不会替换线上版本或原始封面。
+
+## Chat 多轮访谈契约
+
+全部接口要求 Bearer 登录，具体实现见 [`CreationChatController`](../apps/api-java/src/main/java/com/gameweare/api/create/CreationChatController.java) 和 [`CreationChat`](../apps/web/src/components/CreationChat.tsx)。
+
+| API | 请求 / 结果 |
+| --- | --- |
+| `GET /create/chat/skills` | 可读取的技能 ID、名称、简介和标签 |
+| `POST /create/chat/sessions` | `{id:<客户端UUID>,createType:"init",fundingMode:"byok"}`；官方模式加 `voucherId`，优化模式加本人 `projectId`；返回201和空会话 |
+| `GET /create/chat/sessions` | 最近30个本人会话摘要，包括画像、状态、revision、费用来源与 jobId |
+| `GET /create/chat/sessions/{id}` | 完整画像与有序消息，刷新或切换页面后恢复 |
+| `POST /create/chat/sessions/{id}/messages` | `{message,requestId:<UUID>,revision:<当前版本>}`；整轮完成后返回更新后的会话 |
+| `POST /create/chat/sessions/{id}/confirm` | `{revision}`；返回202和已创建的 ReAct `CreateJob`，重复确认返回同一个任务 |
+
+会话状态为 `draft → replying → draft`，确认后为 `confirmed`。每轮成功 revision 加1，同时保存一条 user 和一条 assistant 消息；失败不提交半轮。回复中的 `skillIds` 是本轮真实读取过的技能，`requestId` 用于识别网络断线后的已完成请求。会话画像 `brief` 的字段为 `title/concept/genre/coreLoop/controls/rules/victory/artStyle/scope/questions`，`ready` 是服务端基于核心字段判定的可确认状态，不是模型授权。输入最多2000字符，画像每字段最多240字符；每会话最多30轮。正在回复或版本过时返回409，其他用户会话返回404，限流返回429，模型失败返回502且不暴露密钥。
+
+确认前不建立 `create_jobs`、不占券；确认时服务端把存储的最新画像转为生成提示词，不接收客户端伪造的画像或模式。Chat 的图片输入不在本轮访谈协议内，直接 ReAct 的现有图片上传协议继续可用。用户查看并确认画像后，前端切换到现有任务进度、预览与发布页面。
 
 任务列表显示 `displayTitle`、中文状态与模式；完整提示词保留在详情。[`DELETE /create/jobs/{id}`](../apps/api-java/src/main/java/com/gameweare/api/create/CreateController.java) 仅允许本人删除终态任务，隐藏任务和轨迹，已发布游戏与审计数据保留。
 本人可对 `pending`、`generating`、`planning`、`reviewing` 任务调用 `POST /create/jobs/{id}/cancel`。响应为 `status=canceled`；已完成任务返回 409。取消后 SSE 结束，任务轨迹保留，可再用 DELETE 隐藏。跨实例以 MySQL 状态和租约为最终判定，运行中的模型请求会尽快中断。

@@ -1,6 +1,6 @@
 # GameWeare — AI 游戏创作与游玩平台
 
-GameWeare 让用户描述游戏、选择生成模式、查看任务轨迹，随后发布并游玩单文件 HTML5 游戏。当前代码是 React 前端与 Spring Boot 模块化单体；Java AgentScope 引擎已经接入，默认创建引擎仍为 `legacy`。本仓库是 [GameWeare_AI_native](https://github.com/1030337360-lab/GameWeare_AI_native)，与曾用于参考的 `charlie11sun-netizen/yahaha` 不是同一个项目。
+GameWeare 让用户通过 Chat 多轮完善游戏画像，确认后交给 ReAct 生成，再预览、发布并游玩单文件 HTML5 游戏；也可选择直接生成、规划或多智能体模式。当前代码是 React 前端与 Spring Boot 模块化单体；Java AgentScope 引擎已经接入，默认创建引擎仍为 `legacy`。本仓库是 [GameWeare_AI_native](https://github.com/1030337360-lab/GameWeare_AI_native)，与曾用于参考的 `charlie11sun-netizen/yahaha` 不是同一个项目。
 
 ## 从哪里开始
 
@@ -38,6 +38,8 @@ docker compose ps
 
 创建游戏前，可在“创作”页配置自己的模型地址、名称和 API Key。官方生成券还需服务端配置 `OFFICIAL_LLM_BASE_URL`、`OFFICIAL_LLM_MODEL`、`OFFICIAL_LLM_API_KEY`。新建生成任务的模型额度由服务商 API 判断，项目不以旧版本地 Token 余额拒绝任务。
 
+默认 Chat 是需求访谈，不直接生成游戏：自然语言描述 → 助手按需读取创作技能 → 多轮补充 → 审阅画像 → 点击“确认画像，开始生成” → ReAct 生成与校验 → 发布。历史对话和画像存 MySQL，刷新后可从历史对话继续；确认前不创建生成任务、不占用券。BYOK 对话会调用用户配置的模型，官方券对话要求有可用券并调用服务端模型；只有确认生成才占券。创作技能维护在 `apps/api-java/src/main/resources/creation-skills/`，添加方法与验收边界见 [Agent 文档](docs/agent.md)。
+
 如需验证 AgentScope 的本地 Docker 沙箱，可运行 `./scripts/start-local-agentscope.ps1 -Mock`，再运行 `./scripts/e2e-verify.ps1 -Engine agentscope -Filesystem docker -UseExistingApi -MockBaseUrl http://127.0.0.1:8090`。真实 Kubernetes 路径需要另行部署 controller、沙箱模板和隔离运行时，不能把本地 Docker 通过视作集群验收。
 
 ## 构建与验证
@@ -50,5 +52,7 @@ docker compose build api web
 ```
 
 CI 在 [.github/workflows/ci.yml](.github/workflows/ci.yml) 中运行 Java 测试、前端构建、Compose 冒烟和多实例一致性验收。更多脚本和边界见各专题文档。生产部署使用 `docker-compose.prod.yml`、独立密钥和 HTTPS；它仍需要实际网络出口策略、备份恢复演练与真实模型验收。
+
+Chat 链路验收脚本为 `./scripts/chat-verify.ps1 -Api http://localhost:18080 -MockBaseUrl http://mock-llm:8080`；运行前需启动隔离测试 API 和 `scripts/mock_llm.py`，允许该测试模型地址，并保持真实用户模型配置不变。脚本验证多轮对话、技能工具调用、画像恢复、越权、重复请求、确认幂等和最终生成发布，不替代真实模型验收。
 
 **命名兼容：**产品统一称 **GameWeare**。本机 Compose 项目标识仍是 `gameweare-mvp`，用于继续挂载已有数据卷；它不是产品名称。不要仅为改名删除这些数据卷。

@@ -229,6 +229,25 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.endswith("/responses"):
             self._reply({"error": "unsupported path"}, 404)
             return
+        body = json.loads(raw) if raw else {}
+        if any(tool.get("name") == "read_creation_skill" for tool in body.get("tools", [])):
+            messages = body.get("input") or []
+            has_skill = any(m.get("type") == "function_call_output" for m in messages if isinstance(m, dict))
+            usage = {"input_tokens": 64, "output_tokens": 32, "total_tokens": 96}
+            if not has_skill:
+                self._reply({"output": [{"type": "function_call", "name": "read_creation_skill",
+                    "call_id": "guide-%d" % next(CALL_IDS), "arguments": json.dumps({"id": "game-interview"})}], "usage": usage})
+                return
+            user_turns = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"]
+            complete = len(user_turns) >= 2
+            brief = {"title": "星空跑酷", "concept": "玩家驾驶小飞船穿过星空", "genre": "街机跑酷",
+                     "coreLoop": "躲避陨石并收集星星", "controls": "", "rules": "", "victory": "",
+                     "artStyle": "霓虹星空", "scope": "单局、计分、重试", "questions": ["使用什么操作方式？"]}
+            if complete:
+                brief.update(controls="方向键移动", rules="碰撞结束，收集星星加分，可重新开始", victory="达到100分获胜", questions=[])
+            reply = "我们做一款星空跑酷。你希望用方向键还是触屏操作？" if not complete else "已整理操作、规则和目标。请审阅游戏画像，确认后开始生成，也可以继续调整。"
+            self._reply({"output_text": json.dumps({"reply": reply, "brief": brief}, ensure_ascii=False), "usage": usage})
+            return
         if "GameWeare cover artist" in raw:
             text = COVER_SVG
         elif "ONLY JSON object with plan" in raw:

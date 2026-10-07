@@ -218,7 +218,7 @@ requireStatus(await jsonRequest('PUT', '/create/ai-config', {
 }, users[1].token), 200, 'mock AI config');
 const jobStarted = performance.now();
 const jobs = await mapLimited(Array.from({ length: jobCount }, (_, i) => i), jobCount, (i) =>
-  jsonRequest('POST', '/create/jobs', { prompt: `Benchmark game ${runId}-${i}`, agentMode: 'chat',
+  jsonRequest('POST', '/create/jobs', { prompt: `Benchmark game ${runId}-${i}`, agentMode: 'react',
     createType: 'init', fundingMode: 'byok' }, users[1].token, i));
 const jobStatuses = {};
 for (const job of jobs) jobStatuses[job.status] = (jobStatuses[job.status] ?? 0) + 1;

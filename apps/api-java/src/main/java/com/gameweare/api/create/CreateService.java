@@ -109,7 +109,7 @@ public class CreateService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Legacy file references are not supported; upload images first");
         if (input.inputAssets() != null && input.inputAssets().size() > 3)
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "At most three images are supported");
-        String mode = Optional.ofNullable(input.agentMode()).orElse("chat");
+        String mode = Optional.ofNullable(input.agentMode()).orElse("react");
         String type = Optional.ofNullable(input.createType()).orElse("init");
         if (!Set.of("chat", "react", "plan", "refine", "decentralized").contains(mode)
                 || !Set.of("init", "opt").contains(type)
@@ -684,7 +684,12 @@ public class CreateService {
         try { return db.queryForMap(sql, args); } catch (EmptyResultDataAccessException e) { return null; }
     }
 
-    static String title(String prompt) { String s = prompt.strip(); return s.length() <= 80 ? s : s.substring(0, 80); }
+    static String title(String prompt) {
+        String s = prompt.strip();
+        int lineEnd = s.indexOf('\n');
+        if (lineEnd >= 0) s = s.substring(0, lineEnd).strip();
+        return s.length() <= 80 ? s : s.substring(0, 80);
+    }
     static void validateBaseUrl(String input) {
         try {
             java.net.URI uri = java.net.URI.create(input.strip());

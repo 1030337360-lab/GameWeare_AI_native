@@ -39,6 +39,9 @@ public class CreateController {
     public Map<String, Object> create(@RequestAttribute("userId") String userId,
                                       @RequestHeader(value = "X-Idempotency-Key", required = false) String key,
                                       @Valid @RequestBody JobRequest request) {
+        if ("chat".equals(request.agentMode()))
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT,
+                    "Chat 模式请先通过 /create/chat/sessions 完善画像并确认，再交给 ReAct 生成。");
         try { return service.create(userId, request, key); }
         catch (DuplicateKeyException race) {
             if (key == null || key.isBlank()) throw race;

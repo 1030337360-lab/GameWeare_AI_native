@@ -88,7 +88,7 @@ if ($VerifyRedemption) {
     $wallet = Invoke-RestMethod -Uri "$Api/vouchers/me" -Headers $winnerHeaders
     $voucher = @($wallet | Where-Object { $_.sourceId -eq $campaign.id -and $_.status -eq "available" })[0]
     Assert ($null -ne $voucher) "Winner receives an available generation voucher"
-    $jobBody = @{ prompt = "Build a keyboard-controlled canvas game with scoring"; agentMode = "chat"
+    $jobBody = @{ prompt = "Build a keyboard-controlled canvas game with scoring"; agentMode = "react"
         createType = "init"; fundingMode = "voucher"; voucherId = $voucher.id } | ConvertTo-Json
     $job = Invoke-RestMethod -Method Post -Uri "$Api/create/jobs" -Headers $winnerHeaders `
         -ContentType "application/json" -Body $jobBody

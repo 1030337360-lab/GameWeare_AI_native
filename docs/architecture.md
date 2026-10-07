@@ -9,6 +9,10 @@ Java 代码按业务包组织；已迁移的业务使用 Controller、Service、
 ```mermaid
 flowchart LR
     Browser[React 前端] --> API[Spring Boot API]
+    API --> Chat[Chat 访谈与游戏画像]
+    Chat --> Skills[只读创作技能仓库]
+    Chat --> Provider[模型服务商]
+    Chat --> MySQL
     API --> MySQL[(MySQL 事务数据)]
     API --> Redis[(Redis 缓存与预扣)]
     API --> MinIO[(MinIO 游戏与封面对象)]
@@ -33,11 +37,11 @@ flowchart LR
 | 签到与生成券 | [`voucher`](../apps/api-java/src/main/java/com/gameweare/api/voucher) | MySQL 发券、库存、核销与签到事实；Redis Lua/Stream 是秒杀预扣通道 |
 | 管理与个人中心 | [`maintenance`](../apps/api-java/src/main/java/com/gameweare/api/maintenance)、[`profile`](../apps/api-java/src/main/java/com/gameweare/api/profile) | 按角色或本人身份查询业务记录 |
 
-数据库结构从 [Flyway V1–V12](../apps/api-java/src/main/resources/db/migration) 演进。MinIO 是对象存储，不替代 MySQL 的事务表。缓存、排行、Bitmap 和 HLL 都不决定授权、发券或计费结果。
+数据库结构从 [Flyway V1–V14](../apps/api-java/src/main/resources/db/migration) 演进；V14 保存 Chat 会话、画像、消息、读取技能与用量。MinIO 是对象存储，不替代 MySQL 的事务表。缓存、排行、Bitmap 和 HLL 都不决定授权、发券或计费结果。
 
 ## 三条主链路
 
-1. **创作**：`POST /create/jobs` 在一个 MySQL 事务中创建项目/任务、必要时占用券，并写 Outbox。投递器确认 RabbitMQ 收到消息；Worker 用租约认领任务，调用模型，校验 HTML，先保存 MinIO 对象，再写版本和任务终态。发布是独立操作，优化时先生成草稿版本，发布后才切换公开版本。
+1. **创作**：Chat 会话先通过多轮模型访谈与只读技能工具完善画像，消息和画像持久化在 MySQL；用户确认后在同一事务中记录确认并创建 ReAct 任务。直接生成仍可调用 `POST /create/jobs`。生成事务创建项目/任务、必要时占用券，并写 Outbox。投递器确认 RabbitMQ 收到消息；Worker 用租约认领任务，调用模型，校验 HTML，先保存 MinIO 对象，再写版本和任务终态。发布是独立操作，优化时先生成草稿版本，发布后才切换公开版本。
 2. **试玩**：前端读取 `/play/{slug}/manifest`，再把 `/play/{slug}/document` 装入 `sandbox="allow-scripts"` iframe。后端仅向已发布的公开游戏返回 HTML，并附带 CSP；游玩事件写 MySQL，热榜和近似 UV 可随后更新。
 3. **生成券秒杀**：Redis Lua 原子预扣库存并把预留写入 Stream；RabbitMQ 转发后，MySQL 事务条件扣库存、检查同场唯一并发券。页面先显示预留中，只有 MySQL 提交后才显示券到账；失败预留由重试/对账补偿。
 
